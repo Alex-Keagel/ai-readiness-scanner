@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+
+  // AI Readiness Scanner – TypeScript Configuration
+  //
+  // This file configures the TypeScript compiler for the VS Code extension.
+  // The extension scans workspaces for agentic coding readiness, scores across
+  // multiple dimensions (modularity, documentation, test coverage, CI/CD, etc.),
+  // and generates Markdown assessment reports.
+  //
+  // Key design decisions:
+  // - Target ES2020 for modern JS features while staying compatible with VS Code's Electron runtime.
+  // - Use bundler module resolution since esbuild (see esbuild.js) handles final bundling.
+  // - Strict mode enabled to catch errors early and improve Copilot suggestion quality.
+  // - Source maps enabled for debugging via .vscode/launch.json Extension Host configs.
+  // - outDir set to "out/" which is consumed by esbuild.js and .vscodeignore.
+  //
+  // Related files:
+  //   esbuild.js              – Bundles compiled output into a single distributable file
+  //   .vscode/launch.json     – Debug profiles that rely on compiled output + source maps
+  //   .vscode/tasks.json      – Pre-launch npm watch/compile tasks
+  //   vitest.config.ts        – Test runner config (Vitest uses its own TS transform)
+  //   package.json            – Extension manifest referencing the bundled entry point
+
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2020",
+    "lib": ["ES2020"],
+    "outDir": "out",
+    "sourceMap": true,
+    "strict": true,
+    "rootDir": "src",
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "out", "**/*.test.ts"]
+}

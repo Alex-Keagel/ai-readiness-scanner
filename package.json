@@ -1,0 +1,384 @@
+{
+  "name": "ai-readiness-scanner",
+  "displayName": "AI Readiness Scanner",
+  "description": "Score your codebase AI readiness across 7 platforms (Copilot, Cline, Cursor, Claude, Roo, Windsurf, Aider). 6-level maturity ladder, semantic analysis, one-click fixes.",
+  "version": "1.3.5",
+  "publisher": "alex-keagel",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Linters",
+    "Testing",
+    "Machine Learning",
+    "Other"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "readiness",
+    "copilot",
+    "cline",
+    "cursor",
+    "claude",
+    "code-quality",
+    "maturity",
+    "scoring"
+  ],
+  "extensionDependencies": [
+    "github.copilot-chat"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:ai-readiness.sidebar"
+  ],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "chatParticipants": [
+      {
+        "id": "ai-readiness.readiness",
+        "fullName": "AI Readiness Scanner",
+        "name": "readiness",
+        "description": "Evaluate and fix your codebase's AI agent readiness",
+        "isSticky": true,
+        "commands": [
+          {
+            "name": "scan",
+            "description": "Full scan with LLM deep analysis (optionally specify tool: copilot, cline, cursor, roo, claude, windsurf, aider)"
+          },
+          {
+            "name": "quick",
+            "description": "Deterministic-only scan (optionally specify tool name)"
+          },
+          {
+            "name": "report",
+            "description": "Generate markdown report"
+          },
+          {
+            "name": "pillar",
+            "description": "Deep-dive a specific pillar"
+          },
+          {
+            "name": "fix",
+            "description": "Fix a specific failing criterion"
+          },
+          {
+            "name": "fix-all",
+            "description": "Auto-fix all fixable criteria"
+          },
+          {
+            "name": "compare",
+            "description": "Compare with previous scan"
+          },
+          {
+            "name": "migrate",
+            "description": "Migrate tool configuration (e.g., @readiness /migrate cline copilot)"
+          },
+          {
+            "name": "guide",
+            "description": "Show what a specific AI tool expects in your repo"
+          },
+          {
+            "name": "graph",
+            "description": "Show the knowledge graph of your repository"
+          },
+          {
+            "name": "live",
+            "description": "Show current AIPM metrics or start live tracking"
+          },
+          {
+            "name": "vibe",
+            "description": "Generate a Vibe Report \u2014 agentic coding proficiency assessment"
+          },
+          {
+            "name": "levelup",
+            "description": "Guided progression to the next maturity level"
+          },
+          {
+            "name": "context",
+            "description": "Show context window usage and session stats"
+          }
+        ]
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "ai-readiness",
+          "title": "AI Readiness",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "ai-readiness": [
+        {
+          "id": "ai-readiness.sidebar",
+          "name": "AI Readiness",
+          "type": "webview"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "ai-readiness.fullScan",
+        "title": "AI Readiness: Full Scan",
+        "icon": "$(search)"
+      },
+      {
+        "command": "ai-readiness.quickScan",
+        "title": "AI Readiness: Quick Scan"
+      },
+      {
+        "command": "ai-readiness.showReport",
+        "title": "AI Readiness: Show Report",
+        "icon": "$(open-preview)"
+      },
+      {
+        "command": "ai-readiness.generateReport",
+        "title": "AI Readiness: Generate Report"
+      },
+      {
+        "command": "ai-readiness.fixAll",
+        "title": "AI Readiness: Action Center",
+        "icon": "$(wand)"
+      },
+      {
+        "command": "ai-readiness.fixSignal",
+        "title": "AI Readiness: Fix Signal"
+      },
+      {
+        "command": "ai-readiness.migrate",
+        "title": "AI Readiness: Migrate Tool Configuration",
+        "icon": "$(arrow-swap)"
+      },
+      {
+        "command": "ai-readiness.liveStart",
+        "title": "AI Readiness: Start Live AIPM Tracker",
+        "icon": "$(pulse)"
+      },
+      {
+        "command": "ai-readiness.liveStop",
+        "title": "AI Readiness: Stop Live Tracker"
+      },
+      {
+        "command": "ai-readiness.livePanel",
+        "title": "AI Readiness: Show Live Dashboard"
+      },
+      {
+        "command": "ai-readiness.vibeReport",
+        "title": "AI Readiness: Generate Vibe Report",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "ai-readiness.selectTool",
+        "title": "AI Readiness: Select Platform"
+      },
+      {
+        "command": "ai-readiness.openRun",
+        "title": "AI Readiness: Open Saved Run"
+      },
+      {
+        "command": "ai-readiness.deleteRun",
+        "title": "AI Readiness: Delete Run",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "ai-readiness.showGraph",
+        "title": "AI Readiness: Show Knowledge Graph"
+      },
+      {
+        "command": "ai-readiness.showInsights",
+        "title": "AI Readiness: AI Strategy"
+      },
+      {
+        "command": "ai-readiness.showGuide",
+        "title": "AI Readiness: Show Platform Guide"
+      },
+      {
+        "command": "ai-readiness.compareRuns",
+        "title": "AI Readiness: Compare Scans",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "ai-readiness.clearHistory",
+        "title": "AI Readiness: Clear All Scan History",
+        "icon": "$(clear-all)"
+      },
+      {
+        "command": "ai-readiness.clearSemanticCache",
+        "title": "AI Readiness: Clear Semantic Cache"
+      },
+      {
+        "command": "ai-readiness.showContext",
+        "title": "AI Readiness: Show Context Architecture"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "ai-readiness.showReport",
+          "when": "view == ai-readiness.sidebar && ai-readiness.hasResults",
+          "group": "navigation@1"
+        },
+        {
+          "command": "ai-readiness.clearHistory",
+          "when": "view == ai-readiness.sidebar && ai-readiness.hasResults",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AI Readiness Scanner",
+      "properties": {
+        "ai-readiness.selectedTool": {
+          "type": "string",
+          "default": "ask",
+          "enum": [
+            "ask",
+            "copilot",
+            "cline",
+            "cursor",
+            "roo",
+            "claude",
+            "windsurf",
+            "aider"
+          ],
+          "enumDescriptions": [
+            "Ask which tool to evaluate each time",
+            "GitHub Copilot",
+            "Cline",
+            "Cursor",
+            "Roo Code",
+            "Claude Code",
+            "Windsurf",
+            "Aider",
+            "All Tools (comprehensive)"
+          ],
+          "description": "Default AI tool to evaluate readiness for. Set to 'ask' to be prompted each time."
+        },
+        "ai-readiness.enrichmentDepth": {
+          "type": "number",
+          "default": 70,
+          "minimum": 10,
+          "maximum": 100,
+          "description": "Percentage of source files to LLM-enrich (10-100%). Higher = better semantic understanding, slower indexing."
+        },
+        "ai-readiness.llmTimeout": {
+          "type": "number",
+          "default": 45,
+          "minimum": 15,
+          "maximum": 300,
+          "description": "Default LLM call timeout in seconds. Increase for slow networks or large prompts."
+        },
+        "ai-readiness.enrichmentConcurrency": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "Number of parallel LLM enrichment calls during indexing. Higher = faster but uses more API quota."
+        },
+        "ai-readiness.enrichmentBatchSize": {
+          "type": "number",
+          "default": 10,
+          "minimum": 3,
+          "maximum": 20,
+          "description": "Number of files per LLM enrichment call. Higher = fewer API calls but larger prompts."
+        },
+        "ai-readiness.cacheTTL": {
+          "type": "number",
+          "default": 7,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "LLM result cache duration in days. Cached results are reused without re-calling the LLM."
+        },
+        "ai-readiness.dimensionWeights": {
+          "type": "object",
+          "default": {
+            "presence": 0.2,
+            "quality": 0.4,
+            "operability": 0.15,
+            "breadth": 0.25
+          },
+          "description": "EGDR scoring dimension weights. Controls how much each dimension contributes to the score. Values should sum to ~1.0. Set per-platform defaults or override globally."
+        },
+        "ai-readiness.componentTypeWeights": {
+          "type": "object",
+          "default": {
+            "service": 1.0,
+            "app": 1.0,
+            "library": 0.9,
+            "infra": 0.6,
+            "config": 0.4,
+            "script": 0.5,
+            "data": 0.3,
+            "unknown": 0.5
+          },
+          "description": "Importance multiplier per component type. Core logic (service/app) weighs more than generated code (config/data). Range: 0.0-1.0."
+        },
+        "ai-readiness.scoringMode": {
+          "type": "string",
+          "enum": [
+            "lenient",
+            "balanced",
+            "strict"
+          ],
+          "default": "balanced",
+          "description": "Controls how harshly uneven dimension scores are penalized. Lenient (80/20): score reflects strengths. Balanced (65/35): balances strengths and gaps. Strict (50/50): score reflects weakest area."
+        },
+        "ai-readiness.signalWeights": {
+          "type": "object",
+          "default": {},
+          "description": "Per-signal weight multipliers (0.25-3.0). Controls how much individual signals contribute within their EGDR dimension. Empty = use defaults."
+        },
+        "ai-readiness.contextBudgets": {
+          "type": "object",
+          "default": {
+            "copilot": 200000,
+            "cline": 200000,
+            "cursor": 128000,
+            "claude": 200000,
+            "roo": 200000,
+            "windsurf": 128000,
+            "aider": 128000
+          },
+          "description": "Context window budget (in tokens) per platform. Used to calculate Context Efficiency \u2014 how much of the agent's context window your instruction files consume."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "vsce package --no-dependencies",
+    "lint": "eslint src/",
+    "prepackage": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vitest/coverage-v8": "^4.1.1",
+    "@vscode/vsce": "^3.0.0",
+    "esbuild": "^0.24.0",
+    "eslint": "^9.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.1"
+  },
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#0D0E15",
+    "theme": "dark"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/alex-keagel/vscode-ai-readiness"
+  },
+  "bugs": {
+    "url": "https://github.com/alex-keagel/vscode-ai-readiness/issues"
+  },
+  "homepage": "https://github.com/alex-keagel/vscode-ai-readiness#readme"
+}
