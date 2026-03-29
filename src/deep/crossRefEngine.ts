@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { CopilotClient } from '../llm/copilotClient';
 import { logger } from '../logging';
 import { InstructionProfile, CodebaseProfile, CoverageGap, DriftIssue, CrossRefResult, InstructionQuality } from './types';
+import { GapRelevanceAgent } from './relevanceAgents';
 
 export class CrossRefEngine {
   constructor(private copilotClient?: CopilotClient) {}
@@ -13,9 +14,14 @@ export class CrossRefEngine {
   ): Promise<CrossRefResult> {
     const timer = logger.time('CrossRefEngine');
 
-    const coverageGaps = this.findCoverageGaps(instructions, codebase);
+    const rawGaps = this.findCoverageGaps(instructions, codebase);
     const driftIssues = await this.findDrift(instructions, codebase, workspaceUri);
     const instructionQuality = this.scoreQuality(instructions, codebase);
+
+    // Filter gaps through relevance agent (static + LLM)
+    const relevanceAgent = new GapRelevanceAgent(this.copilotClient);
+    const coverageGaps = await relevanceAgent.filterGaps(rawGaps);
+    logger.info(`CrossRefEngine: relevance filter ${rawGaps.length} → ${coverageGaps.length} gaps`);
 
     // Coverage: % of critical modules (core-logic + entry-point with >100 lines) mentioned
     const criticalModules = codebase.modules.filter(m =>

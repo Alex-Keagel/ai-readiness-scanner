@@ -2,8 +2,9 @@ import * as vscode from 'vscode';
 import { CopilotClient } from '../llm/copilotClient';
 import { logger } from '../logging';
 import { CodebaseProfile, ModuleProfile, CodebasePipeline } from './types';
+import { ExclusionClassifierAgent, TestClassificationAgent } from './relevanceAgents';
 
-const EXCLUDE = '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/out/**,**/vendor/**';
+const EXCLUDE = '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/out/**,**/vendor/**,**/.venv/**,**/venv/**,**/.idea/**,**/.vs/**,**/.settings/**,**/__pycache__/**,**/.tox/**,**/.mypy_cache/**,**/.pytest_cache/**';
 
 export class CodebaseProfiler {
   constructor(private copilotClient?: CopilotClient) {}
@@ -18,18 +19,29 @@ export class CodebaseProfiler {
       EXCLUDE, 500
     );
 
-    // Analyze each file
+    // Analyze each file (skip statically excluded paths)
     const modules: ModuleProfile[] = [];
     const importGraph = new Map<string, string[]>(); // file → imported files
 
     for (const uri of sourceFiles) {
       try {
-        const content = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf-8');
         const relPath = vscode.workspace.asRelativePath(uri, false);
+        if (ExclusionClassifierAgent.isExcluded(relPath)) continue;
+        const content = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf-8');
         const mod = this.analyzeModule(relPath, content);
         modules.push(mod);
         importGraph.set(relPath, this.extractImportPaths(content, relPath));
       } catch { /* skip */ }
+    }
+
+    // Refine test classifications via TestClassificationAgent
+    const testAgent = new TestClassificationAgent(this.copilotClient);
+    const testClassifications = await testAgent.classify(modules);
+    for (const mod of modules) {
+      const cls = testClassifications.get(mod.path);
+      if (cls === 'test' || cls === 'test-utility') {
+        mod.role = 'test';
+      }
     }
 
     // Calculate fan-in
@@ -117,7 +129,9 @@ export class CodebaseProfiler {
 
     // Detect role
     let role: ModuleProfile['role'] = 'unknown';
+    const fileName = path.split('/').pop() || '';
     if (path.includes('.test.') || path.includes('.spec.') || path.includes('__tests__')) role = 'test';
+    else if (path.includes('/tests/') || path.includes('/test/') || fileName.startsWith('test_') || fileName === 'conftest.py') role = 'test';
     else if (path.includes('types') && !path.includes('test')) role = 'type-def';
     else if (path.match(/extension\.(ts|js)$/) || path.match(/main\.(ts|js)$/) || path.match(/index\.(ts|js)$/)) role = 'entry-point';
     else if (path.includes('/ui/') || path.includes('/views/') || path.includes('/components/')) role = 'ui';

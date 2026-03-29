@@ -4,6 +4,7 @@ export { CrossRefEngine } from './crossRefEngine';
 export { RecommendationSynthesizer } from './recommendationSynthesizer';
 export { OutputValidator } from './outputValidator';
 export { SkillEvaluator } from './skillEvaluator';
+export { ExclusionClassifierAgent, TestClassificationAgent, GapRelevanceAgent, RecommendationValidatorAgent } from './relevanceAgents';
 export * from './types';
 
 import { CopilotClient } from '../llm/copilotClient';

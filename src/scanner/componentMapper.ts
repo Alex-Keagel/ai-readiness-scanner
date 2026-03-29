@@ -450,6 +450,7 @@ export class ComponentMapper {
     'node_modules', '.git', 'dist', 'build', 'vendor', '__pycache__',
     '.venv', 'venv', 'target', 'coverage', '.next', '.nuxt', 'out',
     '.tox', '.mypy_cache', '.pytest_cache', '.ruff_cache', 'egg-info',
+    '.idea', '.vs', '.settings', '.eclipse', '.history',
   ]);
 
   /** Well-known directory names that often contain sub-components */
