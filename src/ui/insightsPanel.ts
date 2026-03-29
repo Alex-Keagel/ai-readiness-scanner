@@ -73,6 +73,38 @@ export class InsightsPanel {
       .flatMap(l => l.signals)
       .filter(s => !s.detected && s.level <= nextLevel);
 
+    // Compute Action Center totals (same logic as recommendationsPanel.buildRecommendations)
+    const QUALITY_THRESHOLD = 40;
+    const allSignals = report.levels.flatMap(ls => ls.signals);
+    const actionableSignals = allSignals.filter(s => !s.detected || s.score < QUALITY_THRESHOLD);
+    let acCritical = 0, acImportant = 0, acSuggestion = 0;
+    for (const s of actionableSignals) {
+      if (!s.detected && s.level <= 3) acCritical++;
+      else if (!s.detected) acImportant++;
+      else acSuggestion++;
+    }
+    // Add insight-based recs
+    for (const i of insights) {
+      if (i.severity === 'critical') acCritical++;
+      else if (i.severity === 'important') acImportant++;
+      else acSuggestion++;
+    }
+    // Add component-quality recs
+    const lowComponents = (report.componentScores || []).filter(c => c.overallScore < 50);
+    for (const comp of lowComponents) {
+      const compSignals = comp.signals || [];
+      if (!compSignals.some(s => s.signalId?.includes('readme') && s.detected)) {
+        if (comp.overallScore < 30) acImportant++; else acSuggestion++;
+      }
+      if (!compSignals.some(s => s.signalId?.includes('doc') && s.detected) && comp.overallScore < 35) {
+        acSuggestion++;
+      }
+    }
+    const acTotal = acCritical + acImportant + acSuggestion;
+
+    // Generate executive brief
+    const executiveBrief = this.generateExecutiveBrief(report, acCritical, acImportant, acSuggestion, currentLevel, nextLevel);
+
     return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -147,6 +179,27 @@ export class InsightsPanel {
     .issue-row .issue-titles { color: var(--text-secondary); font-size: 0.85em; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50%; }
     .btn-primary { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--color-cyan); background: linear-gradient(135deg, rgba(0,210,255,0.15), rgba(0,210,255,0.05)); color: var(--color-cyan); cursor: pointer; font-size: 0.9em; font-weight: 600; transition: all 0.15s; }
     .btn-primary:hover { background: linear-gradient(135deg, rgba(0,210,255,0.25), rgba(0,210,255,0.1)); }
+
+    /* Executive Brief */
+    .exec-brief { margin: 16px 0 24px; }
+    .exec-brief .brief-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .brief-panel { border-radius: 10px; padding: 16px; }
+    .brief-panel h3 { font-size: 0.9em; margin: 0 0 12px; color: var(--text-secondary); letter-spacing: 0.5px; text-transform: uppercase; }
+    .brief-counts { display: flex; gap: 16px; }
+    .brief-count { text-align: center; flex: 1; }
+    .brief-count .num { font-size: 1.8em; font-weight: bold; line-height: 1; }
+    .brief-count .lbl { font-size: 0.75em; color: var(--text-secondary); margin-top: 4px; }
+    .brief-count.crit .num { color: var(--color-crimson); }
+    .brief-count.imp .num { color: var(--level-3); }
+    .brief-count.sug .num { color: var(--color-cyan); }
+    .brief-focus { margin-top: 16px; padding: 12px; border-radius: 8px; background: var(--bg-elevated); font-size: 0.85em; line-height: 1.5; }
+    .brief-focus .focus-label { font-weight: 600; color: var(--color-amber); margin-bottom: 4px; }
+    .brief-focus ul { margin: 6px 0 0; padding-left: 18px; }
+    .brief-focus li { margin: 3px 0; }
+    .score-ring { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 8px 0; }
+    .score-ring .ring-score { font-size: 2.6em; font-weight: bold; color: var(--text-primary); }
+    .score-ring .ring-label { font-size: 0.85em; color: var(--text-secondary); }
+    .level-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; border-radius: 20px; font-size: 0.85em; font-weight: 600; background: linear-gradient(135deg, rgba(0,210,255,0.12), rgba(0,210,255,0.04)); border: 1px solid var(--color-cyan); color: var(--color-cyan); margin-top: 8px; }
   </style>
 </head>
 <body>
@@ -155,19 +208,32 @@ export class InsightsPanel {
     ${toolMeta?.icon || ''} ${this.escapeHtml(toolName)} · L${report.primaryLevel} ${MATURITY_LEVELS[report.primaryLevel].name} · Score: ${report.overallScore}/100
   </div>
 
-  <div class="summary glass-card">
-    <div class="summary-item critical">
-      <div class="count">${critical.length}</div>
-      <div class="label">🔴 Critical</div>
+  <div class="exec-brief">
+    <div class="brief-grid">
+      <div class="brief-panel glass-card">
+        <h3>📊 Readiness Overview</h3>
+        <div class="score-ring">
+          <div>
+            <div class="ring-score">${report.overallScore}</div>
+            <div class="ring-label">out of 100</div>
+          </div>
+          <div style="text-align:left">
+            <div class="level-badge">L${currentLevel} ${MATURITY_LEVELS[currentLevel].name}</div>
+            <div style="font-size:0.8em;color:var(--text-secondary);margin-top:6px">${missingSignals.length} signal${missingSignals.length !== 1 ? 's' : ''} to reach L${nextLevel}</div>
+          </div>
+        </div>
+      </div>
+      <div class="brief-panel glass-card">
+        <h3>🔧 Action Items</h3>
+        <div class="brief-counts">
+          <div class="brief-count crit"><div class="num">${acCritical}</div><div class="lbl">Critical</div></div>
+          <div class="brief-count imp"><div class="num">${acImportant}</div><div class="lbl">Important</div></div>
+          <div class="brief-count sug"><div class="num">${acSuggestion}</div><div class="lbl">Suggestions</div></div>
+        </div>
+        <div style="text-align:center;margin-top:8px;font-size:0.8em;color:var(--text-secondary)">${acTotal} total recommendations</div>
+      </div>
     </div>
-    <div class="summary-item important">
-      <div class="count">${important.length}</div>
-      <div class="label">🟡 Important</div>
-    </div>
-    <div class="summary-item suggestion">
-      <div class="count">${suggestions.length}</div>
-      <div class="label">🔵 Suggestions</div>
-    </div>
+    ${executiveBrief}
   </div>
 
   ${this.renderPathFlowGraph(report, currentLevel, missingSignals)}
@@ -176,14 +242,13 @@ export class InsightsPanel {
 
   ${this.renderComponentHealth(report)}
 
-  ${(critical.length + important.length + suggestions.length) > 0 ? `
+  ${insights.length > 0 ? `
   <div class="section">
-    <h2>📋 Issue Summary</h2>
+    <h2>📋 Strategic Insights</h2>
     <div class="issue-summary glass-card">
       ${critical.length > 0 ? `<div class="issue-row critical"><span class="issue-dot">🔴</span><span>${critical.length} Critical</span><span class="issue-titles">${critical.slice(0, 3).map(i => this.escapeHtml(i.title)).join(' · ')}</span></div>` : ''}
       ${important.length > 0 ? `<div class="issue-row important"><span class="issue-dot">🟡</span><span>${important.length} Important</span><span class="issue-titles">${important.slice(0, 3).map(i => this.escapeHtml(i.title)).join(' · ')}</span></div>` : ''}
       ${suggestions.length > 0 ? `<div class="issue-row suggestion"><span class="issue-dot">🔵</span><span>${suggestions.length} Suggestions</span><span class="issue-titles">${suggestions.slice(0, 3).map(i => this.escapeHtml(i.title)).join(' · ')}</span></div>` : ''}
-      <button class="btn btn-primary" style="margin-top:12px;width:100%" onclick="vscode.postMessage({command:'open-action-center'})">🔧 Open Action Center →</button>
     </div>
   </div>` : ''}
 
@@ -248,6 +313,60 @@ export class InsightsPanel {
 
   private escapeHtml(text: string): string {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  private generateExecutiveBrief(
+    report: ReadinessReport,
+    acCritical: number, acImportant: number, acSuggestion: number,
+    currentLevel: number, nextLevel: number
+  ): string {
+    const bullets: string[] = [];
+    const allSignals = report.levels.flatMap(ls => ls.signals);
+    const detectedCount = allSignals.filter(s => s.detected).length;
+    const totalSignals = allSignals.length;
+
+    // Biggest bottleneck
+    if (acCritical > 0) {
+      const missingL2L3 = allSignals.filter(s => !s.detected && s.level <= 3);
+      if (missingL2L3.length > 0) {
+        bullets.push(`<strong>${missingL2L3.length} foundational signals</strong> are missing (L2-L3) — these block agents from reliably editing your code`);
+      }
+    }
+
+    // Low-scoring components
+    const lowComps = (report.componentScores || []).filter(c => c.overallScore < 40);
+    if (lowComps.length > 0) {
+      const worstComp = lowComps.sort((a, b) => a.overallScore - b.overallScore)[0];
+      bullets.push(`<strong>${lowComps.length} component${lowComps.length > 1 ? 's score' : ' scores'} below 40</strong> — "${this.escapeHtml(worstComp.name)}" (${worstComp.overallScore}/100) is the weakest link`);
+    }
+
+    // Quality vs presence gap
+    const detectedLowQuality = allSignals.filter(s => s.detected && s.score < 40);
+    if (detectedLowQuality.length > 5) {
+      bullets.push(`<strong>${detectedLowQuality.length} signals are present but low quality</strong> — files exist but content doesn't help agents understand the code`);
+    }
+
+    // Path to next level
+    const missingForNext = allSignals.filter(s => !s.detected && s.level <= nextLevel);
+    if (missingForNext.length <= 3 && missingForNext.length > 0) {
+      bullets.push(`Only <strong>${missingForNext.length} signal${missingForNext.length > 1 ? 's' : ''}</strong> away from reaching Level ${nextLevel} — this is achievable in one session`);
+    }
+
+    // Signal detection rate
+    const detectionRate = totalSignals > 0 ? Math.round((detectedCount / totalSignals) * 100) : 0;
+    if (detectionRate < 50) {
+      bullets.push(`Signal detection rate is <strong>${detectionRate}%</strong> — more than half of expected configuration files are missing`);
+    }
+
+    if (bullets.length === 0) {
+      bullets.push(`Your workspace is well-configured at Level ${currentLevel} with ${detectionRate}% signal coverage`);
+    }
+
+    return `<div class="brief-focus glass-card">
+      <div class="focus-label">🎯 What Matters Most</div>
+      <ul>${bullets.map(b => `<li>${b}</li>`).join('')}</ul>
+      <button class="btn-primary" style="margin-top:12px;width:100%" onclick="vscode.postMessage({command:'open-action-center'})">🔧 Open Action Center (${acCritical + acImportant + acSuggestion} items) →</button>
+    </div>`;
   }
 
   private renderPathFlowGraph(report: ReadinessReport, currentLevel: number, missingSignals: SignalResult[]): string {
