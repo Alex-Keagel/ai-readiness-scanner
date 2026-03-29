@@ -26,7 +26,7 @@ const mockClient = {
     }
     return '[]';
   },
-  analyzeFast: async () => '{}',
+  analyzeFast: async (prompt) => { if (prompt.includes("platform readiness")) return JSON.stringify([{dimension:"Business Logic Alignment",narrative:"Good alignment."},{dimension:"Type \analyzeFast: async () => '{}' Environment Strictness",narrative:"Strong types."}]); if (prompt.includes("tooling ecosystem")) return JSON.stringify({status:"Capable",items:[{name:"Skill Portability",severity:"warning",narrative:"1 skill."},{name:"Tooling Execution Risk",severity:"critical",narrative:"Missing script."},{name:"Context Collision",severity:"good",narrative:"No collision."}]}); if (prompt.includes("Friction Map")) return JSON.stringify([{title:"Fix Ghost Map",narrative:"References missing files.",actions:[{action:"Remove bad ref",impact:"Eliminates hallucinations"}]}]); return "[]"; },
 } as any;
 
 function makeReport(overrides: Record<string, any> = {}) {
@@ -127,7 +127,7 @@ describe('NarrativeGenerator', () => {
   });
 
   it('handles LLM failure with fallbacks', async () => {
-    const failGen = new NarrativeGenerator({ analyze: async () => { throw new Error('down'); }, analyzeFast: async () => '{}' } as any);
+    const failGen = new NarrativeGenerator({ analyze: async () => { throw new Error('down'); }, analyzeFast: async (prompt) => { if (prompt.includes("platform readiness")) return JSON.stringify([{dimension:"Business Logic Alignment",narrative:"Good alignment."},{dimension:"Type \analyzeFast: async () => '{}' Environment Strictness",narrative:"Strong types."}]); if (prompt.includes("tooling ecosystem")) return JSON.stringify({status:"Capable",items:[{name:"Skill Portability",severity:"warning",narrative:"1 skill."},{name:"Tooling Execution Risk",severity:"critical",narrative:"Missing script."},{name:"Context Collision",severity:"good",narrative:"No collision."}]}); if (prompt.includes("Friction Map")) return JSON.stringify([{title:"Fix Ghost Map",narrative:"References missing files.",actions:[{action:"Remove bad ref",impact:"Eliminates hallucinations"}]}]); return "[]"; } } as any);
     const result = await failGen.generate(makeReport());
     expect(result.platformReadiness).toHaveLength(5);
     expect(result.toolingHealth.status).toBeTruthy();
@@ -135,7 +135,7 @@ describe('NarrativeGenerator', () => {
   });
 
   it('handles malformed LLM JSON', async () => {
-    const badGen = new NarrativeGenerator({ analyze: async () => 'not json!!!', analyzeFast: async () => '{}' } as any);
+    const badGen = new NarrativeGenerator({ analyze: async () => 'not json!!!', analyzeFast: async (prompt) => { if (prompt.includes("platform readiness")) return JSON.stringify([{dimension:"Business Logic Alignment",narrative:"Good alignment."},{dimension:"Type \analyzeFast: async () => '{}' Environment Strictness",narrative:"Strong types."}]); if (prompt.includes("tooling ecosystem")) return JSON.stringify({status:"Capable",items:[{name:"Skill Portability",severity:"warning",narrative:"1 skill."},{name:"Tooling Execution Risk",severity:"critical",narrative:"Missing script."},{name:"Context Collision",severity:"good",narrative:"No collision."}]}); if (prompt.includes("Friction Map")) return JSON.stringify([{title:"Fix Ghost Map",narrative:"References missing files.",actions:[{action:"Remove bad ref",impact:"Eliminates hallucinations"}]}]); return "[]"; } } as any);
     const result = await badGen.generate(makeReport());
     expect(result.platformReadiness).toHaveLength(5);
   });
@@ -148,7 +148,7 @@ describe('NarrativeGenerator', () => {
         }
         return '[]';
       },
-      analyzeFast: async () => '{}',
+      analyzeFast: async (prompt) => { if (prompt.includes("platform readiness")) return JSON.stringify([{dimension:"Business Logic Alignment",narrative:"Good alignment."},{dimension:"Type \analyzeFast: async () => '{}' Environment Strictness",narrative:"Strong types."}]); if (prompt.includes("tooling ecosystem")) return JSON.stringify({status:"Capable",items:[{name:"Skill Portability",severity:"warning",narrative:"1 skill."},{name:"Tooling Execution Risk",severity:"critical",narrative:"Missing script."},{name:"Context Collision",severity:"good",narrative:"No collision."}]}); if (prompt.includes("Friction Map")) return JSON.stringify([{title:"Fix Ghost Map",narrative:"References missing files.",actions:[{action:"Remove bad ref",impact:"Eliminates hallucinations"}]}]); return "[]"; },
     } as any;
     const result = await new NarrativeGenerator(manyClient).generate(makeReport());
     expect(result.frictionMap.length).toBeLessThanOrEqual(5);

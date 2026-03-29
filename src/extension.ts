@@ -202,7 +202,38 @@ export function activate(context: vscode.ExtensionContext) {
           }
         }
 
-        // Step 3: Generate narrative if not present
+        // Step 3: Run deep analysis (cross-reference instructions vs code)
+        progress.report({ message: '🔬 Deep analysis: cross-referencing instructions vs code...', increment: 15 });
+        try {
+          const { runDeepAnalysis } = await import('./deep');
+          const deepResult = await runDeepAnalysis(workspaceFolder.uri, copilotClient, tool, progress);
+          // Merge deep recommendations into insights
+          if (deepResult.recommendations.length > 0) {
+            if (!report!.insights) report!.insights = [];
+            for (const rec of deepResult.recommendations) {
+              report!.insights.push({
+                title: rec.title,
+                recommendation: rec.suggestedContent || rec.description,
+                severity: rec.severity === 'critical' ? 'critical' : rec.severity === 'important' ? 'important' : 'suggestion',
+                category: rec.type,
+                estimatedImpact: `+${rec.impactScore} points`,
+                affectedComponent: rec.affectedModules.join(', '),
+              });
+            }
+            // Store deep quality scores on report
+            (report as any).deepAnalysis = {
+              instructionQuality: deepResult.crossRef.instructionQuality,
+              coveragePercent: deepResult.crossRef.coveragePercent,
+              gapCount: deepResult.crossRef.coverageGaps.length,
+              driftCount: deepResult.crossRef.driftIssues.length,
+            };
+            logger.info(`Action Center: deep analysis added ${deepResult.recommendations.length} evidence-backed recommendations`);
+          }
+        } catch (err) {
+          logger.warn('Action Center: deep analysis failed, using standard insights', err);
+        }
+
+        // Step 4: Generate narrative if not present
         if (!report!.narrativeSections) {
           progress.report({ message: '📊 Generating report narrative...', increment: 10 });
           try {
@@ -1230,29 +1261,28 @@ async function generateViaLLM(
   const projectCtx = formatProjectContext(report.projectContext);
 
   // Determine if this could be a multi-file recommendation
-  const isMultiFile = recommendation.includes('hierarchy') || recommendation.includes('directory') ||
-    recommendation.includes('Create `.clinerules') || recommendation.includes('memory-bank') ||
-    recommendation.includes('workflow') || recommendation.match(/create.*files/i);
+  const isMultiFile = true; // Always request structured multi-file format for reliability
 
-  const formatInstruction = isMultiFile
-    ? `Generate content for EACH file separately. Use this exact format for each file:
+  const formatInstruction = `If generating multiple files, use this exact format for EACH file:
 
 === FILE: path/to/file.md ===
-(file content here)
+(file content here — no code fences wrapping the content)
 === END FILE ===
 
-Generate each file individually with its full path. Do NOT combine multiple files into one block.`
-    : `Generate ONLY the file content — no explanation, no markdown code fences around the entire output. Follow the platform's exact file format.`;
+If generating a single file, output ONLY the file content with no wrapping.
+Always use the full file path starting from the repository root.
+Do NOT wrap file content in markdown code fences (\`\`\`).`;
 
   const content = await copilotClient.analyze(
     `${expertPrompt}\n\nPROJECT CONTEXT:\n${projectCtx}\n\nTASK: ${recommendation}\n\n${formatInstruction}`,
     undefined, 120_000
   );
 
-  // Parse multi-file response
-  const fileBlocks = content.matchAll(/===\s*FILE:\s*(.+?)\s*===\n([\s\S]*?)===\s*END FILE\s*===/gi);
+  // Parse multi-file response — try 3 formats
   const parsedFiles: { filePath: string; content: string; existing: string; signalId: string }[] = [];
 
+  // Format 1: === FILE: path === ... === END FILE ===
+  const fileBlocks = content.matchAll(/===\s*FILE:\s*(.+?)\s*===\n([\s\S]*?)===\s*END FILE\s*===/gi);
   for (const match of fileBlocks) {
     const filePath = match[1].trim();
     const fileContent = match[2].trim();
@@ -1264,7 +1294,8 @@ Generate each file individually with its full path. Do NOT combine multiple file
   // If multi-file parsing found files, return them
   if (parsedFiles.length > 0) {
     logger.info(`generateViaLLM: parsed ${parsedFiles.length} files from multi-file response`);
-    return parsedFiles;
+    const protected = protectSourceFiles(parsedFiles, wsFolder);
+    return validateAndRetry(protected, recommendation, signalId, tool, report, wsFolder);
   }
 
   // Fallback: try to split by markdown ## headers with file paths
@@ -1283,7 +1314,30 @@ Generate each file individually with its full path. Do NOT combine multiple file
 
   if (parsedFiles.length > 0) {
     logger.info(`generateViaLLM: parsed ${parsedFiles.length} files from header-based response`);
-    return parsedFiles;
+    const protected = protectSourceFiles(parsedFiles, wsFolder);
+    return validateAndRetry(protected, recommendation, signalId, tool, report, wsFolder);
+  }
+
+  // Format 3: **File: `path`** or **File: path** with ```code fences```
+  const boldFileSections = content.split(/^(?=\*\*File:\s*)/m).filter(s => s.trim());
+  for (const sec of boldFileSections) {
+    const pathMatch = sec.match(/^\*\*File:\s*`?([^`*\n]+)`?\s*\*\*/);
+    if (!pathMatch) continue;
+    const filePath = pathMatch[1].trim();
+    const body = sec.replace(/^\*\*File:.*\*\*\s*\n*/, '').trim();
+    // Extract content from code fences if present
+    const fenced = body.match(/```(?:markdown|yaml|json|md|typescript|javascript)?\n([\s\S]*?)```/);
+    const fileContent = fenced ? fenced[1].trim() : body;
+    if (fileContent.length < 10) continue; // skip empty sections
+    let existing = '';
+    try { existing = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(wsFolder.uri, filePath))).toString('utf-8'); } catch { /* new */ }
+    parsedFiles.push({ filePath, content: fileContent, existing, signalId });
+  }
+
+  if (parsedFiles.length > 0) {
+    logger.info(`generateViaLLM: parsed ${parsedFiles.length} files from **File:** format`);
+    const protected = protectSourceFiles(parsedFiles, wsFolder);
+    return validateAndRetry(protected, recommendation, signalId, tool, report, wsFolder);
   }
 
   // Final fallback: single file
@@ -1295,16 +1349,110 @@ Generate each file individually with its full path. Do NOT combine multiple file
 
   parsedFiles.push({ filePath, content, existing, signalId });
 
-  // Protect existing source/config files from being overwritten
-  // For existing files, create advisory suggestions instead of replacing content
-  return parsedFiles.map(f => {
-    if (!f.existing) return f; // New file — safe to create
-    
-    // Only allow overwriting .md files (documentation) — everything else gets advisory
+  const protected1 = protectSourceFiles(parsedFiles, wsFolder);
+  return validateAndRetry(protected1, recommendation, signalId, tool, report, wsFolder);
+}
+
+async function validateAndRetry(
+  files: { filePath: string; content: string; existing: string; signalId: string }[],
+  recommendation: string,
+  signalId: string,
+  tool: AITool,
+  report: ReadinessReport,
+  wsFolder: vscode.WorkspaceFolder,
+  attempt: number = 1
+): Promise<{ filePath: string; content: string; existing: string; signalId: string }[]> {
+  if (!copilotClient.isAvailable() || files.length === 0 || attempt > 2) return files;
+
+  try {
+    const { OutputValidator } = await import('./deep/outputValidator');
+    const validator = new OutputValidator(copilotClient);
+    const result = await validator.validate(
+      files.map(f => ({ filePath: f.filePath, content: f.content })),
+      recommendation
+    );
+
+    if (result.valid) {
+      if (result.issues.length > 0) {
+        logger.info(`Validator: ${result.issues.length} warnings (non-blocking): ${result.issues.map(i => i.issue).join('; ')}`);
+      }
+      return files;
+    }
+
+    // Validation failed — fix deterministic issues inline
+    const errorIssues = result.issues.filter(i => i.severity === 'error');
+    logger.warn(`Validator: ${errorIssues.length} errors found on attempt ${attempt}, fixing...`);
+
+    let needsRetry = false;
+    for (const issue of errorIssues) {
+      const fileIdx = files.findIndex(f => f.filePath === issue.file);
+      if (fileIdx < 0) continue;
+
+      // Auto-fix: code fence wrapping
+      if (issue.issue.includes('code fences')) {
+        files[fileIdx].content = files[fileIdx].content
+          .replace(/^```\w*\n/, '').replace(/\n```\s*$/, '');
+        logger.info(`Validator: auto-fixed code fence wrapping in ${issue.file}`);
+      }
+      // Auto-fix: JSON comments
+      else if (issue.issue.includes('comments') && issue.file.endsWith('.json')) {
+        files[fileIdx].content = files[fileIdx].content
+          .split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+        logger.info(`Validator: auto-removed JSON comments in ${issue.file}`);
+      }
+      // Auto-fix: empty content
+      else if (issue.issue.includes('empty')) {
+        files.splice(fileIdx, 1);
+        logger.info(`Validator: removed empty file ${issue.file}`);
+      }
+      // Other errors need LLM retry
+      else {
+        needsRetry = true;
+      }
+    }
+
+    if (needsRetry && attempt < 2) {
+      // Retry with validator feedback
+      logger.info(`Validator: retrying generation with feedback (attempt ${attempt + 1})`);
+      const feedback = errorIssues.map(i => `- ${i.file}: ${i.issue}${i.suggestion ? '. Fix: ' + i.suggestion : ''}`).join('\n');
+      const expertPrompt = getPlatformExpertPrompt(tool);
+      const projectCtx = formatProjectContext(report.projectContext);
+
+      const retryContent = await copilotClient.analyze(
+        `${expertPrompt}\n\nPROJECT CONTEXT:\n${projectCtx}\n\nORIGINAL TASK: ${recommendation}\n\nYour previous output had these problems:\n${feedback}\n\nFix these issues and regenerate. Use === FILE: path === format. Do NOT wrap content in code fences.`,
+        undefined, 120_000
+      );
+
+      // Re-parse
+      const retryFiles: { filePath: string; content: string; existing: string; signalId: string }[] = [];
+      const retryBlocks = retryContent.matchAll(/===\s*FILE:\s*(.+?)\s*===\n([\s\S]*?)===\s*END FILE\s*===/gi);
+      for (const match of retryBlocks) {
+        let existing = '';
+        try { existing = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(wsFolder.uri, match[1].trim()))).toString('utf-8'); } catch { /* new */ }
+        retryFiles.push({ filePath: match[1].trim(), content: match[2].trim(), existing, signalId });
+      }
+
+      if (retryFiles.length > 0) {
+        const protectedRetry = protectSourceFiles(retryFiles, wsFolder);
+        return validateAndRetry(protectedRetry, recommendation, signalId, tool, report, wsFolder, attempt + 1);
+      }
+    }
+
+    return files;
+  } catch (err) {
+    logger.debug('Validator: validation failed, returning unvalidated files', err);
+    return files;
+  }
+}
+
+function protectSourceFiles(
+  files: { filePath: string; content: string; existing: string; signalId: string }[],
+  wsFolder: vscode.WorkspaceFolder
+): { filePath: string; content: string; existing: string; signalId: string }[] {
+  return files.map(f => {
+    if (!f.existing) return f;
     const ext = f.filePath.split('.').pop()?.toLowerCase() || '';
-    if (ext === 'md') return f; // Markdown files can be overwritten (they're documentation)
-    
-    // All other existing files: redirect to advisory suggestions
+    if (ext === 'md') return f;
     const suggestPath = `${f.filePath}.suggestions.md`;
     logger.info(`generateViaLLM: protecting existing "${f.filePath}" → advisory "${suggestPath}"`);
     return {
@@ -1419,13 +1567,32 @@ Generate ONLY the file content — no explanation, no markdown code fences aroun
 
   try {
     logger.info(`Generate+Diff: using ${AI_TOOLS[tool]?.name || tool} expert for "${signalId}"`);
-    const content = await copilotClient.analyze(prompt, undefined, 120_000);
+    let content = await copilotClient.analyze(prompt, undefined, 120_000);
 
     // Extract file path from recommendation
     const pathMatch = recommendation.match(/`([^`]+\.[a-z]+)`/i)
       || recommendation.match(/Create\s+(\S+\.\w+)/i)
       || recommendation.match(/(\S+\/\S+\.\w+)/);
     const filePath = pathMatch?.[1] || `generated-${signalId.replace(/[^a-z0-9]/gi, '-').slice(0, 30)}.md`;
+
+    // Validate generated content
+    try {
+      const { OutputValidator } = await import('./deep/outputValidator');
+      const validator = new OutputValidator(copilotClient);
+      const valResult = await validator.validate([{ filePath, content }], recommendation);
+      if (!valResult.valid) {
+        const errors = valResult.issues.filter(i => i.severity === 'error');
+        logger.warn(`Generate+Diff: validation found ${errors.length} errors, auto-fixing...`);
+        // Auto-fix code fence wrapping
+        if (content.trimStart().startsWith('```') && content.trimEnd().endsWith('```')) {
+          content = content.replace(/^```\w*\n/, '').replace(/\n```\s*$/, '');
+        }
+        // Auto-fix JSON comments
+        if (filePath.endsWith('.json') && /^\s*\/\//m.test(content)) {
+          content = content.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+        }
+      }
+    } catch { /* validation optional */ }
 
     const targetUri = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
 
