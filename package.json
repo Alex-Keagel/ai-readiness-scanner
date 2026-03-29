@@ -2,7 +2,7 @@
   "name": "ai-readiness-scanner",
   "displayName": "AI Readiness Scanner",
   "description": "Score your codebase AI readiness across 7 platforms (Copilot, Cline, Cursor, Claude, Roo, Windsurf, Aider). 6-level maturity ladder, semantic analysis, one-click fixes.",
-  "version": "1.5.0",
+  "version": "1.5.1",
   "publisher": "alex-keagel",
   "engines": {
     "vscode": "^1.90.0"
@@ -347,8 +347,8 @@
         "ai-readiness.confidenceThreshold": {
           "type": "number",
           "default": 0.5,
-          "minimum": 0.0,
-          "maximum": 1.0,
+          "minimum": 0,
+          "maximum": 1,
           "description": "Minimum confidence score (0.0-1.0) for LLM-generated recommendations. Recommendations below this threshold are dimmed in the Action Center."
         }
       }
