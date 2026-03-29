@@ -681,14 +681,58 @@ export class ComponentMapper {
             });
           }
         } else {
-          // Key dir itself is a component
-          seenPaths.add(keyDir);
-          components.push({
-            name: keyDir,
-            path: keyDir,
-            language: await this.detectDirLanguage(relPattern, keyDir),
-            type: this.classifyDirType(keyDir, keyDir),
-          });
+          // No manifests — check if subdirectories have source files (modules without package.json)
+          const children = this.getDirectChildren(allFiles, basePath, keyDir);
+          const sourceChildren = [];
+          for (const child of children) {
+            if (ComponentMapper.EXCLUDED_DIRS.has(child)) continue;
+            if (child === 'test' || child === 'tests' || child === '__tests__') continue;
+            const childPath = `${keyDir}/${child}`;
+            const childFiles = allFiles.filter(f => {
+              const rel = f.path.slice(basePath.length + 1);
+              return rel.startsWith(childPath + '/');
+            });
+            if (childFiles.length >= 2) {
+              sourceChildren.push({ name: child, path: childPath, fileCount: childFiles.length });
+            }
+          }
+
+          if (sourceChildren.length >= 2) {
+            // Multiple subdirs with source files → split into separate components
+            for (const sc of sourceChildren) {
+              if (seenPaths.has(sc.path)) continue;
+              seenPaths.add(sc.path);
+              components.push({
+                name: sc.name,
+                path: sc.path,
+                language: await this.detectDirLanguage(relPattern, sc.path),
+                type: this.classifyDirType(sc.name, sc.path),
+              });
+            }
+            // Also add the parent as a group marker (for root-level files like extension.ts)
+            const rootFiles = allFiles.filter(f => {
+              const rel = f.path.slice(basePath.length + 1);
+              return rel.startsWith(keyDir + '/') && !rel.slice(keyDir.length + 1).includes('/');
+            });
+            if (rootFiles.length > 0) {
+              seenPaths.add(keyDir);
+              components.push({
+                name: keyDir,
+                path: keyDir,
+                language: await this.detectDirLanguage(relPattern, keyDir),
+                type: this.classifyDirType(keyDir, keyDir),
+              });
+            }
+          } else {
+            // Key dir itself is a single component (no meaningful subdirs)
+            seenPaths.add(keyDir);
+            components.push({
+              name: keyDir,
+              path: keyDir,
+              language: await this.detectDirLanguage(relPattern, keyDir),
+              type: this.classifyDirType(keyDir, keyDir),
+            });
+          }
         }
       }
     }
