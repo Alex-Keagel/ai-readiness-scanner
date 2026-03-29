@@ -1,9 +1,9 @@
 # AI Readiness Scanner for VS Code
 
 [![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-Install-007ACC?logo=visual-studio-code&logoColor=white)](https://marketplace.visualstudio.com/)
-[![Version](https://img.shields.io/badge/version-2.3.5-blue)](https://marketplace.visualstudio.com/)
+[![Version](https://img.shields.io/badge/version-1.4.3-blue)](https://marketplace.visualstudio.com/)
 [![Powered by](https://img.shields.io/badge/Powered%20by-GitHub%20Copilot%20LM%20API-8957e5?logo=github)](https://github.com/features/copilot)
-[![Tests](https://img.shields.io/badge/tests-234%20passing-brightgreen)](https://github.com/)
+[![Tests](https://img.shields.io/badge/tests-496%20passing-brightgreen)](https://github.com/)
 
 > **Is your codebase ready for AI coding agents?** Find out in 60 seconds.
 
@@ -61,6 +61,39 @@ Every recommendation comes with a **Generate** button that creates the exact fil
 - 🔴 **Critical** — Missing instruction files, broken configs
 - 🟡 **Important** — Missing skills, incomplete documentation
 - 🔵 **Suggestions** — Workflow playbooks, MCP integrations
+
+### 💡 AI Strategy — Executive Brief
+
+The **AI Strategy** panel gives you the big picture at a glance:
+
+- **Readiness Overview** — Score, maturity level, signals needed for the next level
+- **Action Items** — Total critical/important/suggestion counts (matching the Action Center)
+- **🎯 What Matters Most** — Auto-generated strategic bullets (missing foundational signals, low-scoring components, quality gaps)
+- **🧠 LLM Analysis** — Each AI-generated insight as a card with recommendation, category, affected component, and estimated impact
+- **Path Flow Graph** — Visual roadmap from current level to the next
+- **Best Setup** — Ideal file combination for your platform, in build order
+- **Component Health** — Lowest-scoring components that drag your overall score
+
+### 🔧 Action Center — Tactical Fixes
+
+The **Action Center** surfaces every actionable fix across three sources:
+
+- **Signal-based** — Missing and low-quality signals with auto-fix generation
+- **Insight-based** — LLM-identified issues converted to actionable cards
+- **Component-based** — Undocumented or low-scoring components needing README/docs
+- **Fix state tracking** — Approve, decline, or re-generate each fix (persisted across sessions)
+- **Multi-file generation** — Batch generate and apply fixes with confirmation
+- **Source file protection** — Existing non-`.md` files get `.suggestions.md` advisory instead of overwrite
+
+### 🧪 Deep Recommendation Engine
+
+Goes beyond surface-level checks to cross-reference your instructions against the actual codebase:
+
+- **Instruction Analyzer** — Extracts claims from instruction files (regex + LLM semantic extraction)
+- **Codebase Profiler** — Maps modules, fan-in, import graphs, and execution pipelines
+- **Cross-Reference Engine** — Finds coverage gaps, path drift, structural drift, and semantic drift
+- **Recommendation Synthesizer** — Generates evidence-backed fixes with exact file content
+- **Output Validator** — Validates all LLM-generated content (deterministic + LLM checks, auto-fix, retry)
 
 ### 📊 Codebase Readiness Metrics
 
@@ -128,12 +161,17 @@ All panels use a purpose-built dark theme with glass-morphism cards, glow border
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `ai-readiness.selectedTool` | Default AI platform | `ask` (prompts each time) |
-| `ai-readiness.enrichmentDepth` | % of files to LLM-enrich (10-100) | `70` |
-| `ai-readiness.llmTimeout` | LLM call timeout in seconds | `45` |
-| `ai-readiness.enrichmentConcurrency` | Parallel LLM calls | `5` |
-| `ai-readiness.enrichmentBatchSize` | Files per LLM batch | `10` |
-| `ai-readiness.cacheTTL` | Cache lifetime in days | `7` |
+| `selectedTool` | Default AI platform | `ask` (prompts each time) |
+| `enrichmentDepth` | % of files to LLM-enrich (10-100) | `70` |
+| `llmTimeout` | LLM call timeout in seconds | `45` |
+| `enrichmentConcurrency` | Parallel LLM calls | `5` |
+| `enrichmentBatchSize` | Files per LLM batch | `10` |
+| `cacheTTL` | Cache lifetime in days | `1` |
+| `dimensionWeights` | EGDR dimension weights (presence/quality/operability/breadth) | `{P:0.2, Q:0.4, O:0.15, B:0.25}` |
+| `componentTypeWeights` | Importance multiplier per component type | `{service:1, app:1, library:0.9, ...}` |
+| `scoringMode` | Harmonic blend ratio: `lenient`, `balanced`, `strict` | `balanced` |
+| `signalWeights` | Per-signal weight overrides (0.25-3.0) | `{}` |
+| `contextBudgets` | Context window budget per platform (tokens) | `{copilot:200K, cline:200K, ...}` |
 
 All settings are accessible from the sidebar settings panel.
 
@@ -284,14 +322,21 @@ Access via Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
 | Command | Description |
 |---------|-------------|
-| `AI Readiness: Scan Workspace` | Run a full scan |
-| `AI Readiness: Quick Scan` | Fast deterministic scan |
-| `AI Readiness: Show Insights` | Open insights panel |
+| `AI Readiness: Scan Workspace` | Run a full scan with LLM analysis |
+| `AI Readiness: Quick Scan` | Fast deterministic scan (no LLM) |
+| `AI Readiness: Show Insights` | Open AI Strategy panel |
 | `AI Readiness: Show Guide` | Platform configuration guide |
 | `AI Readiness: Show Graph` | Repository structure tree |
+| `AI Readiness: Show Report` | Open last scan report |
+| `AI Readiness: Show Context` | View scanning context |
+| `AI Readiness: Compare Runs` | Side-by-side run comparison |
 | `AI Readiness: Vibe Report` | Agentic proficiency report |
 | `AI Readiness: Start Live Tracking` | Real-time AIPM dashboard |
+| `AI Readiness: Stop Live Tracking` | Stop live tracking |
+| `AI Readiness: Fix All` | Generate fixes for all recommendations |
+| `AI Readiness: Migrate` | Convert configs between platforms |
 | `AI Readiness: Clear History` | Reset scan history |
+| `AI Readiness: Clear Semantic Cache` | Purge LLM enrichment cache |
 
 ---
 
@@ -317,7 +362,7 @@ git clone https://github.com/alex-keagel/vscode-ai-readiness.git
 cd vscode-ai-readiness
 npm install
 npm run build
-npm test           # 234 tests
+npm test           # 496 tests
 npm run package    # creates .vsix
 ```
 
@@ -327,23 +372,29 @@ Press `F5` to launch the Extension Development Host for debugging.
 
 ## Release Notes
 
-### 2.3.5
+### 1.4.3
+- **AI Strategy Executive Brief** — Readiness Overview, Action Items totals, "What Matters Most" strategic bullets, 🧠 LLM Analysis section with full insight cards
+- **Deep Recommendation Engine** — instruction analysis, codebase profiling, cross-reference gap detection, evidence-backed LLM recommendations
+- **Output Validator** — deterministic + LLM validation of generated content, auto-fix (code fences, JSON comments), retry with feedback
+- **Multi-file generation** — 3-format parser, parallel batch generation (5 concurrent), source file protection
+- **Fix state management** — approve/decline fixes, content-hash persistence, auto-resolve on rescan
+- **496 tests** across 24 test files (143 deep engine tests, 26 insights panel tests)
+
+### 1.3.5
 - Dynamic platform guide generation from official documentation
 - Context architecture audit (MCP, skills, hooks, tool security)
 - One-click insight fixes with diff editor preview
-- Defensive error handling across all components
+- Platform signal filter centralization
+- EGDR scoring with anti-pattern multipliers and quality gates
+- L1 codebase quality signals (type strictness, semantic density, context efficiency)
+- Configurable scoring weights, dimension weights, and scoring modes
 
-### 2.2.0
+### 1.2.0
 - Smart semantic indexing — fan-in analysis, git velocity, importance ranking
 - Configurable enrichment depth and concurrency
 - Expert agent personas for all 7 platforms
 
-### 2.1.0
-- 10-agent audit with memory leak fixes and scoring accuracy improvements
-- Scan performance: 13min → 80s for large monorepos
-- Structured logging across all components
-
-### 2.0.0
+### 1.1.0
 - Complete rewrite with 6-level maturity ladder
 - EGDR scoring model with per-platform profiles
 - Semantic RAG engine with TF-IDF vector search

@@ -12,7 +12,7 @@ export interface CachedResult {
 const CACHE_KEY_PREFIX = 'cache:';
 function getCacheTTLMs(): number {
   try {
-    const days = vscode.workspace.getConfiguration('ai-readiness').get<number>('cacheTTL') ?? 7;
+    const days = vscode.workspace.getConfiguration('ai-readiness').get<number>('cacheTTL') ?? 1;
     return days * 24 * 60 * 60 * 1000;
   } catch { return 7 * 24 * 60 * 60 * 1000; }
 }

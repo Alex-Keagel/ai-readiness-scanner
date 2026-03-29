@@ -287,7 +287,7 @@
         },
         "ai-readiness.cacheTTL": {
           "type": "number",
-          "default": 7,
+          "default": 1,
           "minimum": 1,
           "maximum": 30,
           "description": "LLM result cache duration in days. Cached results are reused without re-calling the LLM."

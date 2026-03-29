@@ -320,7 +320,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
     const llmTimeout = config.get<number>('llmTimeout') ?? 45;
     const concurrency = config.get<number>('enrichmentConcurrency') ?? 5;
     const batchSize = config.get<number>('enrichmentBatchSize') ?? 10;
-    const cacheTTL = config.get<number>('cacheTTL') ?? 7;
+    const cacheTTL = config.get<number>('cacheTTL') ?? 1;
 
     return /* html */ `
     <div class="section settings-section fade-in">
