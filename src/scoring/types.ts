@@ -249,6 +249,9 @@ export interface SignalResult {
   files: string[];   // files that contributed to this signal
   modelUsed?: string;
   confidence: 'high' | 'medium' | 'low';
+  confidenceScore?: number; // 0.0-1.0 numeric confidence from validation pipeline
+  validatorAgreed?: boolean;
+  debateOutcome?: string;
   realityChecks?: RealityCheckRef[];
   businessFindings?: string[];  // business logic validation findings
 }
@@ -310,6 +313,7 @@ export interface Insight {
   category: string;
   estimatedImpact?: string;
   affectedComponent?: string;
+  confidenceScore?: number; // 0.0-1.0 from validation pipeline
 }
 
 export interface ReadinessReport {

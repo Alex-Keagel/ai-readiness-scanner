@@ -17,6 +17,9 @@ interface Recommendation {
   impact: string;
   detected: boolean;
   score: number;
+  confidenceScore?: number; // 0.0-1.0 from validation pipeline
+  validatorAgreed?: boolean;
+  debateOutcome?: string;
 }
 
 export class RecommendationsPanel {
@@ -28,6 +31,7 @@ export class RecommendationsPanel {
   private fixStatusMap: Map<string, PersistedFix['status']> = new Map();
   private fixStorage?: FixStorage;
   private qualityThreshold: number = 40;
+  private confidenceThreshold: number = 0.5;
   private currentReport?: ReadinessReport;
   private currentTool?: AITool;
   private onGenerate?: (signalIds: string[], approvalMode: 'selected' | 'all') => Promise<void>;
@@ -149,6 +153,9 @@ export class RecommendationsPanel {
         if (this.currentReport && this.currentTool) {
           this.updateContent(this.currentReport, this.currentTool);
         }
+      } else if (msg.command === 'set-confidence-threshold') {
+        this.confidenceThreshold = msg.value as number;
+        logger.info(`Action Center: confidence threshold set to ${this.confidenceThreshold}`);
       }
     }, null, this.disposables);
   }
@@ -294,6 +301,9 @@ export class RecommendationsPanel {
         impact: tier === 'auto' ? 'Will create new file' : tier === 'guided' ? 'Will modify existing file' : 'Manual guidance',
         detected: s.detected,
         score: s.score,
+        confidenceScore: s.confidenceScore,
+        validatorAgreed: s.validatorAgreed,
+        debateOutcome: s.debateOutcome,
       });
     }
 
@@ -498,6 +508,10 @@ export class RecommendationsPanel {
     .rec-tag.recommend { background: var(--color-amber-dim); color: var(--color-amber); }
     .rec-tag.missing { background: var(--color-crimson-dim); color: var(--color-crimson); }
     .rec-tag.low { background: var(--color-amber-dim); color: var(--color-amber); }
+    .rec-tag.confidence-high { background: rgba(46,213,115,0.15); color: #2ed573; font-weight: 600; }
+    .rec-tag.confidence-med { background: rgba(255,165,2,0.15); color: #ffa502; font-weight: 600; }
+    .rec-tag.confidence-low { background: rgba(255,71,87,0.15); color: #ff4757; font-weight: 600; }
+    .rec-card.low-confidence { opacity: 0.55; }
     .rec-finding { font-size: 0.85em; color: var(--text-secondary); margin: 6px 0; }
     .rec-deps { font-size: 0.8em; color: var(--color-amber); margin: 4px 0; padding: 4px 8px; background: rgba(255,165,2,0.08); border-radius: 4px; }
     .rec-meta { display: flex; gap: 12px; font-size: 0.8em; color: var(--text-secondary); flex-wrap: wrap; }
@@ -573,6 +587,14 @@ export class RecommendationsPanel {
       
       >
     <span style="font-size:0.75em;color:var(--text-secondary)">Signals scoring below this appear as recommendations</span>
+  </div>
+
+  <div class="threshold-row">
+    <label>Confidence filter: <strong id="confVal">${Math.round((this.confidenceThreshold ?? 0.5) * 100)}</strong>%</label>
+    <input type="range" class="threshold-slider" id="confSlider" min="0" max="100" step="5" value="${Math.round((this.confidenceThreshold ?? 0.5) * 100)}"
+      
+      >
+    <span style="font-size:0.75em;color:var(--text-secondary)">Dim recommendations below this confidence level</span>
   </div>
 
   <div class="actions">
@@ -653,12 +675,28 @@ export class RecommendationsPanel {
         document.getElementById('thresholdVal').textContent = e.target.value;
         vscode.postMessage({command: 'set-threshold', value: parseInt(e.target.value)});
       }
+      if (e.target.id === 'confSlider') {
+        document.getElementById('confVal').textContent = e.target.value;
+        vscode.postMessage({command: 'set-confidence-threshold', value: parseInt(e.target.value) / 100});
+      }
     });
     
     // Threshold slider live update
     document.body.addEventListener('input', function(e) {
       if (e.target.id === 'thresholdSlider') {
         document.getElementById('thresholdVal').textContent = e.target.value;
+      }
+      if (e.target.id === 'confSlider') {
+        document.getElementById('confVal').textContent = e.target.value;
+        // Dim low-confidence cards in real-time
+        var threshold = parseInt(e.target.value) / 100;
+        document.querySelectorAll('.rec-card').forEach(function(card) {
+          var confTag = card.querySelector('.rec-tag[class*="confidence-"]');
+          if (confTag) {
+            var pct = parseInt(confTag.textContent) / 100;
+            card.classList.toggle('low-confidence', pct < threshold);
+          }
+        });
       }
     });
     
@@ -905,6 +943,7 @@ export class RecommendationsPanel {
           <span class="rec-tag ${r.tier}">${tierLabel}</span>
           <span class="rec-tag ${effortClass}">${effort}</span>
           <span class="rec-tag ${statusClass}">${statusLabel}</span>
+          ${r.confidenceScore !== undefined ? `<span class="rec-tag confidence-${r.confidenceScore >= 0.8 ? 'high' : r.confidenceScore >= 0.5 ? 'med' : 'low'}" title="Confidence: ${Math.round(r.confidenceScore * 100)}%${r.validatorAgreed === false ? ' (validator disagreed' + (r.debateOutcome ? ', ' + r.debateOutcome : '') + ')' : ''}">${r.confidenceScore >= 0.8 ? '🟢' : r.confidenceScore >= 0.5 ? '🟡' : '🔴'} ${Math.round(r.confidenceScore * 100)}%</span>` : ''}
         </div>
         <div class="rec-finding">${esc(r.finding)}</div>
         ${statusHtml}

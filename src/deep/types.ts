@@ -127,4 +127,7 @@ export interface DeepRecommendation {
   suggestedContent?: string; // exact content to add
   impactScore: number; // 0-100
   affectedModules: string[];
+  confidenceScore?: number; // 0.0-1.0 from validation pipeline
+  validatorAgreed?: boolean;
+  debateOutcome?: string;
 }

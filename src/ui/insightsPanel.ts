@@ -273,6 +273,7 @@ export class InsightsPanel {
         ${i.category ? `<span class="llm-insight-tag">${this.escapeHtml(i.category)}</span>` : ''}
         ${i.affectedComponent ? `<span>📦 ${this.escapeHtml(i.affectedComponent)}</span>` : ''}
         ${i.estimatedImpact ? `<span>📈 ${this.escapeHtml(i.estimatedImpact)}</span>` : ''}
+        ${i.confidenceScore !== undefined ? `<span title="Confidence: ${Math.round(i.confidenceScore * 100)}%">${i.confidenceScore >= 0.8 ? '🟢' : i.confidenceScore >= 0.5 ? '🟡' : '🔴'} ${Math.round(i.confidenceScore * 100)}% conf</span>` : ''}
       </div>
     </div>`).join('')}
   </div>` : ''}

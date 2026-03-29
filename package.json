@@ -343,6 +343,13 @@
             "aider": 128000
           },
           "description": "Context window budget (in tokens) per platform. Used to calculate Context Efficiency — how much of the agent's context window your instruction files consume."
+        },
+        "ai-readiness.confidenceThreshold": {
+          "type": "number",
+          "default": 0.5,
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Minimum confidence score (0.0-1.0) for LLM-generated recommendations. Recommendations below this threshold are dimmed in the Action Center."
         }
       }
     }
