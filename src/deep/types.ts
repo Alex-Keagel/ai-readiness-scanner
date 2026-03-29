@@ -68,6 +68,7 @@ export interface CodebaseProfile {
   hotspots: string[]; // files with high fan-in + complexity
   untestedModules: string[];
   undocumentedModules: string[];
+  packageDependencies: string[]; // external package names (npm, pip, etc.) — not project code
 }
 
 // ─── Gap Analysis ───────────────────────────────────────────────────

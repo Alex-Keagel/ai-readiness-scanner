@@ -172,47 +172,68 @@ const x = 1;`;
   describe('extractImportPaths', () => {
     const profiler = new CodebaseProfiler();
     const extract = (content: string, filePath = 'src/app.ts') =>
-      (profiler as any).extractImportPaths(content, filePath);
+      (profiler as any).extractImportPaths(content, filePath) as { project: string[]; packages: string[] };
 
-    it('extracts ES module imports', () => {
-      const imports = extract("import { foo } from './utils';");
-      expect(imports.length).toBe(1);
-      expect(imports[0]).toContain('utils');
+    it('extracts ES module project imports', () => {
+      const { project } = extract("import { foo } from './utils';");
+      expect(project.length).toBe(1);
+      expect(project[0]).toContain('utils');
     });
 
-    it('extracts multiple imports', () => {
-      const imports = extract("import { a } from './a';\nimport { b } from './b';");
-      expect(imports.length).toBe(2);
+    it('extracts multiple project imports', () => {
+      const { project } = extract("import { a } from './a';\nimport { b } from './b';");
+      expect(project.length).toBe(2);
     });
 
-    it('extracts require() calls', () => {
-      const imports = extract("const fs = require('fs');");
-      expect(imports).toContain('fs');
+    it('separates package imports from project imports', () => {
+      const { project, packages } = extract("const fs = require('fs');");
+      expect(project).toHaveLength(0);
+      expect(packages).toContain('fs');
     });
 
-    it('resolves relative paths', () => {
-      const imports = extract("import { x } from '../scoring/engine';", 'src/ui/panel.ts');
-      expect(imports[0]).toContain('scoring');
+    it('resolves relative paths as project imports', () => {
+      const { project } = extract("import { x } from '../scoring/engine';", 'src/ui/panel.ts');
+      expect(project[0]).toContain('scoring');
     });
 
-    it('keeps package names as-is', () => {
-      const imports = extract("import * as vscode from 'vscode';");
-      expect(imports).toContain('vscode');
+    it('classifies package names as packages', () => {
+      const { packages } = extract("import * as vscode from 'vscode';");
+      expect(packages).toContain('vscode');
     });
 
-    it('handles default imports', () => {
-      const imports = extract("import path from 'path';");
-      expect(imports).toContain('path');
+    it('handles default package imports', () => {
+      const { packages } = extract("import path from 'path';");
+      expect(packages).toContain('path');
     });
 
-    it('handles namespace imports', () => {
-      const imports = extract("import * as fs from 'fs';");
-      expect(imports).toContain('fs');
+    it('handles namespace package imports', () => {
+      const { packages } = extract("import * as fs from 'fs';");
+      expect(packages).toContain('fs');
     });
 
-    it('returns empty array for content with no imports', () => {
-      const imports = extract('const x = 1;\nconsole.log(x);');
-      expect(imports).toEqual([]);
+    it('handles scoped packages (@org/pkg)', () => {
+      const { packages } = extract("import { something } from '@azure/identity';");
+      expect(packages).toContain('@azure/identity');
+    });
+
+    it('deduplicates package names', () => {
+      const { packages } = extract("import { a } from 'vscode';\nimport { b } from 'vscode';");
+      expect(packages.filter((p: string) => p === 'vscode')).toHaveLength(1);
+    });
+
+    it('returns empty for content with no imports', () => {
+      const { project, packages } = extract('const x = 1;\nconsole.log(x);');
+      expect(project).toEqual([]);
+      expect(packages).toEqual([]);
+    });
+
+    it('mixes project and package imports correctly', () => {
+      const { project, packages } = extract(
+        "import { foo } from './utils';\nimport * as vscode from 'vscode';\nimport { bar } from '../lib/helper';"
+      );
+      expect(project.length).toBe(2);
+      expect(packages).toContain('vscode');
+      expect(packages.length).toBe(1);
     });
   });
 

@@ -21,7 +21,8 @@ export class CodebaseProfiler {
 
     // Analyze each file (skip statically excluded paths)
     const modules: ModuleProfile[] = [];
-    const importGraph = new Map<string, string[]>(); // file → imported files
+    const importGraph = new Map<string, string[]>(); // file → project imports only
+    const allPackageDeps = new Set<string>(); // external package names
 
     for (const uri of sourceFiles) {
       try {
@@ -30,7 +31,9 @@ export class CodebaseProfiler {
         const content = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf-8');
         const mod = this.analyzeModule(relPath, content);
         modules.push(mod);
-        importGraph.set(relPath, this.extractImportPaths(content, relPath));
+        const { project, packages } = this.extractImportPaths(content, relPath);
+        importGraph.set(relPath, project); // only project imports for fan-in
+        for (const pkg of packages) allPackageDeps.add(pkg);
       } catch { /* skip */ }
     }
 
@@ -105,9 +108,10 @@ export class CodebaseProfiler {
       hotspots,
       untestedModules,
       undocumentedModules,
+      packageDependencies: [...allPackageDeps].sort(),
     };
 
-    logger.info(`CodebaseProfiler: ${modules.length} modules, ${entryPoints.length} entry points, ${hotspots.length} hotspots, ${pipelines.length} pipelines`);
+    logger.info(`CodebaseProfiler: ${modules.length} modules, ${entryPoints.length} entry points, ${hotspots.length} hotspots, ${pipelines.length} pipelines, ${allPackageDeps.size} package deps`);
     timer?.end?.();
     return profile;
   }
@@ -163,8 +167,9 @@ export class CodebaseProfiler {
     };
   }
 
-  private extractImportPaths(content: string, filePath: string): string[] {
-    const imports: string[] = [];
+  private extractImportPaths(content: string, filePath: string): { project: string[]; packages: string[] } {
+    const project: string[] = [];
+    const packages: string[] = [];
     const patterns = [
       /import\s+.*?from\s+['"]([^'"]+)['"]/g,
       /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
@@ -175,16 +180,18 @@ export class CodebaseProfiler {
       while ((m = pat.exec(content)) !== null) {
         const imp = m[1];
         if (imp.startsWith('.')) {
-          // Resolve relative path
+          // Relative import → project code
           const dir = filePath.split('/').slice(0, -1).join('/');
           const resolved = imp.replace(/^\.\//, dir + '/').replace(/^\.\.\//, dir + '/../');
-          imports.push(resolved);
+          project.push(resolved);
         } else {
-          imports.push(imp);
+          // Package import — extract package name (handle scoped @org/pkg)
+          const pkgName = imp.startsWith('@') ? imp.split('/').slice(0, 2).join('/') : imp.split('/')[0];
+          packages.push(pkgName);
         }
       }
     }
-    return imports;
+    return { project, packages: [...new Set(packages)] };
   }
 
   private async discoverPipelines(
