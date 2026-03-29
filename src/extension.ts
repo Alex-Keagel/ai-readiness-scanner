@@ -226,6 +226,9 @@ export function activate(context: vscode.ExtensionContext) {
               coveragePercent: deepResult.crossRef.coveragePercent,
               gapCount: deepResult.crossRef.coverageGaps.length,
               driftCount: deepResult.crossRef.driftIssues.length,
+              complexity: deepResult.complexity,
+              callGraph: deepResult.callGraph,
+              dataFlow: deepResult.dataFlow,
             };
             logger.info(`Action Center: deep analysis added ${deepResult.recommendations.length} evidence-backed recommendations`);
           }
@@ -435,6 +438,31 @@ export function activate(context: vscode.ExtensionContext) {
         GraphPanel.createOrShow(report);
       } catch (err) {
         logger.error('Command showGraph failed', err);
+        vscode.window.showErrorMessage(`Command failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }),
+
+    // Open topology graph
+    vscode.commands.registerCommand('ai-readiness.showTopology', () => {
+      try {
+        let report = currentReport;
+        if (!report) {
+          const latestRun = runStorage.getLatestRun();
+          if (latestRun) { report = latestRun.report; }
+        }
+        const deepData = (report as any)?.deepAnalysis;
+        if (!deepData?.complexity) {
+          vscode.window.showInformationMessage('Run a full scan first — topology requires deep analysis.');
+          return;
+        }
+        const { TopologyPanel } = require('./ui/topologyPanel');
+        TopologyPanel.createOrShow(
+          deepData.complexity.topology.nodes,
+          deepData.complexity.topology.edges,
+          deepData.complexity.products
+        );
+      } catch (err) {
+        logger.error('Command showTopology failed', err);
         vscode.window.showErrorMessage(`Command failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }),

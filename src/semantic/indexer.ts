@@ -657,6 +657,7 @@ Respond as JSON array: [{"summary":"...","keywords":"k1, k2, k3"}, ...]`;
     let role: 'entry-point' | 'core-logic' | 'utility' | 'ui' | 'config' | 'test' | 'type-def' | 'unknown' = 'unknown';
     if (path.includes('.test.') || path.includes('.spec.') || path.includes('__tests__')) role = 'test';
     else if (path.includes('/tests/') || path.includes('/test/') || fileName.startsWith('test_') || fileName === 'conftest.py') role = 'test';
+    else if (fileName.endsWith('Tests.cs') || fileName.endsWith('Test.cs') || path.includes('.Tests/') || path.includes('Integration.Tests/')) role = 'test';
     else if (path.includes('types') && !path.includes('test')) role = 'type-def';
     else if (/extension\.(ts|js)$/.test(path) || /main\.(ts|js|py|go)$/.test(path) || /index\.(ts|js)$/.test(path) || /app\.(ts|js|py)$/.test(path)) role = 'entry-point';
     else if (path.includes('/ui/') || path.includes('/views/') || path.includes('/components/')) role = 'ui';

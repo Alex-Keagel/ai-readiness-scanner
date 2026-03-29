@@ -188,6 +188,10 @@
         "title": "AI Readiness: Show Knowledge Graph"
       },
       {
+        "command": "ai-readiness.showTopology",
+        "title": "AI Readiness: Semantic Topology"
+      },
+      {
         "command": "ai-readiness.showInsights",
         "title": "AI Readiness: AI Strategy"
       },

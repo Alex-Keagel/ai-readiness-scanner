@@ -27,6 +27,8 @@ export class InsightsPanel {
       async (msg) => {
         if (msg.command === 'open-action-center') {
           vscode.commands.executeCommand('ai-readiness.fixAll');
+        } else if (msg.command === 'show-topology') {
+          vscode.commands.executeCommand('ai-readiness.showTopology');
         }
       },
       null,
@@ -392,6 +394,7 @@ export class InsightsPanel {
       <div class="focus-label">🎯 What Matters Most</div>
       <ul>${bullets.map(b => `<li>${b}</li>`).join('')}</ul>
       <button class="btn-primary" style="margin-top:12px;width:100%" onclick="vscode.postMessage({command:'open-action-center'})">🔧 Open Action Center (${acCritical + acImportant + acSuggestion} items) →</button>
+      <button class="btn-primary" style="margin-top:8px;width:100%;background:linear-gradient(135deg, rgba(179,136,255,0.15), rgba(179,136,255,0.05));border-color:var(--color-purple,#B388FF);color:var(--color-purple,#B388FF)" onclick="vscode.postMessage({command:'show-topology'})">🕸️ Semantic Topology →</button>
     </div>`;
   }
 

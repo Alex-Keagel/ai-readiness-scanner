@@ -124,7 +124,11 @@ export class TestClassificationAgent {
         fileName.startsWith('test_') ||
         fileName === 'conftest.py' ||
         fileName.endsWith('.test.ts') || fileName.endsWith('.spec.ts') ||
-        fileName.endsWith('_test.go') || fileName.endsWith('_test.py')
+        fileName.endsWith('_test.go') || fileName.endsWith('_test.py') ||
+        fileName.endsWith('Tests.cs') || fileName.endsWith('Test.cs') ||
+        fileName.endsWith('Tests.java') || fileName.endsWith('Test.java') ||
+        path.includes('.Tests/') || path.includes('.Test/') ||
+        path.includes('Integration.Tests/') || path.includes('UnitTests/')
       ) {
         // Check if it's a test utility rather than a test case
         const dirName = path.split('/').slice(-2, -1)[0] || '';
