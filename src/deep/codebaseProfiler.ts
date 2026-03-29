@@ -3,11 +3,16 @@ import { CopilotClient } from '../llm/copilotClient';
 import { logger } from '../logging';
 import { CodebaseProfile, ModuleProfile, CodebasePipeline } from './types';
 import { ExclusionClassifierAgent, TestClassificationAgent } from './relevanceAgents';
+import { WorkspaceIndexer } from '../semantic/indexer';
 
 const EXCLUDE = '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/out/**,**/vendor/**,**/.venv/**,**/venv/**,**/.idea/**,**/.vs/**,**/.settings/**,**/__pycache__/**,**/.tox/**,**/.mypy_cache/**,**/.pytest_cache/**';
 
 export class CodebaseProfiler {
-  constructor(private copilotClient?: CopilotClient) {}
+  private indexer?: WorkspaceIndexer;
+
+  constructor(private copilotClient?: CopilotClient, indexer?: WorkspaceIndexer) {
+    this.indexer = indexer;
+  }
 
   async profile(workspaceUri: vscode.Uri): Promise<CodebaseProfile> {
     const timer = logger.time('CodebaseProfiler');
@@ -29,9 +34,14 @@ export class CodebaseProfiler {
         const relPath = vscode.workspace.asRelativePath(uri, false);
         if (ExclusionClassifierAgent.isExcluded(relPath)) continue;
         const content = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf-8');
-        const mod = this.analyzeModule(relPath, content);
+        // Use unified indexer analysis when available, fall back to local
+        const mod = this.indexer
+          ? this.indexer.analyzeModule(relPath, content) as ModuleProfile
+          : this.analyzeModule(relPath, content);
         modules.push(mod);
-        const { project, packages } = this.extractImportPaths(content, relPath);
+        const { project, packages } = this.indexer
+          ? this.indexer.separateImports(content, relPath)
+          : this.extractImportPaths(content, relPath);
         importGraph.set(relPath, project); // only project imports for fan-in
         for (const pkg of packages) allPackageDeps.add(pkg);
       } catch { /* skip */ }

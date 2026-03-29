@@ -625,4 +625,99 @@ Respond as JSON array: [{"summary":"...","keywords":"k1, k2, k3"}, ...]`;
       }
     }
   }
+
+  // ─── Unified Module Analysis (shared with codebaseProfiler) ────
+
+  /**
+   * Analyze a single module file — produces a ModuleProfile-compatible result.
+   * This is the single source of truth for module metadata.
+   */
+  analyzeModule(path: string, content: string): {
+    path: string; language: string; lines: number;
+    exports: string[]; exportCount: number; importCount: number;
+    fanIn: number; hasTests: boolean; hasDocstring: boolean;
+    complexity: 'low' | 'medium' | 'high';
+    role: 'entry-point' | 'core-logic' | 'utility' | 'ui' | 'config' | 'test' | 'type-def' | 'unknown';
+  } {
+    const lines = content.split('\n');
+    const ext = path.split('.').pop()?.toLowerCase() || '';
+    const fileName = path.split('/').pop() || '';
+    const langMap: Record<string, string> = {
+      ts: 'TypeScript', tsx: 'TypeScript', js: 'JavaScript', jsx: 'JavaScript',
+      py: 'Python', cs: 'C#', java: 'Java', go: 'Go', rs: 'Rust', rb: 'Ruby', kt: 'Kotlin',
+    };
+
+    // Exports
+    const exportNames = this.extractExports(content, this.detectLang(ext));
+    const importCount = (content.match(/^import\s+/gm) || []).length +
+      (content.match(/^from\s+/gm) || []).length +
+      (content.match(/require\s*\(/g) || []).length;
+
+    // Role detection (comprehensive — covers all languages)
+    let role: 'entry-point' | 'core-logic' | 'utility' | 'ui' | 'config' | 'test' | 'type-def' | 'unknown' = 'unknown';
+    if (path.includes('.test.') || path.includes('.spec.') || path.includes('__tests__')) role = 'test';
+    else if (path.includes('/tests/') || path.includes('/test/') || fileName.startsWith('test_') || fileName === 'conftest.py') role = 'test';
+    else if (path.includes('types') && !path.includes('test')) role = 'type-def';
+    else if (/extension\.(ts|js)$/.test(path) || /main\.(ts|js|py|go)$/.test(path) || /index\.(ts|js)$/.test(path) || /app\.(ts|js|py)$/.test(path)) role = 'entry-point';
+    else if (path.includes('/ui/') || path.includes('/views/') || path.includes('/components/')) role = 'ui';
+    else if (path.includes('/utils') || path.includes('/helpers') || path.includes('/lib/')) role = 'utility';
+    else if (path.includes('/config') || path.endsWith('.config.ts') || path.endsWith('.config.js')) role = 'config';
+    else if (exportNames.length > 0 && lines.length > 30) role = 'core-logic';
+
+    const hasDocstring = /\/\*\*[\s\S]*?\*\//.test(content) || /^"""/m.test(content) || /^'''/m.test(content);
+    const complexity: 'low' | 'medium' | 'high' = lines.length > 500 ? 'high' : lines.length > 150 ? 'medium' : 'low';
+    const hasTests = role === 'test' || content.includes('describe(') || content.includes('it(') || content.includes('test(') || content.includes('def test_');
+
+    return {
+      path,
+      language: langMap[ext] || ext,
+      lines: lines.length,
+      exports: exportNames,
+      exportCount: exportNames.length,
+      importCount,
+      fanIn: 0,
+      hasTests,
+      hasDocstring,
+      complexity,
+      role,
+    };
+  }
+
+  /**
+   * Separate project imports from package imports.
+   * Project imports (relative) are used for fan-in; packages are metadata.
+   */
+  separateImports(content: string, filePath: string): { project: string[]; packages: string[] } {
+    const project: string[] = [];
+    const packages: string[] = [];
+    const patterns = [
+      /import\s+.*?from\s+['"]([^'"]+)['"]/g,
+      /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+      /^from\s+([\w.]+)\s+import/gm,
+    ];
+    for (const pat of patterns) {
+      pat.lastIndex = 0;
+      let m;
+      while ((m = pat.exec(content)) !== null) {
+        const imp = m[1];
+        if (imp.startsWith('.')) {
+          const dir = filePath.split('/').slice(0, -1).join('/');
+          const resolved = imp.replace(/^\.\//, dir + '/').replace(/^\.\.\//, dir + '/../');
+          project.push(resolved);
+        } else {
+          const pkgName = imp.startsWith('@') ? imp.split('/').slice(0, 2).join('/') : imp.split('/')[0];
+          packages.push(pkgName);
+        }
+      }
+    }
+    return { project, packages: [...new Set(packages)] };
+  }
+
+  private detectLang(ext: string): string | undefined {
+    const map: Record<string, string> = {
+      ts: 'typescript', tsx: 'typescript', js: 'typescript', jsx: 'typescript',
+      py: 'python', go: 'go', rs: 'rust', cs: 'csharp', java: 'java',
+    };
+    return map[ext];
+  }
 }

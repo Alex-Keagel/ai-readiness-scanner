@@ -2,9 +2,9 @@
 
 ## What It Does
 
-VS Code extension that scans a workspace for **agentic coding readiness**, scores it across multiple dimensions (modularity, documentation, test coverage, CI/CD, etc.), and generates Markdown assessment reports.
+VS Code extension that scans a workspace for **agentic coding readiness**, scores it across multiple dimensions, and generates assessment reports.
 
-The scanning and scoring criteria are defined in [`docs/AGENTIC_CODING_ASSESSMENT_SPEC.md`](../docs/AGENTIC_CODING_ASSESSMENT_SPEC.md).
+Scoring criteria are defined in `src/scoring/levelSignals.ts` (signal definitions) and `src/scoring/maturityEngine.ts` (scoring pipeline). See the main [README](../README.md) for the full scoring methodology.
 
 ## Source Files
 
