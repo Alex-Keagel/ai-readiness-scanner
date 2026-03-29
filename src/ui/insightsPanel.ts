@@ -177,6 +177,20 @@ export class InsightsPanel {
     .issue-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; font-size: 0.9em; }
     .issue-row .issue-dot { font-size: 0.8em; }
     .issue-row .issue-titles { color: var(--text-secondary); font-size: 0.85em; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 50%; }
+
+    /* LLM Insight Cards */
+    .llm-insights { margin: 24px 0; }
+    .llm-insight-card { border-radius: 8px; padding: 14px 16px; margin: 8px 0; background: var(--bg-elevated); transition: transform 0.1s; }
+    .llm-insight-card:hover { transform: translateX(4px); }
+    .llm-insight-card.critical { border-left: 4px solid var(--color-crimson); }
+    .llm-insight-card.important { border-left: 4px solid var(--level-3); }
+    .llm-insight-card.suggestion { border-left: 4px solid var(--color-cyan); }
+    .llm-insight-title { font-weight: 600; font-size: 0.92em; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+    .llm-insight-rec { font-size: 0.85em; color: var(--text-secondary); line-height: 1.5; }
+    .llm-insight-meta { display: flex; gap: 10px; margin-top: 8px; font-size: 0.78em; color: var(--text-secondary); flex-wrap: wrap; align-items: center; }
+    .llm-insight-tag { padding: 2px 8px; border-radius: 4px; background: var(--bg-card); font-size: 0.85em; }
+    .llm-insights-header { display: flex; align-items: center; justify-content: space-between; }
+    .llm-insights-header .count-badge { font-size: 0.8em; padding: 2px 10px; border-radius: 12px; background: var(--bg-elevated); color: var(--text-secondary); }
     .btn-primary { padding: 8px 16px; border-radius: 8px; border: 1px solid var(--color-cyan); background: linear-gradient(135deg, rgba(0,210,255,0.15), rgba(0,210,255,0.05)); color: var(--color-cyan); cursor: pointer; font-size: 0.9em; font-weight: 600; transition: all 0.15s; }
     .btn-primary:hover { background: linear-gradient(135deg, rgba(0,210,255,0.25), rgba(0,210,255,0.1)); }
 
@@ -243,13 +257,24 @@ export class InsightsPanel {
   ${this.renderComponentHealth(report)}
 
   ${insights.length > 0 ? `
-  <div class="section">
-    <h2>📋 Strategic Insights</h2>
-    <div class="issue-summary glass-card">
-      ${critical.length > 0 ? `<div class="issue-row critical"><span class="issue-dot">🔴</span><span>${critical.length} Critical</span><span class="issue-titles">${critical.slice(0, 3).map(i => this.escapeHtml(i.title)).join(' · ')}</span></div>` : ''}
-      ${important.length > 0 ? `<div class="issue-row important"><span class="issue-dot">🟡</span><span>${important.length} Important</span><span class="issue-titles">${important.slice(0, 3).map(i => this.escapeHtml(i.title)).join(' · ')}</span></div>` : ''}
-      ${suggestions.length > 0 ? `<div class="issue-row suggestion"><span class="issue-dot">🔵</span><span>${suggestions.length} Suggestions</span><span class="issue-titles">${suggestions.slice(0, 3).map(i => this.escapeHtml(i.title)).join(' · ')}</span></div>` : ''}
+  <div class="section llm-insights">
+    <div class="llm-insights-header">
+      <h2>🧠 LLM Analysis</h2>
+      <span class="count-badge">${insights.length} insight${insights.length !== 1 ? 's' : ''}</span>
     </div>
+    ${[...critical, ...important, ...suggestions].map(i => `
+    <div class="llm-insight-card ${i.severity} glass-card">
+      <div class="llm-insight-title">
+        ${i.severity === 'critical' ? '🔴' : i.severity === 'important' ? '🟡' : '🔵'}
+        ${this.escapeHtml(i.title)}
+      </div>
+      <div class="llm-insight-rec">${this.escapeHtml(i.recommendation)}</div>
+      <div class="llm-insight-meta">
+        ${i.category ? `<span class="llm-insight-tag">${this.escapeHtml(i.category)}</span>` : ''}
+        ${i.affectedComponent ? `<span>📦 ${this.escapeHtml(i.affectedComponent)}</span>` : ''}
+        ${i.estimatedImpact ? `<span>📈 ${this.escapeHtml(i.estimatedImpact)}</span>` : ''}
+      </div>
+    </div>`).join('')}
   </div>` : ''}
 
   ${insights.length === 0 ? '<div class="empty-state"><h2>No strategy data yet</h2><p>Run a full scan to generate AI strategy insights.</p></div>' : ''}
