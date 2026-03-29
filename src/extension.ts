@@ -397,7 +397,7 @@ export function activate(context: vscode.ExtensionContext) {
         await semanticCache.clear();
         currentReport = undefined;
         // Close any open panels
-        try { RecommendationsPanel.currentPanel?.panel?.dispose(); } catch { /* */ }
+        try { (RecommendationsPanel.currentPanel as any)?.panel?.dispose(); } catch { /* */ }
         InsightsPanel.currentPanel = undefined;
         vscode.commands.executeCommand('setContext', 'ai-readiness.hasResults', false);
         vscode.commands.executeCommand('setContext', 'ai-readiness.hasMultipleRuns', false);
@@ -1294,8 +1294,8 @@ Do NOT wrap file content in markdown code fences (\`\`\`).`;
   // If multi-file parsing found files, return them
   if (parsedFiles.length > 0) {
     logger.info(`generateViaLLM: parsed ${parsedFiles.length} files from multi-file response`);
-    const protected = protectSourceFiles(parsedFiles, wsFolder);
-    return validateAndRetry(protected, recommendation, signalId, tool, report, wsFolder);
+    const protectedFiles = protectSourceFiles(parsedFiles, wsFolder);
+    return validateAndRetry(protectedFiles, recommendation, signalId, tool, report, wsFolder);
   }
 
   // Fallback: try to split by markdown ## headers with file paths
@@ -1314,8 +1314,8 @@ Do NOT wrap file content in markdown code fences (\`\`\`).`;
 
   if (parsedFiles.length > 0) {
     logger.info(`generateViaLLM: parsed ${parsedFiles.length} files from header-based response`);
-    const protected = protectSourceFiles(parsedFiles, wsFolder);
-    return validateAndRetry(protected, recommendation, signalId, tool, report, wsFolder);
+    const protectedFiles = protectSourceFiles(parsedFiles, wsFolder);
+    return validateAndRetry(protectedFiles, recommendation, signalId, tool, report, wsFolder);
   }
 
   // Format 3: **File: `path`** or **File: path** with ```code fences```
@@ -1336,8 +1336,8 @@ Do NOT wrap file content in markdown code fences (\`\`\`).`;
 
   if (parsedFiles.length > 0) {
     logger.info(`generateViaLLM: parsed ${parsedFiles.length} files from **File:** format`);
-    const protected = protectSourceFiles(parsedFiles, wsFolder);
-    return validateAndRetry(protected, recommendation, signalId, tool, report, wsFolder);
+    const protectedFiles = protectSourceFiles(parsedFiles, wsFolder);
+    return validateAndRetry(protectedFiles, recommendation, signalId, tool, report, wsFolder);
   }
 
   // Final fallback: single file

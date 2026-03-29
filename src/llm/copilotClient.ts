@@ -18,8 +18,10 @@ const RETRY_DELAY_MS = 2000;
 
 function getLLMTimeoutMs(): number {
   try {
-    const config = require('vscode').workspace.getConfiguration('ai-readiness');
-    return (config.get<number>('llmTimeout') ?? 45) * 1000;
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const vscodeModule = require('vscode') as typeof import('vscode');
+    const config = vscodeModule.workspace.getConfiguration('ai-readiness');
+    return ((config.get('llmTimeout') as number) ?? 45) * 1000;
   } catch { return 45_000; }
 }
 

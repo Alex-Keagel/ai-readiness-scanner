@@ -221,7 +221,7 @@ Respond ONLY as JSON array: [{"str":"exact string","type":"file_path"|"not_path"
       }
     });
     const pathResults = await Promise.all(pathCheckPromises);
-    checks.push(...pathResults.filter((r): r is RealityCheck => r !== null));
+    checks.push(...pathResults.filter((r): r is NonNullable<typeof r> => r !== null) as RealityCheck[]);
 
     return checks;
   }

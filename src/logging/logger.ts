@@ -12,33 +12,41 @@ export function getOutputChannel(): vscode.OutputChannel | undefined {
 }
 
 export const logger = {
-  debug(msg: string, data?: Record<string, unknown>): void {
-    const line = `[DEBUG ${ts()}] ${msg}${data ? ' ' + JSON.stringify(data) : ''}`;
+  debug(msg: string, data?: unknown): void {
+    const line = `[DEBUG ${ts()}] ${msg}${data ? ' ' + stringify(data) : ''}`;
     outputChannel?.appendLine(line);
   },
-  info(msg: string, data?: Record<string, unknown>): void {
-    const line = `[INFO  ${ts()}] ${msg}${data ? ' ' + JSON.stringify(data) : ''}`;
+  info(msg: string, data?: unknown): void {
+    const line = `[INFO  ${ts()}] ${msg}${data ? ' ' + stringify(data) : ''}`;
     outputChannel?.appendLine(line);
   },
-  warn(msg: string, data?: Record<string, unknown>): void {
-    const line = `[WARN  ${ts()}] ${msg}${data ? ' ' + JSON.stringify(data) : ''}`;
+  warn(msg: string, data?: unknown): void {
+    const line = `[WARN  ${ts()}] ${msg}${data ? ' ' + stringify(data) : ''}`;
     outputChannel?.appendLine(line);
     console.warn(line);
   },
-  error(msg: string, error?: unknown, data?: Record<string, unknown>): void {
+  error(msg: string, error?: unknown, data?: unknown): void {
     const errMsg = error instanceof Error ? error.message : String(error || '');
-    const line = `[ERROR ${ts()}] ${msg}${errMsg ? ': ' + errMsg : ''}${data ? ' ' + JSON.stringify(data) : ''}`;
+    const line = `[ERROR ${ts()}] ${msg}${errMsg ? ': ' + errMsg : ''}${data ? ' ' + stringify(data) : ''}`;
     outputChannel?.appendLine(line);
     console.error(line);
   },
-  time(label: string): () => void {
+  time(label: string): { end: () => void } {
     const start = Date.now();
-    return () => {
-      const ms = Date.now() - start;
-      outputChannel?.appendLine(`[PERF  ${ts()}] ${label}: ${ms}ms`);
+    return {
+      end: () => {
+        const ms = Date.now() - start;
+        outputChannel?.appendLine(`[PERF  ${ts()}] ${label}: ${ms}ms`);
+      },
     };
   },
 };
+
+function stringify(data: unknown): string {
+  if (data instanceof Error) return data.message;
+  if (typeof data === 'string') return data;
+  try { return JSON.stringify(data); } catch { return String(data); }
+}
 
 function ts(): string {
   return new Date().toISOString().slice(11, 23);

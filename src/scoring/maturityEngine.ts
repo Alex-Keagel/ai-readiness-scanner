@@ -216,7 +216,7 @@ export class MaturityEngine {
 
     // 1. Apply gating with platform-specific thresholds
     if (levels.length === 0) {
-      levels = [{ level: 1 as MaturityLevel, name: 'Prompt-Only', rawScore: 0, effectiveScore: 0, signalsDetected: 0, signalsTotal: 0, signals: [], qualified: false }];
+      levels = [{ level: 1 as MaturityLevel, name: 'Prompt-Only', rawScore: 0, signalsDetected: 0, signalsTotal: 0, signals: [], qualified: false }];
     }
     levels[0].qualified = true;
     for (let i = 1; i < levels.length; i++) {
@@ -270,7 +270,7 @@ export class MaturityEngine {
       let typeWeights: Record<string, number> = { ...DEFAULT_COMPONENT_TYPE_WEIGHTS };
       try {
         const vscode = require('vscode');
-        const userTypeWeights = vscode.workspace.getConfiguration('ai-readiness').get<Record<string, number>>('componentTypeWeights');
+        const userTypeWeights = vscode.workspace.getConfiguration('ai-readiness').get('componentTypeWeights') as Record<string, number> | undefined;
         if (userTypeWeights && Object.keys(userTypeWeights).length > 0) {
           typeWeights = { ...typeWeights, ...userTypeWeights };
         }
@@ -327,7 +327,7 @@ export class MaturityEngine {
     let dimWeights = platformDimWeights;
     try {
       const vscode = require('vscode');
-      const userDimWeights = vscode.workspace.getConfiguration('ai-readiness').get<Partial<DimensionWeights>>('dimensionWeights');
+      const userDimWeights = vscode.workspace.getConfiguration('ai-readiness').get('dimensionWeights') as Partial<DimensionWeights> | undefined;
       if (userDimWeights && Object.keys(userDimWeights).length > 0) {
         dimWeights = { ...platformDimWeights, ...userDimWeights };
         // Normalize to sum to 1.0
@@ -409,7 +409,7 @@ export class MaturityEngine {
     let arithmeticRatio = 0.65;
     try {
       const vscode = require('vscode');
-      const mode = vscode.workspace.getConfiguration('ai-readiness').get<string>('scoringMode');
+      const mode = vscode.workspace.getConfiguration('ai-readiness').get('scoringMode') as string | undefined;
       if (mode === 'lenient') arithmeticRatio = 0.80;
       else if (mode === 'strict') arithmeticRatio = 0.50;
     } catch { /* tests — use default */ }

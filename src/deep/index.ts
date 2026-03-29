@@ -78,5 +78,5 @@ export async function runDeepAnalysis(
   recommendations.sort((a, b) => b.impactScore - a.impactScore);
 
   timer?.end?.();
-  return { recommendations, crossRef, skillEvaluations };
+  return { recommendations, crossRef: crossRefResult, skillEvaluations };
 }

@@ -54,6 +54,7 @@ export class ComponentScorer {
           overallScore: 0,
           depth: 0,
           signals: [],
+          levels: [],
           description: comp.description,
           parentPath: comp.parentPath,
         } as ComponentScore);

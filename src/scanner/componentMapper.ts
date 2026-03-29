@@ -82,7 +82,7 @@ export class ComponentMapper {
       this.detectPackageManager(relPattern),
       vscode.workspace.findFiles(relPattern('**/*'), EXCLUDE_GLOB, 5000),
     ]);
-    t1();
+    t1.end();
     logger.info(`Found ${languages.length} languages, ${rawFiles.length} files`);
 
     // Run independent detections in parallel
@@ -92,7 +92,7 @@ export class ComponentMapper {
       this.detectProjectType(relPattern),
       this.detectComponents(relPattern, workspaceUri, rawFiles, languages),
     ]);
-    t2();
+    t2.end();
     logger.info(`Found ${components.length} components, ${frameworks.length} frameworks`);
 
     const directoryTree = this.buildDirectoryTree(rawFiles, workspaceUri);
@@ -590,7 +590,7 @@ export class ComponentMapper {
     }
 
     // 4. Directories with their own manifest files (scan depth 1-3, all parallel)
-    const allManifestPromises: Promise<vscode.Uri[]>[] = [];
+    const allManifestPromises: Thenable<vscode.Uri[]>[] = [];
     for (let depth = 1; depth <= 3; depth++) {
       const depthGlob = Array(depth).fill('*').join('/');
       for (const manifest of ComponentMapper.MANIFEST_FILES) {

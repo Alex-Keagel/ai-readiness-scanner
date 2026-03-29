@@ -337,8 +337,8 @@ export class RecommendationsPanel {
     const components = report.componentScores || [];
     for (const comp of components.filter(c => c.overallScore < 50)) {
       const compSignals = comp.signals || [];
-      const hasReadme = compSignals.some(s => s.signalId?.includes('readme') && s.detected);
-      const hasDocs = compSignals.some(s => s.signalId?.includes('doc') && s.detected);
+      const hasReadme = compSignals.some(s => s.signal?.includes('readme') && s.present);
+      const hasDocs = compSignals.some(s => s.signal?.includes('doc') && s.present);
 
       if (!hasReadme) {
         const id = `comp_readme_${comp.path.replace(/[^a-zA-Z0-9]/g, '_')}`;

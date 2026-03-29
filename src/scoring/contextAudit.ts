@@ -280,7 +280,7 @@ export async function auditContextEfficiency(
   let budget = DEFAULT_BUDGETS[selectedTool || ''] || 128_000;
   try {
     const vscode = require('vscode');
-    const userBudgets = vscode.workspace.getConfiguration('ai-readiness').get<Record<string, number>>('contextBudgets');
+    const userBudgets = vscode.workspace.getConfiguration('ai-readiness').get('contextBudgets') as Record<string, number> | undefined;
     if (userBudgets && selectedTool && userBudgets[selectedTool]) {
       budget = userBudgets[selectedTool];
     }

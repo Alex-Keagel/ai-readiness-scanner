@@ -231,6 +231,42 @@ export interface LevelSignal {
   category: 'file-presence' | 'content-quality' | 'depth';
 }
 
+/**
+ * Dynamically compute expected files for a platform at a given level.
+ * Derives from LEVEL_SIGNALS + AI_TOOLS.signalIds instead of hardcoded arrays.
+ * Falls back to static level*Files if defined (for backward compatibility).
+ */
+export function getLevelFiles(tool: AITool, level: MaturityLevel): string[] {
+  const toolConfig = AI_TOOLS[tool];
+  // Use static override if present and non-empty
+  const staticFiles = level === 2 ? toolConfig.level2Files :
+    level === 3 ? toolConfig.level3Files :
+    level === 4 ? toolConfig.level4Files :
+    level === 5 ? toolConfig.level5Files : [];
+  if (staticFiles && staticFiles.length > 0) return staticFiles;
+
+  // Dynamic: collect filePatterns from signals at this level that are relevant to this platform
+  // Lazy import to avoid circular dependency
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { LEVEL_SIGNALS } = require('./levelSignals') as { LEVEL_SIGNALS: LevelSignal[] };
+    const platformSignalIds = new Set(toolConfig.signalIds);
+    const patterns: string[] = [];
+    for (const signal of LEVEL_SIGNALS) {
+      if (signal.level !== level) continue;
+      if (signal.filePatterns.length === 0) continue;
+      // Include if signal is in platform's list OR signal is shared (not platform-specific)
+      const isShared = !signal.id.match(/^(copilot|cline|cursor|claude|roo|windsurf|aider)_/);
+      if (platformSignalIds.has(signal.id) || isShared) {
+        patterns.push(...signal.filePatterns);
+      }
+    }
+    return [...new Set(patterns)];
+  } catch {
+    return staticFiles || [];
+  }
+}
+
 export interface RealityCheckRef {
   category: 'path' | 'command' | 'tech-stack' | 'structure' | 'stale';
   status: 'valid' | 'invalid' | 'warning';

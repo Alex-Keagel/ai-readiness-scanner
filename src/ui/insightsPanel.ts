@@ -93,10 +93,10 @@ export class InsightsPanel {
     const lowComponents = (report.componentScores || []).filter(c => c.overallScore < 50);
     for (const comp of lowComponents) {
       const compSignals = comp.signals || [];
-      if (!compSignals.some(s => s.signalId?.includes('readme') && s.detected)) {
+      if (!compSignals.some(s => s.signal?.includes('readme') && s.present)) {
         if (comp.overallScore < 30) acImportant++; else acSuggestion++;
       }
-      if (!compSignals.some(s => s.signalId?.includes('doc') && s.detected) && comp.overallScore < 35) {
+      if (!compSignals.some(s => s.signal?.includes('doc') && s.present) && comp.overallScore < 35) {
         acSuggestion++;
       }
     }

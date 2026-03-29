@@ -70,7 +70,7 @@ export class WorkspaceScanner {
         quickMode = true;
       }
     }
-    endPhase1();
+    endPhase1.end();
 
     // Phase 0: Semantic indexing (after LLM init so enrichment can use fast model)
     if (this.workspaceIndexer) {
@@ -81,7 +81,7 @@ export class WorkspaceScanner {
       } catch (err) {
         logger.warn('Semantic indexing failed, continuing without it', err);
       } finally {
-        endPhase0();
+        endPhase0.end();
       }
     }
 
@@ -107,7 +107,7 @@ export class WorkspaceScanner {
         logger.warn('Semantic cache enrichment failed', err);
       }
     }
-    endPhase2();
+    endPhase2.end();
 
     // Phase 3: Scan maturity levels (~50% of work, sub-progress reported by maturityScanner)
     const endPhase3 = logger.time('Phase 3: Scan maturity levels');
@@ -117,7 +117,7 @@ export class WorkspaceScanner {
       workspaceUri, projectContext, quickMode, progress, token, selectedTool
     );
     logger.info(`Phase 3: ${levelScores.length} levels scored`);
-    endPhase3();
+    endPhase3.end();
 
     // Phase 3d: Context architecture audit
     let contextAuditResult: ReadinessReport['contextAudit'];
@@ -130,7 +130,7 @@ export class WorkspaceScanner {
     } catch (err) {
       logger.warn('Context architecture audit failed', err);
     }
-    endPhase3d();
+    endPhase3d.end();
 
     // Phase 4: Score components and languages
     const endPhase4 = logger.time('Phase 4: Score components and languages');
@@ -139,7 +139,7 @@ export class WorkspaceScanner {
     const componentScores = await this.componentScorer.scoreComponents(workspaceUri, projectContext, selectedTool);
     const languageScores = await this.componentScorer.scoreLanguages(workspaceUri, projectContext, componentScores, selectedTool);
     logger.info(`Phase 4: ${componentScores.length} components scored, ${languageScores.length} languages`);
-    endPhase4();
+    endPhase4.end();
 
     // Phase 5: Build report
     const endPhase5 = logger.time('Phase 5: Build report');
@@ -152,7 +152,7 @@ export class WorkspaceScanner {
       quickMode ? 'quick' : 'full',
       selectedTool
     );
-    endPhase5();
+    endPhase5.end();
     logger.info(`Phase 5: Report built — L${report.primaryLevel} ${report.levelName}, score ${report.overallScore}/100, depth ${report.depth}%`);
 
     // Attach context audit result (collected in Phase 3d, before report existed)
@@ -209,7 +209,7 @@ export class WorkspaceScanner {
     } catch (err) {
       logger.warn('Codebase readiness metrics calculation failed', err);
     } finally {
-      endPhase6();
+      endPhase6.end();
     }
 
     // Phase 7: Structure comparison
@@ -224,7 +224,7 @@ export class WorkspaceScanner {
     } catch (err) {
       logger.warn('Structure comparison failed', err);
     } finally {
-      endPhase7();
+      endPhase7.end();
     }
 
     // Phase 8: Build knowledge graph
@@ -237,7 +237,7 @@ export class WorkspaceScanner {
     } catch (err) {
       logger.warn('Knowledge graph construction failed', err);
     } finally {
-      endPhase8();
+      endPhase8.end();
     }
 
     // Store enrichment percentage used
