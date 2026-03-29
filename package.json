@@ -2,7 +2,7 @@
   "name": "ai-readiness-scanner",
   "displayName": "AI Readiness Scanner",
   "description": "Score your codebase AI readiness across 7 platforms (Copilot, Cline, Cursor, Claude, Roo, Windsurf, Aider). 6-level maturity ladder, semantic analysis, one-click fixes.",
-  "version": "1.4.3",
+  "version": "1.5.0",
   "publisher": "alex-keagel",
   "engines": {
     "vscode": "^1.90.0"
@@ -88,7 +88,7 @@
           },
           {
             "name": "vibe",
-            "description": "Generate a Vibe Report \u2014 agentic coding proficiency assessment"
+            "description": "Generate a Vibe Report — agentic coding proficiency assessment"
           },
           {
             "name": "levelup",
@@ -305,8 +305,8 @@
         "ai-readiness.componentTypeWeights": {
           "type": "object",
           "default": {
-            "service": 1.0,
-            "app": 1.0,
+            "service": 1,
+            "app": 1,
             "library": 0.9,
             "infra": 0.6,
             "config": 0.4,
@@ -342,7 +342,7 @@
             "windsurf": 128000,
             "aider": 128000
           },
-          "description": "Context window budget (in tokens) per platform. Used to calculate Context Efficiency \u2014 how much of the agent's context window your instruction files consume."
+          "description": "Context window budget (in tokens) per platform. Used to calculate Context Efficiency — how much of the agent's context window your instruction files consume."
         }
       }
     }
