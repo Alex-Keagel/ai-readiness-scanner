@@ -334,8 +334,15 @@ export class RecommendationsPanel {
     }
 
     // ── 3. Component quality recommendations (low-scoring components) ──
+    // Skip components already covered by insight-based recs
+    const insightPaths = new Set(
+      recs.filter(r => r.signalId.startsWith('insight_'))
+        .map(r => r.filePath.replace(/\/README\.md$/, '').replace(/\/$/, ''))
+    );
     const components = report.componentScores || [];
     for (const comp of components.filter(c => c.overallScore < 50)) {
+      // Skip if insight already covers this component
+      if (insightPaths.has(comp.path) || [...insightPaths].some(p => comp.path.includes(p) || p.includes(comp.path))) continue;
       const compSignals = comp.signals || [];
       const hasReadme = compSignals.some(s => s.signal?.includes('readme') && s.present);
       const hasDocs = compSignals.some(s => s.signal?.includes('doc') && s.present);

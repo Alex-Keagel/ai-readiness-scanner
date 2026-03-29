@@ -75,15 +75,17 @@ export class RecommendationSynthesizer {
     }
 
     if (q.coverage < 50) {
+      const totalCritical = codebase.modules.filter(m => m.role === 'core-logic' && m.lines > 100).length;
       const uncoveredMods = codebase.modules
         .filter(m => m.role === 'core-logic' && m.lines > 100 && !instructions.coveredPaths.has(m.path))
         .slice(0, 5);
+      const uncoveredCount = totalCritical - Math.round(totalCritical * q.coverage / 100);
       recs.push({
         id: 'quality-coverage',
         type: 'uncovered-module',
         severity: 'critical',
         title: `Instructions only cover ${q.coverage}% of critical modules`,
-        description: `${uncoveredMods.length} critical modules are not mentioned in any instruction file. Agents will have no guidance for these areas and will hallucinate.`,
+        description: `${uncoveredCount > 0 ? uncoveredCount : uncoveredMods.length} of ${totalCritical} critical modules have no instruction coverage. Agents will have no guidance for these areas and will hallucinate.`,
         evidence: uncoveredMods.map(m => `${m.path} (${m.lines} lines, ${m.fanIn} dependents, ${m.exportCount} exports)`),
         targetFile: this.getMainInstructionFile(tool),
         impactScore: 85,

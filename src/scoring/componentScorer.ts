@@ -40,6 +40,25 @@ export class ComponentScorer {
     const scores: ComponentScore[] = [];
     for (const comp of context.components) {
       try {
+        // Skip removed/deprecated/legacy components — score them minimally
+        const nameLower = (comp.name || '').toLowerCase();
+        const descLower = (comp.description || '').toLowerCase();
+        if (/(removed|deprecated|obsolete|archived)/.test(nameLower) || /(removed|deprecated|obsolete|archived)/.test(descLower)) {
+          scores.push({
+            name: comp.name,
+            path: comp.path,
+            language: comp.language || 'unknown',
+            type: comp.type || 'unknown',
+            primaryLevel: 1,
+            overallScore: 0,
+            depth: 0,
+            signals: [],
+            levels: [],
+            description: comp.description,
+            parentPath: comp.parentPath,
+          } as ComponentScore);
+          continue;
+        }
         const score = await this.scoreComponent(workspaceUri, comp, context, selectedTool);
         scores.push(score);
       } catch (err) {
@@ -340,7 +359,7 @@ export class ComponentScorer {
         } catch (err) { logger.warn('Failed to read instruction file for language check', { error: err instanceof Error ? err.message : String(err) }); }
       }
     }
-    signals.push({ signal: `${toolName} Instructions`, present: hasLangInstructions, detail: instructionsDetail });
+    signals.push({ signal: `${toolName} Instructions`, present: hasLangInstructions, detail: hasLangInstructions ? `${toolName} instruction file references ${language}` : `No ${toolName} instruction file mentions ${language}` });
 
     // ── 2. Documentation (applies to ALL languages) ──
     const readmeFiles = await vscode.workspace.findFiles(rel('{README.md,readme.md}'), EXCLUDE_GLOB, 1);
