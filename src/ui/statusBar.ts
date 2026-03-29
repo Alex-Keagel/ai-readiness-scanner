@@ -43,6 +43,13 @@ export class StatusBarManager {
     );
   }
 
+  clear(): void {
+    if (this.statusBarItem) {
+      this.statusBarItem.text = '$(beaker) AI Readiness';
+      this.statusBarItem.tooltip = 'Run a scan to see readiness score';
+    }
+  }
+
   dispose(): void {
     this.statusBarItem?.dispose();
   }

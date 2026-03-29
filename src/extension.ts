@@ -36,6 +36,18 @@ let sidebarPanel: SidebarPanel;
 let statusBarManager: StatusBarManager;
 let livePoller: SessionPoller | undefined;
 let liveEngine: LiveMetricsEngine | undefined;
+
+/** Get the current report only if it matches the active workspace */
+function getValidReport(): ReadinessReport | undefined {
+  if (!currentReport) return undefined;
+  const currentWorkspace = vscode.workspace.workspaceFolders?.[0]?.name;
+  if (currentWorkspace && currentReport.projectName !== currentWorkspace) {
+    logger.info(`Report mismatch: report is for "${currentReport.projectName}" but workspace is "${currentWorkspace}" — clearing stale report`);
+    currentReport = undefined;
+    return undefined;
+  }
+  return currentReport;
+}
 let liveStatusBar: LiveStatusBar | undefined;
 let runStorage: RunStorage;
 let fixStorage: FixStorage;
@@ -54,9 +66,10 @@ export function activate(context: vscode.ExtensionContext) {
   vscode.commands.executeCommand('setContext', 'ai-readiness.hasResults', runStorage.getRuns().length > 0);
   vscode.commands.executeCommand('setContext', 'ai-readiness.hasMultipleRuns', runStorage.getRuns().length >= 2);
 
-  // Restore latest report from saved runs
+  // Restore latest report from saved runs (only if it matches current workspace)
   const latestRun = runStorage.getLatestRun();
-  if (latestRun) {
+  const currentWorkspaceName = vscode.workspace.workspaceFolders?.[0]?.name;
+  if (latestRun && (!currentWorkspaceName || latestRun.report.projectName === currentWorkspaceName)) {
     currentReport = latestRun.report;
   }
 
@@ -73,6 +86,16 @@ export function activate(context: vscode.ExtensionContext) {
   mcpProvider.register(context);
   context.subscriptions.push({ dispose: () => semanticCache.dispose() });
   const remediationEngine = new RemediationEngine(copilotClient);
+
+  // Clear stale data when workspace changes
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      logger.info('Workspace changed — clearing stale report data');
+      currentReport = undefined;
+      InsightsPanel.currentPanel = undefined;
+      statusBarManager.clear();
+    })
+  );
 
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(SidebarPanel.viewType, sidebarPanel)
@@ -106,7 +129,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     vscode.commands.registerCommand('ai-readiness.showReport', () => {
       try {
-        let report = currentReport;
+        let report = getValidReport();
         if (!report) {
           const latestRun = runStorage.getLatestRun();
           if (latestRun) { report = latestRun.report; currentReport = report; }
@@ -163,7 +186,7 @@ export function activate(context: vscode.ExtensionContext) {
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       if (!workspaceFolder) return;
 
-      let report = currentReport;
+      let report = getValidReport();
 
       // Run all prerequisites in one progress flow
       await vscode.window.withProgress({
@@ -426,7 +449,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Open dedicated graph page
     vscode.commands.registerCommand('ai-readiness.showGraph', () => {
       try {
-        let report = currentReport;
+        let report = getValidReport();
         if (!report) {
           const latestRun = runStorage.getLatestRun();
           if (latestRun) { report = latestRun.report; }
@@ -445,7 +468,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Open topology graph
     vscode.commands.registerCommand('ai-readiness.showTopology', () => {
       try {
-        let report = currentReport;
+        let report = getValidReport();
         if (!report) {
           const latestRun = runStorage.getLatestRun();
           if (latestRun) { report = latestRun.report; }
@@ -470,7 +493,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Open context architecture audit panel
     vscode.commands.registerCommand('ai-readiness.showContext', () => {
       try {
-        let report = currentReport;
+        let report = getValidReport();
         if (!report) {
           const latestRun = runStorage.getLatestRun();
           if (latestRun) { report = latestRun.report; }
@@ -490,7 +513,7 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('ai-readiness.showInsights', async () => {
       try {
       // Use current report or pick a saved run
-      let report = currentReport;
+      let report = getValidReport();
       if (!report) {
         const runs = runStorage.getRuns();
         if (runs.length === 0) {
