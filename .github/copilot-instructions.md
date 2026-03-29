@@ -21,7 +21,7 @@ VS Code extension that evaluates codebases for AI coding agent readiness. Scans 
 | `src/security/` | Blast radius risk analysis per component |
 | `src/graph/` | Dependency scanning, knowledge graph builder |
 | `src/simulation/` | Micro-simulations — sandboxed LLM tasks per component |
-| `src/storage/` | `RunStorage` — persists scan results via `context.globalState` |
+| `src/storage/` | `RunStorage` + `FixStorage` — persists scan results and fix states via `context.workspaceState` (workspace-scoped, not shared across windows) |
 | `src/report/` | Markdown report generator |
 
 ## Build & Development
