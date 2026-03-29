@@ -709,10 +709,12 @@ SKILL/AUTOMATION CONCEPT: ${sf.concept}
 FILE LOCATION: ${sf.path}
 FILE FORMAT: ${sf.format}
 
-EXISTING AUTOMATIONS:
-${report.levels.flatMap(l => l.signals).filter(s => s.detected && (s.signalId.includes('skill') || s.signalId.includes('agent') || s.signalId.includes('workflow'))).map(s => `- ${s.signalId}: ${s.finding}`).join('\n') || 'None found'}
+EXISTING AUTOMATIONS (DO NOT suggest any that overlap with these):
+${report.levels.flatMap(l => l.signals).filter(s => s.detected && (s.signalId.includes('skill') || s.signalId.includes('agent') || s.signalId.includes('workflow'))).map(s => `- ${s.signalId}: ${s.finding} (files: ${(s.files || []).join(', ')})`).join('\n') || 'None found'}
 
-Suggest 3-5 specific ${sf.concept.split('(')[0].trim().toLowerCase()} that would be valuable. Generate the EXACT file path and a brief content outline following the platform's format.
+IMPORTANT: Do NOT suggest skills that already exist above. Only suggest NEW skills for tasks not yet covered. If all common tasks are already covered, return fewer suggestions or an empty array.
+
+Suggest up to 3 specific NEW ${sf.concept.split('(')[0].trim().toLowerCase()} that would be valuable and do NOT overlap with existing ones. Generate the EXACT file path and a brief content outline following the platform's format.
 
 Respond with ONLY valid JSON:
 {
@@ -734,8 +736,20 @@ Respond with ONLY valid JSON:
       if (jsonMatch) {
         const parsed = JSON.parse(jsonMatch[0]);
         if (Array.isArray(parsed.suggestions)) {
+          // Filter out suggestions that overlap with existing files
+          const existingFiles = new Set(
+            report.levels.flatMap(l => l.signals)
+              .filter(s => s.detected)
+              .flatMap(s => s.files || [])
+              .map(f => f.toLowerCase())
+          );
+          const filtered = parsed.suggestions.filter((s: any) => {
+            if (!s.filePath) return false;
+            const lower = s.filePath.toLowerCase();
+            return !existingFiles.has(lower) && ![...existingFiles].some(ef => ef.includes(s.name?.toLowerCase?.() || ''));
+          });
           const docUrl = toolConfig?.docUrls?.main || '';
-          return parsed.suggestions.map((s: any) => ({
+          return filtered.map((s: any) => ({
             category: 'missing-skill' as const,
             severity: 'important' as const,
             title: `Suggested: ${s.name}`,
