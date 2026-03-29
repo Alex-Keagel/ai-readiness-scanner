@@ -49,15 +49,7 @@ export class RunStorage {
   }
 
   getRuns(): ScanRun[] {
-    // Workspace-scoped storage — each workspace has its own runs
-    const runs = this.context.workspaceState.get<ScanRun[]>(RunStorage.KEY);
-    if (runs) return runs;
-    // Migrate from globalState if workspace has no runs yet
-    const globalRuns = this.context.globalState.get<ScanRun[]>(RunStorage.KEY) || [];
-    const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name;
-    return workspaceName
-      ? globalRuns.filter(r => r.projectName === workspaceName)
-      : globalRuns;
+    return this.context.workspaceState.get<ScanRun[]>(RunStorage.KEY) || [];
   }
 
   getRun(id: string): ScanRun | undefined {
