@@ -444,13 +444,13 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
         const tooltip = dimTooltips[key] || '';
         const dimSignals = signalsByDim[key] || [];
         const signalRows = dimSignals.map(s => {
-          const mult = Math.round(s.multiplier * 100);
+          const pct = Math.round(s.multiplier * 100);
           return `<div class="signal-weight-row">
             <span class="signal-weight-name" title="${this.escapeHtml(s.description)}">L${s.level} ${this.escapeHtml(s.name)}${s.description ? ` <span class="tooltip signal-info">ℹ️<span class="tooltip-text">${this.escapeHtml(s.description)}</span></span>` : ''}</span>
-            <input type="range" class="signal-weight-slider" min="25" max="300" step="25" value="${mult}"
+            <input type="range" class="signal-weight-slider" min="0" max="100" step="5" value="${pct}"
               oninput="this.nextElementSibling.textContent=this.value+'%'"
               onchange="updateSignalWeight('${s.id}', parseInt(this.value)/100)">
-            <span class="signal-weight-val">${mult}%</span>
+            <span class="signal-weight-val">${pct}%</span>
           </div>`;
         }).join('');
 
@@ -464,7 +464,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
           </div>
           ${dimSignals.length > 0 ? `
           <details class="dim-signals">
-            <summary class="dim-signals-toggle">${dimSignals.length} signals · click to adjust individually</summary>
+            <summary class="dim-signals-toggle">${dimSignals.length} signals · adjust relative weights <span style="font-size:0.85em;color:var(--text-secondary)">(auto-normalized)</span></summary>
             <div class="dim-signals-body">${signalRows}</div>
           </details>` : ''}
         </div>`;

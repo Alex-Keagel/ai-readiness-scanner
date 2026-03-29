@@ -329,7 +329,7 @@
         "ai-readiness.signalWeights": {
           "type": "object",
           "default": {},
-          "description": "Per-signal weight multipliers (0.25-3.0). Controls how much individual signals contribute within their EGDR dimension. Empty = use defaults."
+          "description": "Per-signal weight multipliers (0.0-1.0). Controls how much individual signals contribute within their EGDR dimension. 0 = disabled, 1.0 = full weight. Empty = use defaults (all 1.0)."
         },
         "ai-readiness.contextBudgets": {
           "type": "object",
