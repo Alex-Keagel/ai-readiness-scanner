@@ -402,7 +402,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
       const effectivePlatform = selectedPlatform !== 'ask' ? selectedPlatform : report?.selectedTool;
       const signalMultipliers = config.get<Record<string, number>>('signalWeights') ?? {};
 
-      const signalsByDim: Record<string, { id: string; name: string; weight: number; category: string; level: number; multiplier: number }[]> = {
+      const signalsByDim: Record<string, { id: string; name: string; description: string; weight: number; category: string; level: number; multiplier: number }[]> = {
         presence: [], quality: [], operability: [], breadth: [],
       };
 
@@ -413,6 +413,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
             signalsByDim[dim].push({
               id: s.id,
               name: humanizeSignalId(s.id),
+              description: s.description || '',
               weight: s.weight,
               category: s.category,
               level: s.level,
@@ -429,6 +430,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
           signalsByDim[dim].push({
             id: s.id,
             name: humanizeSignalId(s.id),
+            description: s.description || '',
             weight: s.weight,
             category: s.category,
             level: s.level,
@@ -444,7 +446,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
         const signalRows = dimSignals.map(s => {
           const mult = Math.round(s.multiplier * 100);
           return `<div class="signal-weight-row">
-            <span class="signal-weight-name">L${s.level} ${this.escapeHtml(s.name)}</span>
+            <span class="signal-weight-name" title="${this.escapeHtml(s.description)}">L${s.level} ${this.escapeHtml(s.name)}${s.description ? ` <span class="tooltip signal-info">ℹ️<span class="tooltip-text">${this.escapeHtml(s.description)}</span></span>` : ''}</span>
             <input type="range" class="signal-weight-slider" min="25" max="300" step="25" value="${mult}"
               oninput="this.nextElementSibling.textContent=this.value+'%'"
               onchange="updateSignalWeight('${s.id}', parseInt(this.value)/100)">
@@ -1017,8 +1019,9 @@ body::before { display: none; }
 .dim-signals-toggle::before { content: '▸ '; }
 .dim-signals[open] .dim-signals-toggle::before { content: '▾ '; }
 .dim-signals-body { padding: 4px 0; }
-.signal-weight-row { display: grid; grid-template-columns: 110px 1fr 32px; align-items: center; gap: 6px; padding: 2px 0; }
-.signal-weight-name { font-size: 0.72em; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.signal-weight-row { display: grid; grid-template-columns: 1fr 80px 32px; align-items: center; gap: 6px; padding: 2px 0; }
+.signal-weight-name { font-size: 0.72em; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
+.signal-weight-name .signal-info { font-size: 1em; cursor: pointer; }
 .signal-weight-slider { width: 100%; height: 3px; -webkit-appearance: none; appearance: none; background: var(--bg-elevated); border-radius: 2px; outline: none; cursor: pointer; }
 .signal-weight-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 10px; height: 10px; border-radius: 50%; background: var(--color-cyan); cursor: pointer; }
 .signal-weight-val { font-size: 0.7em; color: var(--text-primary); text-align: right; font-variant-numeric: tabular-nums; }
