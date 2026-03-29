@@ -28,11 +28,11 @@ export class LLMCache {
   get(signalId: string, fileContents: string[]): CachedResult | undefined {
     const hash = this.hashContent(fileContents);
     const key = `${CACHE_KEY_PREFIX}${signalId}:${hash}`;
-    const entry = this.context.globalState.get<CachedResult>(key);
+    const entry = this.context.workspaceState.get<CachedResult>(key);
     if (!entry) { return undefined; }
     // Treat entries without cachedAtMs or older than TTL as expired
     if (!entry.cachedAtMs || Date.now() - entry.cachedAtMs > getCacheTTLMs()) {
-      this.context.globalState.update(key, undefined);
+      this.context.workspaceState.update(key, undefined);
       return undefined;
     }
     return entry;
@@ -41,14 +41,14 @@ export class LLMCache {
   set(signalId: string, fileContents: string[], result: CachedResult): void {
     const hash = this.hashContent(fileContents);
     const key = `${CACHE_KEY_PREFIX}${signalId}:${hash}`;
-    this.context.globalState.update(key, { ...result, cachedAtMs: Date.now() });
+    this.context.workspaceState.update(key, { ...result, cachedAtMs: Date.now() });
   }
 
   clear(): void {
-    const keys = this.context.globalState.keys();
+    const keys = this.context.workspaceState.keys();
     for (const key of keys) {
       if (key.startsWith(CACHE_KEY_PREFIX)) {
-        this.context.globalState.update(key, undefined);
+        this.context.workspaceState.update(key, undefined);
       }
     }
   }

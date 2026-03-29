@@ -244,7 +244,7 @@ export class WorkspaceScanner {
     const enrichPct = vscode.workspace.getConfiguration('ai-readiness').get<number>('enrichmentDepth') ?? 70;
     (report as any).enrichmentPct = enrichPct;
 
-    await this.context.globalState.update('lastReport', report);
+    await this.context.workspaceState.update('lastReport', report);
     logger.info(`Scan result: L${report.primaryLevel} ${report.levelName} — ${report.overallScore}/100 — ${report.componentScores.length} components`);
     return report;
     } finally {

@@ -44,12 +44,20 @@ export class RunStorage {
     if (runs.length > RunStorage.MAX_RUNS) {
       runs.length = RunStorage.MAX_RUNS;
     }
-    await this.context.globalState.update(RunStorage.KEY, runs);
+    await this.context.workspaceState.update(RunStorage.KEY, runs);
     return run;
   }
 
   getRuns(): ScanRun[] {
-    return this.context.globalState.get<ScanRun[]>(RunStorage.KEY) || [];
+    // Workspace-scoped storage — each workspace has its own runs
+    const runs = this.context.workspaceState.get<ScanRun[]>(RunStorage.KEY);
+    if (runs) return runs;
+    // Migrate from globalState if workspace has no runs yet
+    const globalRuns = this.context.globalState.get<ScanRun[]>(RunStorage.KEY) || [];
+    const workspaceName = vscode.workspace.workspaceFolders?.[0]?.name;
+    return workspaceName
+      ? globalRuns.filter(r => r.projectName === workspaceName)
+      : globalRuns;
   }
 
   getRun(id: string): ScanRun | undefined {
@@ -63,19 +71,19 @@ export class RunStorage {
 
   async deleteRun(id: string): Promise<void> {
     const runs = this.getRuns().filter(r => r.id !== id);
-    await this.context.globalState.update(RunStorage.KEY, runs);
+    await this.context.workspaceState.update(RunStorage.KEY, runs);
   }
 
   async updateLatestReport(report: ReadinessReport): Promise<void> {
     const runs = this.getRuns();
     if (runs.length > 0) {
       runs[0].report = report;
-      await this.context.globalState.update(RunStorage.KEY, runs);
+      await this.context.workspaceState.update(RunStorage.KEY, runs);
     }
   }
 
   async clearAll(): Promise<void> {
-    await this.context.globalState.update(RunStorage.KEY, []);
+    await this.context.workspaceState.update(RunStorage.KEY, []);
   }
 
   private generateId(): string {

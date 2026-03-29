@@ -83,7 +83,7 @@ export class ComplexityAnalyzer {
     // Check cache
     const cacheHash = computeCacheHash(modules);
     if (context) {
-      const cached = context.globalState.get<CachedComplexity>(CACHE_KEY);
+      const cached = context.workspaceState.get<CachedComplexity>(CACHE_KEY);
       if (cached && cached.hash === cacheHash) {
         logger.info(`ComplexityAnalyzer: cache hit (${cached.result.complexities.length} components)`);
         timer?.end?.();
@@ -135,7 +135,7 @@ export class ComplexityAnalyzer {
 
     // Cache result
     if (context) {
-      await context.globalState.update(CACHE_KEY, {
+      await context.workspaceState.update(CACHE_KEY, {
         hash: cacheHash,
         result,
         timestamp: new Date().toISOString(),

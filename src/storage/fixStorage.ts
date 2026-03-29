@@ -21,7 +21,7 @@ export class FixStorage {
   }
 
   getFixes(workspace?: string): PersistedFix[] {
-    const all = this.context.globalState.get<PersistedFix[]>(FixStorage.KEY, []);
+    const all = this.context.workspaceState.get<PersistedFix[]>(FixStorage.KEY, []);
     if (!workspace) return all;
     return all.filter(f => f.workspace === workspace);
   }
@@ -38,7 +38,7 @@ export class FixStorage {
     } else {
       all.push(fix);
     }
-    await this.context.globalState.update(FixStorage.KEY, all);
+    await this.context.workspaceState.update(FixStorage.KEY, all);
   }
 
   async updateStatus(signalId: string, workspace: string, status: PersistedFix['status']): Promise<void> {
@@ -46,17 +46,17 @@ export class FixStorage {
     const fix = all.find(f => f.signalId === signalId && f.workspace === workspace);
     if (fix) {
       fix.status = status;
-      await this.context.globalState.update(FixStorage.KEY, all);
+      await this.context.workspaceState.update(FixStorage.KEY, all);
     }
   }
 
   async removeFix(signalId: string, workspace: string): Promise<void> {
     const all = this.getFixes().filter(f => !(f.signalId === signalId && f.workspace === workspace));
-    await this.context.globalState.update(FixStorage.KEY, all);
+    await this.context.workspaceState.update(FixStorage.KEY, all);
   }
 
   async clearAll(): Promise<void> {
-    await this.context.globalState.update(FixStorage.KEY, []);
+    await this.context.workspaceState.update(FixStorage.KEY, []);
   }
 
   async checkFileStatus(
