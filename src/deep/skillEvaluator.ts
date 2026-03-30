@@ -43,9 +43,18 @@ const DIMENSION_WEIGHTS = {
 };
 
 // ─── Required SKILL.md sections ─────────────────────────────────────
-
-const REQUIRED_SECTIONS = ['## Steps', '## Inputs', '## Outputs', '## Validation'];
-const RECOMMENDED_SECTIONS = ['## Prerequisites', '## Error Handling', '## Examples'];
+// Each required section can be satisfied by any of its alternative names
+const REQUIRED_SECTIONS: { name: string; alternatives: string[] }[] = [
+  { name: '## Steps', alternatives: ['## Steps', '## Procedure', '## Instructions', '## How to', '## Workflow', '### Step', '### 1.', '### 1)'] },
+  { name: '## Inputs', alternatives: ['## Inputs', '## Parameters', '## Arguments', '## Configuration', '## Prerequisites', '## Context'] },
+  { name: '## Outputs', alternatives: ['## Outputs', '## Results', '## Expected Output', '## Important Notes', '## Notes'] },
+  { name: '## Validation', alternatives: ['## Validation', '## Verify', '## Review', '## Check', '## Testing'] },
+];
+const RECOMMENDED_SECTIONS: { name: string; alternatives: string[] }[] = [
+  { name: '## Prerequisites', alternatives: ['## Prerequisites', '## Requirements', '## Before', '## Setup', '## Context'] },
+  { name: '## Error Handling', alternatives: ['## Error Handling', '## Errors', '## Troubleshooting', '## Edge Cases', '## Important Notes'] },
+  { name: '## Examples', alternatives: ['## Examples', '## Example', '## Usage', '## Demo'] },
+];
 
 // ─── Skill Evaluator Pipeline ───────────────────────────────────────
 
@@ -161,32 +170,44 @@ export class SkillEvaluator {
     const suggestions: string[] = [];
     let score = 100;
 
-    // Required sections
+    // Required sections (accept alternative names)
     for (const section of REQUIRED_SECTIONS) {
-      if (!skill.content.includes(section) && !skill.content.includes(section.toLowerCase())) {
-        issues.push(`Missing required section: ${section}`);
+      const found = section.alternatives.some(alt => 
+        skill.content.includes(alt) || skill.content.toLowerCase().includes(alt.toLowerCase())
+      );
+      if (!found) {
+        issues.push(`Missing required section: ${section.name}`);
         score -= 20;
       }
     }
 
-    // Recommended sections
+    // Recommended sections (accept alternative names)
     for (const section of RECOMMENDED_SECTIONS) {
-      if (!skill.content.includes(section) && !skill.content.includes(section.toLowerCase())) {
-        suggestions.push(`Consider adding section: ${section}`);
+      const found = section.alternatives.some(alt =>
+        skill.content.includes(alt) || skill.content.toLowerCase().includes(alt.toLowerCase())
+      );
+      if (!found) {
+        suggestions.push(`Consider adding section: ${section.name}`);
         score -= 5;
       }
     }
 
-    // Steps should be numbered
-    const stepsSection = skill.content.match(/## Steps[\s\S]*?(?=##|$)/i);
-    if (stepsSection) {
-      const stepLines = stepsSection[0].split('\n').filter(l => /^\s*\d+[\.\)]\s/.test(l));
-      if (stepLines.length === 0) {
-        issues.push('Steps section has no numbered steps');
-        score -= 15;
-      } else if (stepLines.length < 3) {
-        suggestions.push(`Only ${stepLines.length} steps — consider adding more detail`);
+    // Steps should be numbered (check both ## Steps and ## Procedure and numbered ### headers)
+    const stepsSection = skill.content.match(/## (?:Steps|Procedure|Instructions|Workflow)[\s\S]*?(?=##[^#]|$)/i);
+    const numberedHeaders = skill.content.match(/### \d+[\.\)]/g);
+    const numberedLines = skill.content.split('\n').filter(l => /^\s*\d+[\.\)]\s/.test(l));
+    
+    if (stepsSection || numberedHeaders || numberedLines.length > 0) {
+      const stepCount = numberedHeaders?.length || numberedLines.length;
+      if (stepCount < 2) {
+        suggestions.push(`Only ${stepCount} steps — consider adding more detail`);
         score -= 5;
+      }
+    } else if (!stepsSection && !numberedHeaders && numberedLines.length === 0) {
+      // No steps found at all — but don't double-penalize if already penalized for missing section
+      if (!issues.some(i => i.includes('Steps'))) {
+        issues.push('No numbered steps or procedure found');
+        score -= 10;
       }
     }
 

@@ -291,10 +291,36 @@ Respond as JSON array:
     ).length;
     const accuracy = pathRefs.length > 0 ? Math.round((validPaths / pathRefs.length) * 100) : 50;
 
-    // Coverage: % of critical modules mentioned
+    // Coverage: % of critical modules mentioned OR covered by applyTo globs
     const criticalModules = codebase.modules.filter(m => m.role !== 'test' && m.role !== 'type-def' && m.lines > 100);
     const mentionedPaths = instructions.coveredPaths;
-    const covered = criticalModules.filter(m => [...mentionedPaths].some(p => m.path.includes(p))).length;
+
+    // Also check applyTo glob patterns from instruction files
+    const applyToGlobs: string[] = [];
+    for (const f of files) {
+      const match = f.content.match(/(?:applyTo|paths|glob):\s*['"]?([^'"\n]+)/i);
+      if (match) applyToGlobs.push(match[1].trim());
+    }
+
+    const covered = criticalModules.filter(m => {
+      // Direct mention
+      if ([...mentionedPaths].some(p => m.path.includes(p))) return true;
+      // Covered by applyTo glob
+      for (const glob of applyToGlobs) {
+        // Simple glob matching: ** matches anything, * matches within segment
+        const patterns = glob.split(',').map(g => g.trim());
+        for (const pattern of patterns) {
+          if (pattern.includes('**/*.py') && m.path.endsWith('.py')) return true;
+          if (pattern.includes('**/*.cs') && m.path.endsWith('.cs')) return true;
+          if (pattern.includes('**/*.kql') && m.path.endsWith('.kql')) return true;
+          if (pattern.includes('**/*.ts') && m.path.endsWith('.ts')) return true;
+          // Directory glob: "detection/**" matches detection/adf/foo.json
+          const dirPattern = pattern.replace(/\*\*.*$/, '').replace(/['"{}]/g, '');
+          if (dirPattern && m.path.startsWith(dirPattern)) return true;
+        }
+      }
+      return false;
+    }).length;
     const coverage = criticalModules.length > 0 ? Math.round((covered / criticalModules.length) * 100) : 0;
 
     // Freshness: penalize TODOs, FIXME, deprecated, placeholder text
