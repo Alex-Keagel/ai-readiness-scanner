@@ -1121,6 +1121,60 @@ export class ComponentMapper {
     logger.info(`Deep map [deterministic]: ${components.length} components discovered (${manifestDirs.size} manifest dirs)`);
 
     // ═══════════════════════════════════════════════════════════
+    // PHASE 1b: Sub-group large parents by directory structure
+    // ═══════════════════════════════════════════════════════════
+    // If a parent has many direct children (e.g., src/common/ with 44 sub-projects),
+    // group them by their intermediate directory (e.g., Hosting/, Storage/, Diagnostics/)
+    const largeParents = components.filter(c => {
+      const childCount = components.filter(x => x.parentPath === c.path).length;
+      return childCount > 8; // only group if parent has many children
+    });
+
+    for (const parent of largeParents) {
+      const children = components.filter(c => c.parentPath === parent.path);
+
+      // Find natural sub-groups by common prefix in child paths
+      // e.g., under src/common/: Hosting, Hosting.Tests, Hosting.Web → group "Hosting"
+      const subGroups = new Map<string, ComponentInfo[]>();
+      for (const child of children) {
+        const relPath = child.path.slice(parent.path.length + 1); // relative to parent
+        const prefix = relPath.split('/')[0].split('.')[0]; // first dir or project prefix before dot
+        if (!prefix) continue;
+        if (!subGroups.has(prefix)) subGroups.set(prefix, []);
+        subGroups.get(prefix)!.push(child);
+      }
+
+      // Create sub-group nodes for prefixes with 2+ members
+      for (const [prefix, members] of subGroups) {
+        if (members.length < 2) continue;
+
+        const groupPath = `${parent.path}/.group-${prefix}`;
+        const groupLang = members[0].language;
+        const groupType = members.some(m => m.type === 'app') ? 'app' : members[0].type;
+
+        components.push({
+          name: prefix,
+          path: groupPath,
+          language: groupLang,
+          type: groupType,
+          description: `${prefix} group (${members.length} projects)`,
+          parentPath: parent.path,
+          children: members.map(m => m.path),
+        });
+
+        // Reparent members under the group
+        for (const m of members) {
+          m.parentPath = groupPath;
+        }
+      }
+    }
+
+    // Refresh children arrays after sub-grouping
+    for (const comp of components) {
+      comp.children = components.filter(c => c.parentPath === comp.path).map(c => c.path);
+    }
+
+    // ═══════════════════════════════════════════════════════════
     // PHASE 2: LLM naming — add business domain descriptions
     // ═══════════════════════════════════════════════════════════
     if (this.copilotClient?.isAvailable() && components.length > 0) {
