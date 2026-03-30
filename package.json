@@ -2,7 +2,7 @@
   "name": "ai-readiness-scanner",
   "displayName": "AI Readiness Scanner",
   "description": "Score your codebase AI readiness across 7 platforms (Copilot, Cline, Cursor, Claude, Roo, Windsurf, Aider). 6-level maturity ladder, semantic analysis, one-click fixes.",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "alex-keagel",
   "engines": {
     "vscode": "^1.90.0"

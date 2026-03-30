@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.0.3] — 2026-03-30
+
+- feat: parallel batched Domain Architect for large repos
+- fix: Domain Architect anti-collapse for large repos
+- docs: update copilot-instructions.md + auto-sync README version badge
+
 ## [1.0.2] — 2026-03-30
 
 - fix: deeper component discovery + graph export + ground truth reports
