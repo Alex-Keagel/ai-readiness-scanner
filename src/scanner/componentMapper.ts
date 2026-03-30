@@ -1045,70 +1045,101 @@ Respond as JSON: {"components":[{"name":"...","path":"...","language":"...","typ
     // ═══════════════════════════════════════════════════════════════
     logger.info('Deep map [Agent 2/3]: Domain Architect — grouping into domains...');
 
-    // For large repos, pre-group by top-level directory to prevent over-consolidation
-    const microList = microComponents.length > 50
-      ? (() => {
-          // Group by top-level dir and show counts
-          const groups = new Map<string, ComponentInfo[]>();
-          for (const c of microComponents) {
-            const topDir = c.path.split('/')[0] || c.path;
-            if (!groups.has(topDir)) groups.set(topDir, []);
-            groups.get(topDir)!.push(c);
+    // Group micro-components by top-level directory for batching
+    const dirGroups = new Map<string, ComponentInfo[]>();
+    for (const c of microComponents) {
+      const topDir = c.path.split('/')[0] || c.path;
+      if (!dirGroups.has(topDir)) dirGroups.set(topDir, []);
+      dirGroups.get(topDir)!.push(c);
+    }
+
+    let domainComponents: ComponentInfo[] = [];
+
+    if (microComponents.length > 40) {
+      // ── PARALLEL BATCHED GROUPING for large repos ──
+      // Split into batches of ~15-20 components, run in parallel, then merge
+      const batches: ComponentInfo[][] = [];
+      let currentBatch: ComponentInfo[] = [];
+      for (const [, items] of dirGroups) {
+        if (currentBatch.length + items.length > 20 && currentBatch.length > 0) {
+          batches.push(currentBatch);
+          currentBatch = [];
+        }
+        currentBatch.push(...items);
+      }
+      if (currentBatch.length > 0) batches.push(currentBatch);
+
+      logger.info(`Deep map [Agent 2]: splitting ${microComponents.length} components into ${batches.length} parallel batches`);
+
+      const batchPromises = batches.map(async (batch, idx) => {
+        const batchList = batch.map(c => `- ${c.path} | ${c.name} | ${c.language} | ${c.type}`).join('\n');
+        const batchPrompt = `You are a **Domain Architect**. Group these ${batch.length} components into 2-5 business or technical domains.
+
+COMPONENTS (batch ${idx + 1}/${batches.length}):
+${batchList}
+
+Create domains like: "Data Processing", "Resource Provider", "Shared Libraries", "Infrastructure", "Testing", "Developer Experience", "Security", "Monitoring".
+
+RULES:
+- EVERY component MUST appear as a subComponent of exactly ONE domain.
+- Do NOT merge components that serve different functions.
+- subComponents can have their own subComponents (2 levels max).
+
+Respond as JSON: {"components":[{"name":"Domain","path":"primary-path","language":"Multi","type":"service","description":"...","subComponents":[...]}]}`;
+
+        try {
+          const r = await this.copilotClient!.analyzeFast(batchPrompt);
+          const m = r.match(/\{[\s\S]*\}/);
+          if (m) {
+            const parsed = JSON.parse(m[0]);
+            if (Array.isArray(parsed.components)) return this.flattenComponents(parsed.components);
           }
-          return [...groups.entries()].map(([dir, items]) =>
-            `### ${dir}/ (${items.length} components)\n${items.map(c => `- ${c.path} | ${c.name} | ${c.language} | ${c.type}`).join('\n')}`
-          ).join('\n\n');
-        })()
-      : microComponents.map(c => `- ${c.path} | ${c.name} | ${c.language} | ${c.type}`).join('\n');
+        } catch (err) { logger.debug(`Deep map [Agent 2] batch ${idx} failed`, { error: String(err) }); }
+        return batch; // fallback: return flat
+      });
 
-    const minDomains = Math.max(5, Math.min(10, Math.ceil(microComponents.length / 12)));
+      const batchResults = await Promise.all(batchPromises);
+      domainComponents = batchResults.flat();
+      logger.info(`Deep map [Agent 2]: ${domainComponents.length} components from ${batches.length} parallel batches`);
 
-    const agent2Prompt = `You are a **Domain Architect** expert agent. Organize these ${microComponents.length} micro-components into a hierarchical domain structure.
+    } else {
+      // ── SINGLE CALL for smaller repos ──
+      const microList = microComponents.map(c => `- ${c.path} | ${c.name} | ${c.language} | ${c.type}`).join('\n');
+      const minDomains = Math.max(5, Math.min(10, Math.ceil(microComponents.length / 8)));
+
+      const agent2Prompt = `You are a **Domain Architect** expert agent. Organize these ${microComponents.length} micro-components into a hierarchical domain structure.
 
 MICRO-COMPONENTS:
 ${microList}
 
-MANDATORY TOP-LEVEL DOMAINS — you MUST create AT LEAST ${minDomains} top-level groups:
-1. **[Business Domains]** — create 2-4 based on the code's business purpose (e.g., "Bot Detection & Classification", "Auto Segmentation", "Data Pipeline Processing"). Components from DIFFERENT directories CAN be in the same business domain.
-2. **Core Infrastructure** — CI/CD, deployment, releases, IaC templates, Bicep/ARM
-3. **Developer Experience** — dev containers, IDE settings, bootstrap scripts, AI assistant rules, memory bank
-4. **Shared Libraries** — common modules, utility packages used by multiple apps
-5. **Testing** — test projects, E2E tests, sample projects, test scripts
-6. **Security & Compliance** — credential scan, policy checks, compliance metadata
-7. **Monitoring & Observability** — dashboards, alerts, metrics (if present)
-8. **Solution & Build Configuration** — solution files, NuGet, MSBuild props, global configs
-
-If you produce fewer than ${minDomains} top-level domains, you are WRONG. Each directory group above should be its own domain, not merged into another.
+MANDATORY TOP-LEVEL DOMAINS — create AT LEAST ${minDomains} groups:
+1. **[Business Domains]** — 2-4 based on business purpose
+2. **Core Infrastructure** — CI/CD, deployment, releases, IaC
+3. **Developer Experience** — dev containers, IDE settings, AI rules
+4. **Shared Libraries** — common modules, utility packages
+5. **Security & Compliance** — credential scan, policy checks
+6. **Monitoring & Observability** — dashboards, alerts (if present)
 
 RULES:
-- EVERY micro-component MUST appear as a subComponent of exactly ONE domain. Zero drops.
-- Do NOT merge components that serve different functions — anti-collapse.
+- EVERY micro-component MUST appear as a subComponent of exactly ONE domain.
+- Do NOT merge components that serve different functions.
 - subComponents can have their own subComponents (3 levels max).
-- Cross-directory grouping: a business domain CAN contain components from apps/, components/, and KQL directories.
-- Keep Shared Libraries separate from business domains — if a library is ONLY used by one domain, still keep it under Shared Libraries.
+- Cross-directory grouping allowed.
 
 Respond as JSON:
 {"components":[{"name":"Domain Name","path":"primary-path","language":"Multi","type":"service","description":"...","subComponents":[...]}]}`;
 
-    let domainComponents: ComponentInfo[] = [];
-    try {
-      const r = await this.copilotClient!.analyze(agent2Prompt, token, 90_000);
-      const m = r.match(/\{[\s\S]*\}/);
-      if (m) {
-        const parsed = JSON.parse(m[0]);
-        if (Array.isArray(parsed.components)) {
-          domainComponents = this.flattenComponents(parsed.components);
-
-          // Validate: check top-level domain count
-          const topLevel = domainComponents.filter(c => !c.parentPath);
-          if (topLevel.length < minDomains) {
-            logger.warn(`Deep map [Agent 2]: only ${topLevel.length} top-level domains (need ${minDomains}), result may be over-consolidated`);
-          }
+      try {
+        const r = await this.copilotClient!.analyze(agent2Prompt, token, 90_000);
+        const m = r.match(/\{[\s\S]*\}/);
+        if (m) {
+          const parsed = JSON.parse(m[0]);
+          if (Array.isArray(parsed.components)) domainComponents = this.flattenComponents(parsed.components);
         }
+      } catch (err) {
+        logger.warn('Deep map [Agent 2] failed, using flat structure', { error: String(err) });
+        return microComponents;
       }
-    } catch (err) {
-      logger.warn('Deep map [Agent 2] failed, using flat structure', { error: String(err) });
-      return microComponents;
     }
 
     // ═══════════════════════════════════════════════════════════════
