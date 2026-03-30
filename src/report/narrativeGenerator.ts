@@ -36,14 +36,28 @@ export class NarrativeGenerator {
       const platformSignalIdSet = new Set(PlatformSignalFilter.getSignalIds(tool));
       const allSignals = report.levels.flatMap(l => l.signals);
 
-      // Instruction/Reality Sync — only count reality checks from THIS platform's signals
+      // Instruction/Reality Sync — weighted: 60% coverage exists + 40% path accuracy
       const platformSignals = allSignals.filter(s => platformSignalIdSet.has(s.signalId));
       const realityChecks = platformSignals
         .filter(s => s.realityChecks?.length)
         .flatMap(s => s.realityChecks!);
       const validChecks = realityChecks.filter(r => r.status === 'valid').length;
-      const totalChecks = realityChecks.length || 1;
-      const instructionSyncScore = totalChecks > 1 ? Math.round((validChecks / totalChecks) * 100) : Math.min(50, report.overallScore);
+      const totalChecks = realityChecks.length;
+
+      // Coverage score: do instruction files exist for this platform?
+      const instructionSignalsExist = platformSignals.filter(s => s.detected && s.level <= 3);
+      const expectedInstructionSignals = platformSignals.filter(s => s.level <= 3);
+      const coverageScore = expectedInstructionSignals.length > 0
+        ? Math.round((instructionSignalsExist.length / expectedInstructionSignals.length) * 100)
+        : 50;
+
+      // Path accuracy score: of the paths referenced, how many are valid?
+      const pathAccuracyScore = totalChecks > 0
+        ? Math.round((validChecks / totalChecks) * 100)
+        : 80; // no paths referenced = no stale references = good
+
+      // Blend: 60% coverage + 40% accuracy
+      const instructionSyncScore = Math.round(coverageScore * 0.6 + pathAccuracyScore * 0.4);
 
       // Business Logic Alignment — 3-factor blend:
       // 1. Business validation scores (LLM cross-reference: do instructions match code?)
@@ -107,7 +121,14 @@ export class NarrativeGenerator {
 You are writing a platform readiness assessment for a ${toolConfig.name} user.
 Project: ${report.projectName} (Level ${report.primaryLevel}: ${MATURITY_LEVELS[report.primaryLevel].name}, Score: ${report.overallScore}/100)
 
-For each metric below, write ONE specific, insightful sentence explaining what the score means for THIS project. Reference actual project details when possible. Do NOT be generic.
+For each metric below, write ONE specific, insightful sentence explaining what the score means for THIS project. Reference actual component names. Do NOT mention calculation methodology.
+
+IMPORTANT: Your narrative must match the metric's actual meaning:
+- Business Logic Alignment: Do instruction files accurately describe the codebase structure and conventions?
+- Type & Environment Strictness: Language-aware type safety. Statically typed languages score high. Python with type hints gets partial credit. Config files excluded.
+- Semantic Density: Ratio of documentation (comments, docstrings) to code. Higher = agents understand better.
+- Instruction/Reality Sync: 60% "do instruction files exist" + 40% "do referenced paths exist". NOT about applyTo patterns.
+- Context Efficiency: 60% component coverage (specific mention=100, scoped applyTo=80, global-only=40, absent=0) + 40% token budget. A global copilot-instructions.md gives only 40/100 per component — scoped instructions are needed for high scores. Low score = insufficient or too generic instruction coverage.
 
 Metrics:
 ${dimensions.map(d => `- ${d.dimension}: ${d.score}/100`).join('\n')}
@@ -116,6 +137,7 @@ Context:
 - Languages: ${report.projectContext.languages.join(', ')}
 - Components: ${report.componentScores.slice(0, 8).map(c => `${c.name} (L${c.primaryLevel}, ${c.overallScore}pts)`).join(', ')}
 - Reality check: ${validChecks}/${totalChecks} paths verified
+- Instruction files: ${report.contextAudit ? `${report.contextAudit.contextEfficiency.totalTokens} tokens (${report.contextAudit.contextEfficiency.budgetPct}% of budget)` : 'unknown'}
 - ${report.levels.flatMap(l => l.signals).filter(s => s.detected).length} signals detected out of ${report.levels.flatMap(l => l.signals).length}
 
 Respond as JSON array:
@@ -211,6 +233,9 @@ Project: ${report.projectName}
 Languages: ${report.projectContext.languages.join(', ')}
 Components: ${report.componentScores.slice(0, 6).map(c => c.name).join(', ')}
 
+EXISTING FILES (DO NOT suggest creating these — they already exist):
+${report.structureComparison?.expected?.filter((f) => f.exists).map((f) => `✅ ${f.path}`).join('\n') || '(none detected)'}
+
 Missing signals: ${missingSignals.map(s => `${s.signalId}: ${s.finding}`).join('\n')}
 
 Reality check failures: ${realityFailures.slice(0, 5).map(r => `${r.claim} → ${r.reality} (${r.file})`).join('\n') || 'none'}
@@ -218,6 +243,8 @@ Reality check failures: ${realityFailures.slice(0, 5).map(r => `${r.claim} → $
 Critical insights: ${insights.filter(i => i.severity === 'critical').slice(0, 3).map(i => `${i.title}: ${i.recommendation}`).join('\n') || 'none'}
 
 Low-scoring components: ${report.componentScores.filter(c => c.overallScore < 40).slice(0, 5).map(c => `${c.name} (${c.overallScore}pts)`).join(', ') || 'none'}
+
+IMPORTANT: Only suggest creating files that are MISSING. Never suggest creating a file listed above as existing.
 
 Create 3-5 numbered remediation steps. Each step should have:
 - A creative, memorable title (e.g. "Fix the Ghost Map", "Patch the Semantic Black Holes")
@@ -260,7 +287,7 @@ Respond as JSON array:
       ['Business Logic Alignment', Math.round(score * 0.8)],
       ['Type & Environment Strictness', Math.round(l1TS ?? m?.typeStrictnessIndex ?? score * 0.7)],
       ['Semantic Density', Math.round(l1SD ?? m?.semanticDensity ?? score * 0.6)],
-      ['Instruction/Reality Sync', Math.min(50, score)],
+      ['Instruction/Reality Sync', Math.max(40, Math.round(score * 0.9))],
       ['Context Efficiency', report.contextAudit?.contextEfficiency?.score ?? Math.min(60, score + 10)],
     ];
     return dims.map(([dimension, s]) => ({

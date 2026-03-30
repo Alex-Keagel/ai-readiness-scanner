@@ -76,39 +76,51 @@ export class RecommendationSynthesizer {
 
     if (q.coverage < 50) {
       const totalCritical = codebase.modules.filter(m => m.role === 'core-logic' && m.lines > 100).length;
-      const uncoveredMods = codebase.modules
-        .filter(m => m.role === 'core-logic' && m.lines > 100 && !instructions.coveredPaths.has(m.path))
-        .slice(0, 5);
-      const uncoveredCount = totalCritical - Math.round(totalCritical * q.coverage / 100);
-      recs.push({
-        id: 'quality-coverage',
-        type: 'uncovered-module',
-        severity: 'critical',
-        title: `Instructions only cover ${q.coverage}% of critical modules`,
-        description: `${uncoveredCount > 0 ? uncoveredCount : uncoveredMods.length} of ${totalCritical} critical modules have no instruction coverage. Agents will have no guidance for these areas and will hallucinate.`,
-        evidence: uncoveredMods.map(m => `${m.path} (${m.lines} lines, ${m.fanIn} dependents, ${m.exportCount} exports)`),
-        targetFile: this.getMainInstructionFile(tool),
-        impactScore: 85,
-        affectedModules: uncoveredMods.map(m => m.path),
-      });
+      if (totalCritical > 0) {
+        const uncoveredMods = codebase.modules
+          .filter(m => m.role === 'core-logic' && m.lines > 100 && !instructions.coveredPaths.has(m.path))
+          .slice(0, 5);
+        const uncoveredCount = totalCritical - Math.round(totalCritical * q.coverage / 100);
+        recs.push({
+          id: 'quality-coverage',
+          type: 'uncovered-module',
+          severity: 'critical',
+          title: `Instructions only cover ${q.coverage}% of critical modules`,
+          description: `${uncoveredCount} of ${totalCritical} critical modules have no instruction coverage. Agents will have no guidance for these areas and will hallucinate.`,
+          evidence: uncoveredMods.map(m => `${m.path} (${m.lines} lines, ${m.fanIn} dependents, ${m.exportCount} exports)`),
+          targetFile: this.getMainInstructionFile(tool),
+          impactScore: 85,
+          affectedModules: uncoveredMods.map(m => m.path),
+        });
+      }
     }
 
     if (q.accuracy < 60) {
+      // Check claims against BOTH modules AND component paths (directories may not be in modules)
+      const allKnownPaths = new Set([
+        ...codebase.modules.map(m => m.path),
+        ...(codebase as any).componentPaths || [],
+      ]);
       const badPaths = instructions.claims
         .filter(c => c.category === 'path-reference')
-        .filter(c => !codebase.modules.some(m => m.path.includes(c.claim)))
+        .filter(c => !allKnownPaths.has(c.claim) && ![...allKnownPaths].some(p => p.includes(c.claim) || c.claim.includes(p)))
         .slice(0, 5);
-      recs.push({
-        id: 'quality-accuracy',
-        type: 'stale-path',
-        severity: 'critical',
-        title: `${100 - q.accuracy}% of referenced paths don't exist — instructions are lying to the agent`,
-        description: 'Your instruction files reference paths that do not exist in the repository. Agents will attempt to read/modify non-existent files.',
-        evidence: badPaths.map(c => `"${c.claim}" referenced in ${c.sourceFile}:${c.sourceLine}`),
-        targetFile: this.getMainInstructionFile(tool),
-        impactScore: 90,
-        affectedModules: badPaths.map(c => c.claim),
-      });
+
+      if (badPaths.length > 0) {
+        // Include the source instruction file in the description
+        const sourceFiles = [...new Set(badPaths.map(c => c.sourceFile))].slice(0, 3);
+        recs.push({
+          id: 'quality-accuracy',
+          type: 'stale-path',
+          severity: 'critical',
+          title: `${badPaths.length} referenced paths don't exist — instructions are lying to the agent`,
+          description: `Instruction file${sourceFiles.length > 1 ? 's' : ''} ${sourceFiles.join(', ')} reference${sourceFiles.length === 1 ? 's' : ''} paths that do not exist in the repository. Agents will attempt to read/modify non-existent files.`,
+          evidence: badPaths.map(c => `"${c.claim}" referenced in ${c.sourceFile}:${c.sourceLine}`),
+          targetFile: sourceFiles[0] || this.getMainInstructionFile(tool),
+          impactScore: 90,
+          affectedModules: badPaths.map(c => c.claim),
+        });
+      }
     }
 
     return recs;

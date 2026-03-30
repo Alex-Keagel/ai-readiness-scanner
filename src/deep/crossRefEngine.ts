@@ -273,15 +273,21 @@ Respond as JSON array:
     const files = instructions.files;
     const claims = instructions.claims;
 
-    // Specificity: ratio of path-reference claims to total content
+    // Specificity: ratio of path-reference claims + scoped instruction files to total content
     const pathClaims = claims.filter(c => c.category === 'path-reference').length;
+    // Count scoped instruction files (with applyTo globs) as specificity signals
+    const scopedFiles = files.filter(f => /(?:applyTo|paths|glob):\s*['"]?[^\s'"]+/i.test(f.content)).length;
     const totalLines = files.reduce((s, f) => s + f.content.split('\n').length, 0) || 1;
-    const specificity = Math.min(100, Math.round((pathClaims / totalLines) * 500));
+    const specificity = Math.min(100, Math.round(((pathClaims + scopedFiles * 10) / totalLines) * 500));
 
-    // Accuracy: % of path references that exist in codebase
+    // Accuracy: % of path references that exist in codebase (check modules + component dirs)
     const pathRefs = claims.filter(c => c.category === 'path-reference');
+    const allKnownPaths = new Set([
+      ...codebase.modules.map(m => m.path),
+      ...((codebase as any).componentPaths || []),
+    ]);
     const validPaths = pathRefs.filter(c =>
-      codebase.modules.some(m => m.path.includes(c.claim) || c.claim.includes(m.path))
+      [...allKnownPaths].some(p => p.includes(c.claim) || c.claim.includes(p))
     ).length;
     const accuracy = pathRefs.length > 0 ? Math.round((validPaths / pathRefs.length) * 100) : 50;
 

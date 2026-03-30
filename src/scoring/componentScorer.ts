@@ -56,6 +56,7 @@ export class ComponentScorer {
             levels: [],
             description: comp.description,
             parentPath: comp.parentPath,
+            isGenerated: comp.isGenerated,
           } as ComponentScore);
           continue;
         }
@@ -76,6 +77,7 @@ export class ComponentScorer {
           levels: [],
           description: comp.description,
           parentPath: comp.parentPath,
+          isGenerated: comp.isGenerated,
         } as ComponentScore);
       }
     }
@@ -202,6 +204,7 @@ export class ComponentScorer {
       overallScore: Math.round(passRate * 100),
       levels: [],
       signals,
+      isGenerated: comp.isGenerated,
     };
   }
 

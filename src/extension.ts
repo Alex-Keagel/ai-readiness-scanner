@@ -36,6 +36,23 @@ let sidebarPanel: SidebarPanel;
 let statusBarManager: StatusBarManager;
 let livePoller: SessionPoller | undefined;
 let liveEngine: LiveMetricsEngine | undefined;
+let isBusy = false;
+
+/** Guard against concurrent operations */
+function acquireLock(operation: string): boolean {
+  if (isBusy) {
+    vscode.window.showWarningMessage(`Please wait — ${operation} is still running.`);
+    return false;
+  }
+  isBusy = true;
+  vscode.commands.executeCommand('setContext', 'ai-readiness.isBusy', true);
+  return true;
+}
+
+function releaseLock(): void {
+  isBusy = false;
+  vscode.commands.executeCommand('setContext', 'ai-readiness.isBusy', false);
+}
 
 /** Get the current report only if it matches the active workspace */
 function getValidReport(): ReadinessReport | undefined {
@@ -106,24 +123,16 @@ export function activate(context: vscode.ExtensionContext) {
   // Register commands
   context.subscriptions.push(
     vscode.commands.registerCommand('ai-readiness.fullScan', async () => {
+      if (!acquireLock('a scan')) return;
       try {
         const tool = await pickAITool();
-        if (!tool) return;
-        await runScan(scanner, context, false, tool);
+        if (!tool) { releaseLock(); return; }
+        await runScan(scanner, context, tool);
       } catch (err) {
         logger.error('Command fullScan failed', err);
         vscode.window.showErrorMessage(`Command failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }),
-
-    vscode.commands.registerCommand('ai-readiness.quickScan', async () => {
-      try {
-        const tool = await pickAITool();
-        if (!tool) return;
-        await runScan(scanner, context, true, tool);
-      } catch (err) {
-        logger.error('Command quickScan failed', err);
-        vscode.window.showErrorMessage(`Command failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        releaseLock();
       }
     }),
 
@@ -179,9 +188,10 @@ export function activate(context: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand('ai-readiness.fixAll', async () => {
+      if (!acquireLock('Action Center')) return;
       try {
       const tool = await pickAITool();
-      if (!tool) return;
+      if (!tool) { releaseLock(); return; }
 
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       if (!workspaceFolder) return;
@@ -218,6 +228,7 @@ export function activate(context: vscode.ExtensionContext) {
               category: i.category || 'improvement',
               estimatedImpact: i.estimatedImpact ? `+${i.estimatedImpact} points` : undefined,
               affectedComponent: i.affectedComponent || i.affectedLanguage,
+              confidenceScore: 0.75,
             }));
             logger.info(`Action Center: generated ${report!.insights!.length} insights`);
           } catch (err) {
@@ -241,6 +252,7 @@ export function activate(context: vscode.ExtensionContext) {
                 category: rec.type,
                 estimatedImpact: `+${rec.impactScore} points`,
                 affectedComponent: rec.affectedModules.join(', '),
+                confidenceScore: (rec as any).confidence || 0.85,
               });
             }
             // Store deep quality scores on report
@@ -274,6 +286,10 @@ export function activate(context: vscode.ExtensionContext) {
 
       if (!report) return;
 
+      // Re-save report with deep analysis + narrative data to persist in workspaceState
+      currentReport = report;
+      await runStorage.updateLatestReport(report);
+
       // Ask for user context
       const userContext = await vscode.window.showInputBox({
         prompt: 'Describe your project context (optional — helps generate better recommendations)',
@@ -296,6 +312,8 @@ export function activate(context: vscode.ExtensionContext) {
       } catch (err) {
         logger.error('Command fixAll failed', err);
         vscode.window.showErrorMessage(`Command failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        releaseLock();
       }
     }),
 
@@ -465,30 +483,6 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
 
-    // Open topology graph
-    vscode.commands.registerCommand('ai-readiness.showTopology', () => {
-      try {
-        let report = getValidReport();
-        if (!report) {
-          const latestRun = runStorage.getLatestRun();
-          if (latestRun) { report = latestRun.report; }
-        }
-        const deepData = (report as any)?.deepAnalysis;
-        if (!deepData?.complexity) {
-          vscode.window.showInformationMessage('Run a full scan first — topology requires deep analysis.');
-          return;
-        }
-        const { TopologyPanel } = require('./ui/topologyPanel');
-        TopologyPanel.createOrShow(
-          deepData.complexity.topology.nodes,
-          deepData.complexity.topology.edges,
-          deepData.complexity.products
-        );
-      } catch (err) {
-        logger.error('Command showTopology failed', err);
-        vscode.window.showErrorMessage(`Command failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }),
 
     // Open context architecture audit panel
     vscode.commands.registerCommand('ai-readiness.showContext', () => {
@@ -511,6 +505,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Open dedicated insights page — generate on-demand
     vscode.commands.registerCommand('ai-readiness.showInsights', async () => {
+      if (!acquireLock('AI Strategy')) return;
       try {
       // Use current report or pick a saved run
       let report = getValidReport();
@@ -566,6 +561,10 @@ export function activate(context: vscode.ExtensionContext) {
           vscode.window.showErrorMessage(`Insight generation failed: ${msg}`);
           console.error('[Insights] Generation failed:', err);
         }
+
+        // Persist enriched report to storage and in-memory
+        currentReport = report;
+        await runStorage.updateLatestReport(report);
       }
 
       if (report.insights?.length) {
@@ -626,6 +625,8 @@ export function activate(context: vscode.ExtensionContext) {
       } catch (err) {
         logger.error('Command showInsights failed', err);
         vscode.window.showErrorMessage(`Command failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        releaseLock();
       }
     }),
 
@@ -944,7 +945,7 @@ export function activate(context: vscode.ExtensionContext) {
       });
       if (!selected) return;
 
-      await runScan(scanner, context, false, selected.toolId);
+      await runScan(scanner, context, selected.toolId);
       } catch (err) {
         logger.error('Command selectTool failed', err);
         vscode.window.showErrorMessage(`Command failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1685,7 +1686,6 @@ Generate ONLY the file content — no explanation, no markdown code fences aroun
 async function runScan(
   scanner: WorkspaceScanner,
   context: vscode.ExtensionContext,
-  quickMode: boolean,
   selectedTool: AITool
 ): Promise<void> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -1703,25 +1703,106 @@ async function runScan(
     async (progress, token) => {
       const scanStartTime = Date.now();
       try {
+        // Phase 1: Core scan (signals, components, structure)
+        progress.report({ message: '🔍 Scanning workspace signals...', increment: 10 });
         currentReport = await scanner.scan(
           workspaceFolder.uri,
-          quickMode,
+          false,
           progress,
           token,
           selectedTool
         );
 
-        // Save run to persistent storage
-        await runStorage.saveRun(currentReport);
+        if (!currentReport || token.isCancellationRequested) return;
 
+        // Save initial scan result
+        await runStorage.saveRun(currentReport);
         sidebarPanel.refresh();
         statusBarManager.update(currentReport);
         vscode.commands.executeCommand('setContext', 'ai-readiness.hasResults', true);
         vscode.commands.executeCommand('setContext', 'ai-readiness.hasMultipleRuns', runStorage.getRuns().length >= 2);
 
+        // ── Run entire pipeline ──
+
+        // Phase 2: Generate insights (LLM)
+        if (!currentReport.insights?.length) {
+          progress.report({ message: '💡 Generating AI insights...', increment: 15 });
+          try {
+            if (!copilotClient.isAvailable()) {
+              await copilotClient.initialize();
+            }
+            const insightsEng = new InsightsEngine(copilotClient);
+            const rawInsights = await insightsEng.generateInsights(currentReport, token);
+            currentReport.insights = rawInsights.map((i: any) => ({
+              title: i.title || 'Untitled insight',
+              recommendation: i.recommendation || i.description || '',
+              severity: i.severity === 'nice-to-have' ? 'suggestion' as const : i.severity === 'critical' ? 'critical' as const : i.severity === 'important' ? 'important' as const : 'suggestion' as const,
+              category: i.category || 'improvement',
+              estimatedImpact: i.estimatedImpact ? `+${i.estimatedImpact} points` : undefined,
+              affectedComponent: i.affectedComponent || i.affectedLanguage,
+              confidenceScore: 0.75, // LLM-generated without debate validation
+            }));
+            logger.info(`Full scan: generated ${currentReport.insights.length} insights`);
+          } catch (err) {
+            logger.warn('Full scan: insight generation failed, continuing', err);
+          }
+        }
+        if (token.isCancellationRequested) return;
+
+        // Phase 3: Deep analysis (cross-reference instructions vs code)
+        progress.report({ message: '🔬 Deep analysis: cross-referencing instructions vs code...', increment: 15 });
+        try {
+          const { runDeepAnalysis } = await import('./deep');
+          const deepResult = await runDeepAnalysis(workspaceFolder.uri, copilotClient, selectedTool, progress);
+          if (deepResult.recommendations.length > 0) {
+            if (!currentReport.insights) currentReport.insights = [];
+            for (const rec of deepResult.recommendations) {
+              currentReport.insights.push({
+                title: rec.title,
+                recommendation: rec.suggestedContent || rec.description,
+                severity: rec.severity === 'critical' ? 'critical' : rec.severity === 'important' ? 'important' : 'suggestion',
+                category: rec.type,
+                estimatedImpact: `+${rec.impactScore} points`,
+                affectedComponent: rec.affectedModules.join(', '),
+                confidenceScore: (rec as any).confidence || 0.85, // Deep analysis with validation
+              });
+            }
+            (currentReport as any).deepAnalysis = {
+              instructionQuality: deepResult.crossRef.instructionQuality,
+              coveragePercent: deepResult.crossRef.coveragePercent,
+              gapCount: deepResult.crossRef.coverageGaps.length,
+              driftCount: deepResult.crossRef.driftIssues.length,
+              complexity: deepResult.complexity,
+              callGraph: deepResult.callGraph,
+              dataFlow: deepResult.dataFlow,
+            };
+            logger.info(`Full scan: deep analysis added ${deepResult.recommendations.length} recommendations`);
+          }
+        } catch (err) {
+          logger.warn('Full scan: deep analysis failed, continuing', err);
+        }
+        if (token.isCancellationRequested) return;
+
+        // Phase 4: Generate narrative
+        if (!currentReport.narrativeSections) {
+          progress.report({ message: '📊 Generating report narrative...', increment: 10 });
+          try {
+            const { NarrativeGenerator } = await import('./report/narrativeGenerator');
+            const narrativeGen = new NarrativeGenerator(copilotClient);
+            currentReport.narrativeSections = await narrativeGen.generate(currentReport);
+            logger.info('Full scan: narrative generated');
+          } catch (err) {
+            logger.warn('Full scan: narrative generation failed', err);
+          }
+        }
+
+        // Save fully enriched report
+        await runStorage.updateLatestReport(currentReport);
+        sidebarPanel.refresh();
+
+        const scanDuration = Math.round((Date.now() - scanStartTime) / 1000);
         const level = currentReport.primaryLevel;
         const levelInfo = MATURITY_LEVELS[level];
-        const scanDuration = Math.round((Date.now() - scanStartTime) / 1000);
         vscode.window.showInformationMessage(
           `AI Readiness: Level ${level} — ${levelInfo.name} (Depth: ${currentReport.depth}%, Score: ${currentReport.overallScore}/100) [${scanDuration}s]`
         );

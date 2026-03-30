@@ -239,9 +239,9 @@ description: An empty skill with no content
 describe('auditContextEfficiency', () => {
   it('returns low-moderate score when no instruction files exist (no agent guidance)', async () => {
     const result = await auditContextEfficiency(workspaceUri as any, makeContext(), 0);
-    // Score blends coverage (50 default) + budget (15 for zero tokens) → ~36
-    expect(result.score).toBeGreaterThan(20);
-    expect(result.score).toBeLessThan(50);
+    // Score: no components = default 50 (neutral)
+    expect(result.score).toBeGreaterThanOrEqual(30);
+    expect(result.score).toBeLessThanOrEqual(55);
     expect(result.totalTokens).toBe(0);
     expect(result.budgetPct).toBe(0);
   });

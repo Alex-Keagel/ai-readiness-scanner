@@ -27,8 +27,6 @@ export class InsightsPanel {
       async (msg) => {
         if (msg.command === 'open-action-center') {
           vscode.commands.executeCommand('ai-readiness.fixAll');
-        } else if (msg.command === 'show-topology') {
-          vscode.commands.executeCommand('ai-readiness.showTopology');
         }
       },
       null,
@@ -91,8 +89,18 @@ export class InsightsPanel {
       else if (i.severity === 'important') acImportant++;
       else acSuggestion++;
     }
+    const isTestComponent = (name: string, path: string) => {
+      const n = name.toLowerCase(), p = path.toLowerCase();
+      return n.endsWith('.tests') || n.endsWith('tests') || n.startsWith('test_') ||
+        p.includes('.tests/') || p.includes('/tests/') || p.endsWith('.tests');
+    };
+    const isRemoved = (name: string, desc?: string) => {
+      return /(removed|deprecated|obsolete|archived)/i.test(name) || /(removed|deprecated|obsolete|archived)/i.test(desc || '');
+    };
     // Add component-quality recs
-    const lowComponents = (report.componentScores || []).filter(c => c.overallScore < 50);
+    const lowComponents = (report.componentScores || []).filter(c =>
+      c.overallScore < 50 && !isTestComponent(c.name, c.path) && !c.isGenerated && !isRemoved(c.name, c.description)
+    );
     for (const comp of lowComponents) {
       const compSignals = comp.signals || [];
       if (!compSignals.some(s => s.signal?.includes('readme') && s.present)) {
@@ -394,7 +402,7 @@ export class InsightsPanel {
       <div class="focus-label">🎯 What Matters Most</div>
       <ul>${bullets.map(b => `<li>${b}</li>`).join('')}</ul>
       <button class="btn-primary" style="margin-top:12px;width:100%" onclick="vscode.postMessage({command:'open-action-center'})">🔧 Open Action Center (${acCritical + acImportant + acSuggestion} items) →</button>
-      <button class="btn-primary" style="margin-top:8px;width:100%;background:linear-gradient(135deg, rgba(179,136,255,0.15), rgba(179,136,255,0.05));border-color:var(--color-purple,#B388FF);color:var(--color-purple,#B388FF)" onclick="vscode.postMessage({command:'show-topology'})">🕸️ Semantic Topology →</button>
+      
     </div>`;
   }
 
@@ -594,8 +602,17 @@ export class InsightsPanel {
       const components = report.componentScores;
       if (!components || components.length === 0) return '';
 
-      // Sort by score ascending (worst first)
-      const sorted = [...components].sort((a, b) => a.overallScore - b.overallScore);
+      // Sort by score ascending (worst first), exclude test projects
+      const isTest = (c: { name: string; path: string }) => {
+        const n = c.name.toLowerCase(), p = c.path.toLowerCase();
+        return n.endsWith('.tests') || n.endsWith('tests') || n.startsWith('test_') ||
+          p.includes('.tests/') || p.includes('/tests/') || p.endsWith('.tests');
+      };
+      const sorted = [...components].filter(c =>
+        !isTest(c) && !c.isGenerated &&
+        !/(removed|deprecated|obsolete|archived)/i.test(c.name) &&
+        !/(removed|deprecated|obsolete|archived)/i.test(c.description || '')
+      ).sort((a, b) => a.overallScore - b.overallScore);
 
       const getColor = (score: number): string => {
         if (score >= 70) return '#2ed573';

@@ -26,7 +26,6 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
         try {
           switch (msg.command) {
             case 'scan': vscode.commands.executeCommand('ai-readiness.fullScan'); break;
-            case 'quickScan': vscode.commands.executeCommand('ai-readiness.quickScan'); break;
             case 'guide': vscode.commands.executeCommand('ai-readiness.showGuide'); break;
             case 'vibe': vscode.commands.executeCommand('ai-readiness.vibeReport'); break;
             case 'live': vscode.commands.executeCommand('ai-readiness.liveStart'); break;

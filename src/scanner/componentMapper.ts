@@ -1073,6 +1073,7 @@ Respond with ONLY valid JSON:
         description: String(comp.description || ''),
         parentPath: parentPath,
         children: [],
+        isGenerated: this.detectGenerated(compPath, String(comp.name || ''), String(comp.language || ''), String(comp.description || '')),
       };
 
       // Recursively flatten subComponents
@@ -1085,11 +1086,14 @@ Respond with ONLY valid JSON:
       result.push(component);
     }
 
-    // Deduplicate by path, keeping first occurrence
+    // Deduplicate by path and filter excluded directories
     const seen = new Set<string>();
     return result.filter(c => {
       if (!c.path || seen.has(c.path)) { return false; }
       seen.add(c.path);
+      // Filter out excluded directories that LLM may have included
+      const topDir = c.path.split('/')[0]?.toLowerCase() || '';
+      if (ComponentMapper.EXCLUDED_DIRS.has(topDir) || ComponentMapper.EXCLUDED_DIRS.has(c.path.toLowerCase())) return false;
       return true;
     });
   }
@@ -1098,6 +1102,27 @@ Respond with ONLY valid JSON:
     const valid: ComponentInfo['type'][] = ['app', 'library', 'service', 'script', 'config', 'infra', 'data', 'unknown'];
     const str = String(type || '').toLowerCase();
     return valid.includes(str as ComponentInfo['type']) ? str as ComponentInfo['type'] : 'unknown';
+  }
+
+  /** Detect if a component contains generated/exported/backup code */
+  private detectGenerated(path: string, name: string, language: string, description: string): boolean {
+    const pathLower = path.toLowerCase();
+    const nameLower = name.toLowerCase();
+    const descLower = description.toLowerCase();
+
+    // Directory name patterns for clearly generated/exported code
+    const GENERATED_DIR_PATTERNS = [
+      /\bgenerated\b/i, /\bcompiled\b/i,
+      /\bauto[-_]?gen/i, /\bstubs?\b/i, /\b_pb2/i, /\bproto[-_]?gen/i,
+    ];
+    if (GENERATED_DIR_PATTERNS.some(p => p.test(pathLower) || p.test(nameLower))) return true;
+
+    // Description must explicitly say "backup" or "exported" — not just path heuristics
+    // This avoids false positives on authored KQL functions in directories like KustoFunctions/
+    if (/\b(auto[-\s]?generated|machine[-\s]?generated)\b/i.test(descLower)) return true;
+    if (/\bbackup cop(y|ies)\b/i.test(descLower) || /\bexported?\s+(from|copy|copies|backup)\b/i.test(descLower)) return true;
+
+    return false;
   }
 
   private async findComponentDescriptors(workspaceUri: vscode.Uri): Promise<FileContent[]> {

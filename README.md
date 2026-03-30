@@ -362,8 +362,8 @@ git clone https://github.com/alex-keagel/vscode-ai-readiness.git
 cd vscode-ai-readiness
 npm install
 npm run build
-npm test           # 496 tests
-npm run package    # creates .vsix
+npm test           
+npm run package    
 ```
 
 Press `F5` to launch the Extension Development Host for debugging.
@@ -372,40 +372,6 @@ Press `F5` to launch the Extension Development Host for debugging.
 
 ## Release Notes
 
-### 1.4.3
-- **AI Strategy Executive Brief** — Readiness Overview, Action Items totals, "What Matters Most" strategic bullets, 🧠 LLM Analysis section with full insight cards
-- **Deep Recommendation Engine** — instruction analysis, codebase profiling, cross-reference gap detection, evidence-backed LLM recommendations
-- **Output Validator** — deterministic + LLM validation of generated content, auto-fix (code fences, JSON comments), retry with feedback
-- **Multi-file generation** — 3-format parser, parallel batch generation (5 concurrent), source file protection
-- **Fix state management** — approve/decline fixes, content-hash persistence, auto-resolve on rescan
-- **496 tests** across 24 test files (143 deep engine tests, 26 insights panel tests)
-
-### 1.3.5
-- Dynamic platform guide generation from official documentation
-- Context architecture audit (MCP, skills, hooks, tool security)
-- One-click insight fixes with diff editor preview
-- Platform signal filter centralization
-- EGDR scoring with anti-pattern multipliers and quality gates
-- L1 codebase quality signals (type strictness, semantic density, context efficiency)
-- Configurable scoring weights, dimension weights, and scoring modes
-
-### 1.2.0
-- Smart semantic indexing — fan-in analysis, git velocity, importance ranking
-- Configurable enrichment depth and concurrency
-- Expert agent personas for all 7 platforms
-
-### 1.1.0
-- Complete rewrite with 6-level maturity ladder
-- EGDR scoring model with per-platform profiles
-- Semantic RAG engine with TF-IDF vector search
-- Tactical Glassbox dark theme
-- 7 AI platform support
-
----
-
-## License
-
-MIT
 
 ---
 

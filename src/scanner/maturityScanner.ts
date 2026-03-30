@@ -156,7 +156,7 @@ export class MaturityScanner {
         try {
           const found = await vscode.workspace.findFiles(
             new vscode.RelativePattern(workspaceUri, glob),
-            '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**',
+            '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/.venv/**,**/venv/**,**/obj/**,**/bin/**,**/__pycache__/**',
             200
           );
           codeFiles.push(...found);

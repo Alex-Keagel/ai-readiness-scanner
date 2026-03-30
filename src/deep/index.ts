@@ -59,6 +59,33 @@ export async function runDeepAnalysis(
   progress?.report({ message: '🔍 Profiling codebase architecture...', increment: 10 });
   const profiler = new CodebaseProfiler(copilotClient);
   const codebase = await profiler.profile(workspaceUri);
+
+  // Inject component/directory paths for path validation (directories not in module list)
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const rootPath = workspaceUri.fsPath;
+    const allPaths: string[] = [];
+
+    // Scan 2 levels deep for directories
+    const topDirs = fs.readdirSync(rootPath, { withFileTypes: true })
+      .filter((d: any) => d.isDirectory() && !d.name.startsWith('.') && d.name !== 'node_modules' && d.name !== '.venv')
+      .map((d: any) => d.name);
+    allPaths.push(...topDirs);
+
+    for (const topDir of topDirs) {
+      try {
+        const subDirs = fs.readdirSync(path.join(rootPath, topDir), { withFileTypes: true })
+          .filter((d: any) => d.isDirectory())
+          .map((d: any) => `${topDir}/${d.name}`);
+        allPaths.push(...subDirs);
+      } catch { /* skip unreadable */ }
+    }
+
+    (codebase as any).componentPaths = allPaths;
+    logger.info(`Deep: injected ${allPaths.length} directory paths for path validation`);
+  } catch { /* non-critical */ }
+
   logger.info(`Deep: ${codebase.modules.length} modules, ${codebase.pipelines.length} pipelines, ${codebase.hotspots.length} hotspots`);
 
   // Phase 3: Call graph extraction (uses codebase modules)

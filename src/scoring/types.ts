@@ -315,6 +315,7 @@ export interface ComponentScore {
   overallScore: number;    // 0-100 composite
   levels: LevelScore[];
   signals: ComponentSignal[];
+  isGenerated?: boolean;   // true for exported/backup/auto-generated code (KQL backups, protobuf stubs, etc.)
 }
 
 export interface ComponentSignal {
@@ -438,6 +439,7 @@ export interface ComponentInfo {
   description?: string;
   parentPath?: string;  // path of parent component (for sub-components)
   children?: string[];  // paths of child components
+  isGenerated?: boolean; // true for exported/backup/auto-generated code
 }
 
 export interface FileContent {

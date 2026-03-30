@@ -655,7 +655,7 @@ export class ChatParticipant {
       'I can assess your codebase\'s AI maturity across the 6-level maturity ladder.\n\n' +
       '**Available commands:**\n\n' +
       '- `/scan [tool]` — Run a full maturity scan (tool: copilot, cline, cursor, roo, claude, windsurf, aider)\n' +
-      '- `/quick [tool]` — Run a quick scan (faster, fewer checks)\n' +
+      '- `/scan [tool]` — Run a scan for a specific AI tool\n' +
       '- `/report` — Generate and save a full markdown report\n' +
       '- `/level <number>` — Deep-dive into a specific level (e.g. `/level 3`)\n' +
       '- `/fix <signal>` — Auto-fix a specific signal _(coming soon)_\n' +

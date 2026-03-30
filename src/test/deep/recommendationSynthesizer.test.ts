@@ -254,11 +254,16 @@ describe('RecommendationSynthesizer', () => {
       expect(recs.find((r: DeepRecommendation) => r.id === 'quality-specificity')).toBeUndefined();
     });
 
-    it('adds quality-coverage rec when coverage < 50', () => {
+    it('adds quality-coverage rec when coverage < 50 and critical modules exist', () => {
       const crossRef = makeCrossRef({
         instructionQuality: makeQuality({ coverage: 30 }),
       });
-      const recs = gapsToRecs(crossRef, makeCodebase(), makeInstructions());
+      const codebase = makeCodebase({
+        modules: [
+          { path: 'src/core.ts', language: 'typescript', lines: 200, exports: ['main'], exportCount: 1, importCount: 0, fanIn: 3, hasTests: false, hasDocstring: false, complexity: 'medium' as const, role: 'core-logic' as const },
+        ],
+      });
+      const recs = gapsToRecs(crossRef, codebase, makeInstructions());
       const covRec = recs.find((r: DeepRecommendation) => r.id === 'quality-coverage');
       expect(covRec).toBeDefined();
       expect(covRec!.severity).toBe('critical');

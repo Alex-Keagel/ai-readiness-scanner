@@ -966,9 +966,9 @@ export class WebviewReportPanel {
       // Formula tooltips per metric
       const formulaTooltips: Record<string, string> = {
         'Business Logic Alignment': 'Calculated: average(signal.score) for signals with LLM business validation. Measures whether your instruction files accurately describe the actual code structure and dependencies.',
-        'Type & Environment Strictness': 'Calculated: (typeAnnotations / declarations × 80) + (strictMode ? 20 : 0). Agents rely on LSPs for cross-file navigation — without type annotations, they hallucinate imports and function signatures.',
+        'Type & Environment Strictness': 'Language-aware type scoring. Statically typed languages (C#, Java, TS) get inherent credit. Python with type hints gets partial credit. Config files (JSON, YAML, KQL) are excluded.',
         'Semantic Density': 'Calculated: (commentLines / codeLines) × 150, capped at 100. Higher ratio of comments, docstrings, and descriptive names means agents pull better context when reasoning about code.',
-        'Instruction/Reality Sync': 'Calculated: validRealityChecks / totalRealityChecks × 100. The scanner verifies every path, command, and claim in your instruction files against the actual repo. Failed checks = agent will reference non-existent files.',
+        'Instruction/Reality Sync': 'Calculated: 60% instruction coverage (do files exist?) + 40% path accuracy (do referenced paths exist?). Having instructions is weighted higher than path perfection.',
         'Context Efficiency': 'Calculated: contextAudit.score based on total instruction tokens / context budget. If your instruction files consume too much of the agent context window, it has less room for code analysis.',
       };
 
@@ -1004,13 +1004,18 @@ export class WebviewReportPanel {
   private computeFallbackMetrics(report: ReadinessReport): NarrativeMetric[] {
     const m = report.codebaseMetrics;
     const realityChecks = report.levels.flatMap(l => l.signals).filter(s => s.realityChecks?.length).flatMap(s => s.realityChecks!);
-    const validPct = realityChecks.length > 0 ? Math.round((realityChecks.filter(r => r.status === 'valid').length / realityChecks.length) * 100) : 50;
+    const pathAccuracy = realityChecks.length > 0 ? Math.round((realityChecks.filter(r => r.status === 'valid').length / realityChecks.length) * 100) : 80;
+    const allSignals = report.levels.flatMap(l => l.signals);
+    const instrExist = allSignals.filter(s => s.detected && s.level <= 3).length;
+    const instrExpected = allSignals.filter(s => s.level <= 3).length;
+    const instrCoverage = instrExpected > 0 ? Math.round((instrExist / instrExpected) * 100) : 50;
+    const syncScore = Math.round(instrCoverage * 0.6 + pathAccuracy * 0.4);
 
     const dims: [string, number][] = [
       ['Business Logic Alignment', report.overallScore],
       ['Type & Environment Strictness', m?.typeStrictnessIndex ?? 0],
       ['Semantic Density', m?.semanticDensity ?? 0],
-      ['Instruction/Reality Sync', validPct],
+      ['Instruction/Reality Sync', syncScore],
       ['Context Efficiency', report.contextAudit?.contextEfficiency?.score ?? 50],
     ];
     return dims.map(([dimension, score]) => ({

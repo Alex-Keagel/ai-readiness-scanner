@@ -67,11 +67,14 @@ const TYPE_ANNOTATION_PATTERNS: Record<string, RegExp[]> = {
   ],
   java: [
     /\b(int|long|double|float|boolean|char|byte|short|void|String)\s+\w+/,
+    /\b[A-Z]\w*\s+\w+\s*[=;({\[]/, // Class typed declarations
     /<[A-Z]\w+/,
   ],
   csharp: [
-    /\b(int|long|double|float|bool|char|byte|string|void|decimal)\s+\w+/,
-    /<[A-Z]\w+/,
+    /\b(int|long|double|float|bool|char|byte|string|void|decimal|var|dynamic|object)\s+\w+/,
+    /\b[A-Z]\w*\s+\w+\s*[=;({\[]/, // Class/interface typed declarations: ILogger logger, HttpClient client
+    /<[A-Z]\w+/,                     // Generics: Task<string>, List<int>
+    /\basync\s+Task/,                // async Task methods
   ],
   go: [
     /\b(int|int8|int16|int32|int64|uint|float32|float64|string|bool|byte|rune|error)\b/,
@@ -290,24 +293,68 @@ function computeSemanticDensity(files: FileAnalysis[]): number {
 function computeTypeStrictness(files: FileAnalysis[]): number {
   if (files.length === 0) { return 0; }
 
-  let totalAnnotations = 0;
-  let totalDeclarations = 0;
-  let strictCount = 0;
+  // Language-aware type scoring:
+  // - Statically typed languages (C#, Java, Go, Rust, TypeScript) get inherent type safety credit
+  // - Python with type hints gets partial credit
+  // - Config/data languages (JSON, YAML, KQL, Markdown, etc.) are excluded
+  const LANG_BASE_SCORES: Record<string, number> = {
+    csharp: 85, java: 85, go: 80, rust: 90, typescript: 75,
+    kotlin: 80, scala: 80, swift: 80,
+    python: 45, // supports optional typing; productive for AI agents even without hints
+    javascript: 10, ruby: 10, php: 15,
+  };
+  const CONFIG_LANGUAGES = new Set([
+    'json', 'yaml', 'yml', 'xml', 'toml', 'ini', 'kql', 'kusto',
+    'markdown', 'md', 'txt', 'csv', 'sql', 'bicep', 'hcl', 'terraform',
+    'dockerfile', 'makefile', 'shell', 'bash', 'powershell', 'bat',
+  ]);
 
-  for (const f of files) {
-    totalAnnotations += f.typeAnnotationCount;
-    totalDeclarations += f.declarationCount;
+  // Separate code files from config files
+  const codeFiles = files.filter(f => {
+    const lang = f.language.toLowerCase();
+    // Exclude config/data languages
+    if (CONFIG_LANGUAGES.has(lang)) return false;
+    // Exclude unknown-language files with zero code signals
+    if (!LANG_BASE_SCORES[lang] && f.declarationCount === 0 && f.typeAnnotationCount === 0) return false;
+    return true;
+  });
+  if (codeFiles.length === 0) {
+    // All config/data files — type strictness is not applicable, return neutral
+    return 50;
+  }
+
+  // Languages where typing is mandatory — ratio is less meaningful
+  const MANDATORY_TYPED = new Set(['csharp', 'java', 'go', 'rust', 'kotlin', 'scala', 'swift']);
+
+  let totalScore = 0;
+  let totalWeight = 0;
+
+  for (const f of codeFiles) {
+    const lang = f.language.toLowerCase();
+    const baseScore = LANG_BASE_SCORES[lang] ?? 20;
+    const weight = Math.max(1, Math.log2(f.totalLines + 1));
+
+    if (MANDATORY_TYPED.has(lang)) {
+      // Statically typed: base score is the floor, annotations only add a small bonus
+      const ratio = f.declarationCount > 0 ? Math.min(1, f.typeAnnotationCount / f.declarationCount) : 0.5;
+      const fileScore = baseScore + ratio * (100 - baseScore) * 0.5; // e.g. C#: 85 + ratio * 7.5
+      totalScore += fileScore * weight;
+    } else if (f.declarationCount > 0 && f.typeAnnotationCount > 0) {
+      // Optional typing (Python, JS): base is floor, annotations add bonus
+      const ratio = Math.min(1, f.typeAnnotationCount / f.declarationCount);
+      const fileScore = baseScore + ratio * (100 - baseScore); // e.g. Python(45) + 15%*55 = 53
+      totalScore += fileScore * weight;
+    } else {
+      totalScore += baseScore * weight;
+    }
+    totalWeight += weight;
+
     if (f.hasStrictMode) {
-      strictCount++;
+      totalScore += 10 * weight;
     }
   }
 
-  if (totalDeclarations === 0 && strictCount === 0) { return 0; }
-
-  // Simple: annotationRatio * 0.8 + (hasStrictMode ? 20 : 0)
-  const annotationRatio = totalDeclarations > 0 ? (totalAnnotations / totalDeclarations) * 80 : 0;
-  const strictBonus = strictCount > 0 ? 20 : 0;
-  return clamp(annotationRatio + strictBonus, 0, 100);
+  return totalWeight > 0 ? clamp(totalScore / totalWeight, 0, 100) : 0;
 }
 
 function computeContextFragmentation(

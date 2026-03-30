@@ -279,7 +279,9 @@ export class MaturityEngine {
       let weightedSum = 0;
       let totalWeight = 0;
       for (const comp of componentScores) {
-        const w = typeWeights[comp.type] ?? typeWeights['unknown'] ?? 0.5;
+        // Generated components get reduced weight regardless of type
+        const baseWeight = typeWeights[comp.type] ?? typeWeights['unknown'] ?? 0.5;
+        const w = comp.isGenerated ? Math.min(baseWeight, 0.2) : baseWeight;
         weightedSum += comp.overallScore * w;
         totalWeight += w;
       }

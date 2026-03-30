@@ -18,6 +18,7 @@ interface Recommendation {
   detected: boolean;
   score: number;
   confidenceScore?: number; // 0.0-1.0 from validation pipeline
+  confidenceReason?: string; // why this confidence level
   validatorAgreed?: boolean;
   debateOutcome?: string;
 }
@@ -52,6 +53,7 @@ export class RecommendationsPanel {
         logger.debug(`Recommendations: signal IDs: ${ids.join(', ')}`);
         if (!this.onGenerate) {
           logger.warn('Recommendations: no generate handler available');
+          this.markError(ids, 'Generate handler not available. Close and reopen the Action Center.');
           return;
         }
         this.markGenerating(ids);
@@ -63,7 +65,7 @@ export class RecommendationsPanel {
           this.markDone(ids);
         } catch (err) {
           logger.error(`Recommendations: generation failed`, err);
-          this.markError(ids, String(err));
+          this.markError(ids, err instanceof Error ? err.message : String(err));
         }
       } else if (msg.command === 'preview') {
         logger.info(`Recommendations: preview requested for "${msg.signalId}"`);
@@ -301,7 +303,8 @@ export class RecommendationsPanel {
         impact: tier === 'auto' ? 'Will create new file' : tier === 'guided' ? 'Will modify existing file' : 'Manual guidance',
         detected: s.detected,
         score: s.score,
-        confidenceScore: s.confidenceScore,
+        confidenceScore: s.confidenceScore ?? 1.0, // deterministic checks = full confidence
+        confidenceReason: s.confidenceScore != null && s.confidenceScore < 1.0 ? 'LLM-validated signal' : 'Deterministic: file/pattern detection',
         validatorAgreed: s.validatorAgreed,
         debateOutcome: s.debateOutcome,
       });
@@ -310,10 +313,23 @@ export class RecommendationsPanel {
     // ── 2. Insight-based recommendations (LLM-generated content issues) ──
     const insights = report.insights || [];
     const existingIds = new Set(recs.map(r => r.signalId));
+    const existingTitleKeys = new Set(recs.map(r => r.name.toLowerCase().replace(/\d+/g, '').trim()));
     for (const insight of insights) {
       const insightId = `insight_${insight.category}_${(insight.title || '').replace(/[^a-zA-Z0-9]/g, '_').slice(0, 40)}`;
       if (existingIds.has(insightId)) continue;
+
+      // Dedup: skip if a similar title already exists (e.g. "Instructions only cover X%" variants)
+      const titleKey = (insight.title || '').toLowerCase().replace(/\d+/g, '').trim();
+      if (existingTitleKeys.has(titleKey)) continue;
+
+      // Dedup: skip if a skill with the same name is already suggested
+      const skillNameMatch = (insight.title || '').match(/[""'](\w[\w-]+)[""']|skill.*?[""](\w+)[""]|Create\s+[""](\w+)[""]|Suggested:\s*(\S+)/i);
+      const skillName = (skillNameMatch?.[1] || skillNameMatch?.[2] || skillNameMatch?.[3] || skillNameMatch?.[4] || '').toLowerCase();
+      if (skillName && existingTitleKeys.has(`skill:${skillName}`)) continue;
+      if (skillName) existingTitleKeys.add(`skill:${skillName}`);
+
       existingIds.add(insightId);
+      existingTitleKeys.add(titleKey);
 
       const filePath = insight.affectedComponent
         ? `${insight.affectedComponent}/` 
@@ -330,19 +346,40 @@ export class RecommendationsPanel {
         impact: insight.estimatedImpact || 'Improves AI readiness',
         detected: true,
         score: 20,
+        confidenceScore: insight.confidenceScore,
+        confidenceReason: insight.confidenceScore && insight.confidenceScore >= 0.85 ? 'Deep analysis with validation' : 'LLM-generated insight',
       });
     }
 
     // ── 3. Component quality recommendations (low-scoring components) ──
-    // Skip components already covered by insight-based recs
+    // Skip components already covered by insight-based recs (check both path AND name)
     const insightPaths = new Set(
       recs.filter(r => r.signalId.startsWith('insight_'))
         .map(r => r.filePath.replace(/\/README\.md$/, '').replace(/\/$/, ''))
     );
+    const insightNames = new Set(
+      recs.filter(r => r.signalId.startsWith('insight_'))
+        .map(r => {
+          const match = r.name.match(/[""]([^""]+)[""]/);
+          return match ? match[1].toLowerCase() : '';
+        })
+        .filter(n => n)
+    );
     const components = report.componentScores || [];
     for (const comp of components.filter(c => c.overallScore < 50)) {
-      // Skip if insight already covers this component
-      if (insightPaths.has(comp.path) || [...insightPaths].some(p => comp.path.includes(p) || p.includes(comp.path))) continue;
+      // Skip if insight already covers this component (by path or name)
+      if (insightPaths.has(comp.path) || insightPaths.has(comp.name) ||
+          insightNames.has(comp.name.toLowerCase()) ||
+          [...insightPaths].some(p => comp.path.includes(p) || p.includes(comp.path))) continue;
+      // Skip test projects — they don't need READMEs
+      const nameLower = comp.name.toLowerCase();
+      const pathLower = comp.path.toLowerCase();
+      if (nameLower.endsWith('.tests') || nameLower.endsWith('tests') || nameLower.startsWith('test_') ||
+          pathLower.includes('.tests/') || pathLower.includes('/tests/') || pathLower.endsWith('.tests')) continue;
+      // Skip generated/exported components
+      if (comp.isGenerated) continue;
+      // Skip removed/deprecated components
+      if (/(removed|deprecated|obsolete|archived)/i.test(nameLower) || /(removed|deprecated|obsolete|archived)/i.test(comp.description || '')) continue;
       const compSignals = comp.signals || [];
       const hasReadme = compSignals.some(s => s.signal?.includes('readme') && s.present);
       const hasDocs = compSignals.some(s => s.signal?.includes('doc') && s.present);
@@ -362,6 +399,8 @@ export class RecommendationsPanel {
             impact: 'Agents understand component purpose',
             detected: false,
             score: 0,
+            confidenceScore: 1.0,
+            confidenceReason: 'Deterministic: file existence check',
           });
         }
       }
@@ -382,6 +421,8 @@ export class RecommendationsPanel {
             impact: 'Reduces agent hallucinations',
             detected: false,
             score: 0,
+            confidenceScore: 1.0,
+            confidenceReason: 'Deterministic: file existence check',
           });
         }
       }
@@ -529,8 +570,10 @@ export class RecommendationsPanel {
     .rec-status { font-size: 0.85em; margin-top: 6px; font-weight: 600; }
     .rec-status.generating { color: var(--color-amber); }
     .rec-status.done { color: var(--color-emerald); }
-    .rec-status.pending-review { color: var(--color-amber); }
-    .rec-card.pending-review { opacity: 0.85; border-left-color: var(--color-amber) !important; }
+    .rec-status.pending-review { color: var(--color-emerald); }
+    .rec-card.pending-review { opacity: 0.9; border-left-color: var(--color-emerald) !important; }
+    .regen-btn { background: var(--bg-elevated); border: 1px solid var(--border-subtle); padding: 2px 8px; border-radius: 4px; color: var(--text-secondary); cursor: pointer; font-size: 0.8em; margin-left: 8px; }
+    .regen-btn:hover { border-color: var(--border-active); color: var(--text-primary); }
     .rec-card.fix-approved { opacity: 0.6; border-left-color: var(--color-emerald) !important; }
     .rec-card.fix-declined { opacity: 0.5; border-left-color: var(--color-crimson) !important; }
     .rec-card.fix-declined .rec-name { text-decoration: line-through; }
@@ -574,7 +617,7 @@ export class RecommendationsPanel {
 </head>
 <body>
   <h1>🔧 Action Center</h1>
-  <div class="subtitle">${toolIcon} ${esc(toolName)} · Level ${report.primaryLevel} ${MATURITY_LEVELS[report.primaryLevel].name} · ${visibleRecs.length} recommendations${approvedCount > 0 ? ` · ${approvedCount} approved ✅` : ''} <span style="opacity:0.3;font-size:0.7em">v1.2.9</span></div>
+  <div class="subtitle">${toolIcon} ${esc(toolName)} · Level ${report.primaryLevel} ${MATURITY_LEVELS[report.primaryLevel].name} · ${visibleRecs.length} recommendations${approvedCount > 0 ? ` · ${approvedCount} approved ✅` : ''}</div>
 
   <div class="context-box">
     <div class="context-label">📝 Your Context</div>
@@ -609,6 +652,7 @@ export class RecommendationsPanel {
     <button class="btn btn-secondary" data-action="approveAll">✅ Approve All Fixable</button>
     <button class="btn btn-secondary" data-action="selectAll">☑ Select All</button>
     <button class="btn btn-secondary" data-action="deselectAll">☐ Deselect All</button>
+    <button class="btn btn-secondary" data-action="hideGenerated" id="hideGenBtn">🔽 Hide Generated</button>
     <span class="select-info" id="selectInfo"></span>
   </div>
 
@@ -660,6 +704,7 @@ export class RecommendationsPanel {
           if (action === 'approveSelected') approveSelected();
           else if (action === 'selectAll') selectAll();
           else if (action === 'deselectAll') deselectAll();
+          else if (action === 'hideGenerated') toggleGeneratedFilter();
           else if (action === 'approveAll') approveAll();
           else if (action === 'preview') togglePreview(signal);
           else if (action === 'reviewFix') reviewFix(signal);
@@ -692,6 +737,14 @@ export class RecommendationsPanel {
     document.body.addEventListener('input', function(e) {
       if (e.target.id === 'thresholdSlider') {
         document.getElementById('thresholdVal').textContent = e.target.value;
+        var threshold = parseInt(e.target.value);
+        // Show/hide cards based on quality threshold
+        document.querySelectorAll('.rec-card').forEach(function(card) {
+          var score = parseInt(card.dataset.score) || 0;
+          var isMissing = card.querySelector('.missing') !== null;
+          // Show if: score below threshold OR missing signal OR insight/component rec
+          card.style.display = (score < threshold || isMissing || score === 0) ? '' : 'none';
+        });
       }
       if (e.target.id === 'confSlider') {
         document.getElementById('confVal').textContent = e.target.value;
@@ -740,14 +793,38 @@ export class RecommendationsPanel {
       document.querySelectorAll('.rec-check').forEach(cb => cb.checked = false);
       updateCount();
     }
+
+    function regenerateItem(signalId) {
+      var card = document.querySelector('[data-signal-id="' + signalId + '"]');
+      if (card) {
+        card.classList.remove('pending-review');
+        var status = card.querySelector('.rec-status');
+        if (status) status.remove();
+        var cb = card.querySelector('.rec-check');
+        if (cb) { cb.checked = true; cb.disabled = false; }
+        updateCount();
+      }
+      vscode.postMessage({ command: 'generate', signalIds: [signalId] });
+    }
+
+    var generatedHidden = false;
+    function toggleGeneratedFilter() {
+      generatedHidden = !generatedHidden;
+      var btn = document.getElementById('hideGenBtn');
+      btn.textContent = generatedHidden ? '🔼 Show Generated' : '🔽 Hide Generated';
+      document.querySelectorAll('.rec-card.pending-review').forEach(function(card) {
+        card.style.display = generatedHidden ? 'none' : '';
+      });
+    }
     
     function approveSelected() {
       const checked = document.querySelectorAll('.rec-check:checked');
       const ids = [...checked].map(cb => cb.dataset.signal);
       console.log('[ActionCenter] approveSelected:', ids.length, 'items', ids);
       if (ids.length === 0) return;
-      document.getElementById('generateBtn').disabled = true;
-      document.getElementById('generateBtn').textContent = '⏳ Generating...';
+      var btn = document.getElementById('generateBtn');
+      btn.disabled = true;
+      btn.textContent = '⏳ Generating...';
       vscode.postMessage({ command: 'generate', signalIds: ids, approvalMode: 'selected' });
     }
 
@@ -814,16 +891,15 @@ export class RecommendationsPanel {
           } else if (msg.status === 'pending-review') {
             card.classList.remove('generating');
             card.classList.add('pending-review');
-            card.insertAdjacentHTML('beforeend', '<div class="rec-status pending-review">📝 Pending Review<\/div>');
-            const cb = card.querySelector('.rec-check');
-            if (cb) { cb.checked = false; cb.disabled = true; }
+            card.insertAdjacentHTML('beforeend', '<div class="rec-status pending-review">✅ Generated <button class="regen-btn" onclick="regenerateItem(\'' + id + '\')">🔄 Regenerate<\/button><\/div>');
           } else if (msg.status === 'done') {
             card.classList.add('done');
             card.insertAdjacentHTML('beforeend', '<div class="rec-status done">✅ Generated<\/div>');
             const cb = card.querySelector('.rec-check');
             if (cb) { cb.checked = false; cb.disabled = true; }
           } else if (msg.status === 'error') {
-            card.insertAdjacentHTML('beforeend', '<div class="rec-status error">❌ ' + (msg.error || 'Failed') + '<\/div>');
+            card.classList.remove('generating');
+            card.insertAdjacentHTML('beforeend', '<div class="rec-status error">❌ ' + (msg.error || 'Failed') + ' <button class="regen-btn" onclick="regenerateItem(\'' + id + '\')">🔄 Retry<\/button><\/div>');
           }
         }
         
@@ -941,7 +1017,7 @@ export class RecommendationsPanel {
       </div>`;
     }
 
-    return `<div class="rec-card glass-card ${r.severity} ${getSeverityGlowClass(r.severity)} ${cardClass}" data-card="${esc(r.signalId)}">
+    return `<div class="rec-card glass-card ${r.severity} ${getSeverityGlowClass(r.severity)} ${cardClass}" data-card="${esc(r.signalId)}" data-signal-id="${esc(r.signalId)}" data-score="${r.score}">
       <input type="checkbox" class="rec-check" data-signal="${esc(r.signalId)}" data-tier="${r.tier}"  ${checkboxDisabled ? 'disabled' : ''}>
       <div class="rec-body">
         <div class="rec-header">
@@ -950,7 +1026,7 @@ export class RecommendationsPanel {
           <span class="rec-tag ${r.tier}">${tierLabel}</span>
           <span class="rec-tag ${effortClass}">${effort}</span>
           <span class="rec-tag ${statusClass}">${statusLabel}</span>
-          ${r.confidenceScore !== undefined ? `<span class="rec-tag confidence-${r.confidenceScore >= 0.8 ? 'high' : r.confidenceScore >= 0.5 ? 'med' : 'low'}" title="Confidence: ${Math.round(r.confidenceScore * 100)}%${r.validatorAgreed === false ? ' (validator disagreed' + (r.debateOutcome ? ', ' + r.debateOutcome : '') + ')' : ''}">${r.confidenceScore >= 0.8 ? '🟢' : r.confidenceScore >= 0.5 ? '🟡' : '🔴'} ${Math.round(r.confidenceScore * 100)}%</span>` : ''}
+          ${r.confidenceScore !== undefined ? `<span class="rec-tag confidence-${r.confidenceScore >= 0.8 ? 'high' : r.confidenceScore >= 0.5 ? 'med' : 'low'}" title="Confidence: ${Math.round(r.confidenceScore * 100)}%\n${r.confidenceReason || (r.confidenceScore >= 0.95 ? 'Deterministic: file/pattern check' : r.confidenceScore >= 0.8 ? 'Deep analysis with validation' : 'LLM-generated insight')}${r.validatorAgreed === false ? '\nValidator disagreed' + (r.debateOutcome ? ': ' + r.debateOutcome : '') : ''}">${r.confidenceScore >= 0.8 ? '🟢' : r.confidenceScore >= 0.5 ? '🟡' : '🔴'} ${Math.round(r.confidenceScore * 100)}%</span>` : ''}
         </div>
         <div class="rec-finding">${esc(r.finding)}</div>
         ${statusHtml}
