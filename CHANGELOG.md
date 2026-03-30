@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.1.1] — 2026-03-30
+
+- feat: intelligent component grouping — merge configs, infra, remove noise
+
 ## [1.1.0] — 2026-03-30
 
 - feat: replace LLM structure discovery with deterministic manifest-based tree
