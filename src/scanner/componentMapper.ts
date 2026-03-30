@@ -1044,26 +1044,48 @@ Respond as JSON: {"components":[{"name":"...","path":"...","language":"...","typ
     // AGENT 2: Domain Architect — groups into business + technical domains
     // ═══════════════════════════════════════════════════════════════
     logger.info('Deep map [Agent 2/3]: Domain Architect — grouping into domains...');
-    const microList = microComponents.map(c => `- ${c.path} | ${c.name} | ${c.language} | ${c.type}`).join('\n');
+
+    // For large repos, pre-group by top-level directory to prevent over-consolidation
+    const microList = microComponents.length > 50
+      ? (() => {
+          // Group by top-level dir and show counts
+          const groups = new Map<string, ComponentInfo[]>();
+          for (const c of microComponents) {
+            const topDir = c.path.split('/')[0] || c.path;
+            if (!groups.has(topDir)) groups.set(topDir, []);
+            groups.get(topDir)!.push(c);
+          }
+          return [...groups.entries()].map(([dir, items]) =>
+            `### ${dir}/ (${items.length} components)\n${items.map(c => `- ${c.path} | ${c.name} | ${c.language} | ${c.type}`).join('\n')}`
+          ).join('\n\n');
+        })()
+      : microComponents.map(c => `- ${c.path} | ${c.name} | ${c.language} | ${c.type}`).join('\n');
+
+    const minDomains = Math.max(5, Math.min(10, Math.ceil(microComponents.length / 12)));
 
     const agent2Prompt = `You are a **Domain Architect** expert agent. Organize these ${microComponents.length} micro-components into a hierarchical domain structure.
 
 MICRO-COMPONENTS:
 ${microList}
 
-MANDATORY TOP-LEVEL DOMAINS (include all that apply):
-1. **[Business Domains]** — create based on the code's business purpose (e.g., "Bot Detection & Classification", "Auto Segmentation", "Data Pipeline Processing"). Components from DIFFERENT directories CAN be in the same business domain.
-2. **Core Infrastructure** — CI/CD, deployment, releases, IaC templates
-3. **Developer Experience** — dev containers, IDE settings, bootstrap scripts, AI assistant rules
+MANDATORY TOP-LEVEL DOMAINS — you MUST create AT LEAST ${minDomains} top-level groups:
+1. **[Business Domains]** — create 2-4 based on the code's business purpose (e.g., "Bot Detection & Classification", "Auto Segmentation", "Data Pipeline Processing"). Components from DIFFERENT directories CAN be in the same business domain.
+2. **Core Infrastructure** — CI/CD, deployment, releases, IaC templates, Bicep/ARM
+3. **Developer Experience** — dev containers, IDE settings, bootstrap scripts, AI assistant rules, memory bank
 4. **Shared Libraries** — common modules, utility packages used by multiple apps
-5. **Security & Compliance** — credential scan, policy checks, compliance metadata
-6. **Monitoring & Observability** — dashboards, alerts, metrics (if present)
+5. **Testing** — test projects, E2E tests, sample projects, test scripts
+6. **Security & Compliance** — credential scan, policy checks, compliance metadata
+7. **Monitoring & Observability** — dashboards, alerts, metrics (if present)
+8. **Solution & Build Configuration** — solution files, NuGet, MSBuild props, global configs
+
+If you produce fewer than ${minDomains} top-level domains, you are WRONG. Each directory group above should be its own domain, not merged into another.
 
 RULES:
 - EVERY micro-component MUST appear as a subComponent of exactly ONE domain. Zero drops.
 - Do NOT merge components that serve different functions — anti-collapse.
 - subComponents can have their own subComponents (3 levels max).
 - Cross-directory grouping: a business domain CAN contain components from apps/, components/, and KQL directories.
+- Keep Shared Libraries separate from business domains — if a library is ONLY used by one domain, still keep it under Shared Libraries.
 
 Respond as JSON:
 {"components":[{"name":"Domain Name","path":"primary-path","language":"Multi","type":"service","description":"...","subComponents":[...]}]}`;
@@ -1074,7 +1096,15 @@ Respond as JSON:
       const m = r.match(/\{[\s\S]*\}/);
       if (m) {
         const parsed = JSON.parse(m[0]);
-        if (Array.isArray(parsed.components)) domainComponents = this.flattenComponents(parsed.components);
+        if (Array.isArray(parsed.components)) {
+          domainComponents = this.flattenComponents(parsed.components);
+
+          // Validate: check top-level domain count
+          const topLevel = domainComponents.filter(c => !c.parentPath);
+          if (topLevel.length < minDomains) {
+            logger.warn(`Deep map [Agent 2]: only ${topLevel.length} top-level domains (need ${minDomains}), result may be over-consolidated`);
+          }
+        }
       }
     } catch (err) {
       logger.warn('Deep map [Agent 2] failed, using flat structure', { error: String(err) });
