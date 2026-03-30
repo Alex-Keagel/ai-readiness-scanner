@@ -82,15 +82,22 @@ export class ComponentScorer {
       }
     }
 
-    // Parent-group score inheritance: container components inherit weighted average of children
+    // Parent-group score inheritance
     for (const comp of scores) {
       if (!comp.children?.length) continue;
       const childScores = scores.filter(s => comp.children!.includes(s.path));
       if (childScores.length === 0) continue;
       const childAvg = Math.round(childScores.reduce((sum, c) => sum + c.overallScore, 0) / childScores.length);
-      // If parent scores lower than child average, boost it (container shouldn't drag down)
-      if (comp.overallScore < childAvg && comp.overallScore < 50) {
-        comp.overallScore = Math.max(comp.overallScore, Math.round(childAvg * 0.7));
+
+      // Virtual/synthetic groups (created by Phase 3 grouping) fully inherit child average
+      const isVirtualGroup = comp.path.startsWith('.') || comp.path.includes('.group-');
+      if (isVirtualGroup) {
+        comp.overallScore = childAvg;
+        comp.depth = childAvg;
+        comp.primaryLevel = childAvg >= 80 ? 4 : childAvg >= 60 ? 3 : childAvg >= 40 ? 2 : 1;
+      } else if (comp.overallScore < childAvg && comp.overallScore < 50) {
+        // Real containers: boost to 80% of child average if they score too low
+        comp.overallScore = Math.max(comp.overallScore, Math.round(childAvg * 0.8));
         comp.depth = comp.overallScore;
         comp.primaryLevel = comp.overallScore >= 80 ? 4 : comp.overallScore >= 60 ? 3 : comp.overallScore >= 40 ? 2 : 1;
       }

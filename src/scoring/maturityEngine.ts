@@ -281,7 +281,11 @@ export class MaturityEngine {
       for (const comp of componentScores) {
         // Generated components get reduced weight regardless of type
         const baseWeight = typeWeights[comp.type] ?? typeWeights['unknown'] ?? 0.5;
-        const w = comp.isGenerated ? Math.min(baseWeight, 0.2) : baseWeight;
+        let w = comp.isGenerated ? Math.min(baseWeight, 0.2) : baseWeight;
+        // Dotfile config dirs (.vscode, .github, .clinerules, etc.) get minimal weight
+        if (comp.type === 'config' && comp.path.startsWith('.')) w = Math.min(w, 0.15);
+        // Virtual group nodes get reduced weight (they're synthetic)
+        if (comp.path.includes('.group-')) w = Math.min(w, 0.2);
         weightedSum += comp.overallScore * w;
         totalWeight += w;
       }
