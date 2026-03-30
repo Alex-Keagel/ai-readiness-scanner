@@ -1,7 +1,7 @@
 # AI Readiness Scanner for VS Code
 
 [![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-Install-007ACC?logo=visual-studio-code&logoColor=white)](https://marketplace.visualstudio.com/)
-[![Version](https://img.shields.io/badge/version-1.0.0-blue)](https://marketplace.visualstudio.com/)
+[![Version](https://img.shields.io/badge/version-1.0.1-blue)](https://marketplace.visualstudio.com/)
 [![Powered by](https://img.shields.io/badge/Powered%20by-GitHub%20Copilot%20LM%20API-8957e5?logo=github)](https://github.com/features/copilot)
 [![Tests](https://img.shields.io/badge/tests-638%20passing-brightgreen)](https://github.com/)
 
@@ -111,6 +111,41 @@ Goes beyond surface-level checks to cross-reference your instructions against th
 - **Cross-Reference Engine** — Finds coverage gaps, path drift, structural drift, and semantic drift
 - **Recommendation Synthesizer** — Generates evidence-backed fixes with exact file content
 - **Output Validator** — Validates all LLM-generated content (deterministic + LLM checks, auto-fix, retry)
+
+### 🕸️ Unified Knowledge Graph
+
+All analysis flows into a single **Knowledge Graph** — the central data structure connecting every piece of understanding:
+
+- **Component nodes** with complexity factors, health cards, and roll-up summaries
+- **DEPENDS_ON** edges from import analysis (Python hyphen/underscore aware)
+- **CALLS** edges from call graph with intent labels ("passes sanitized payload to billing webhook")
+- **DATA_FLOWS_TO** edges tracing data pipelines (source → transform → sink)
+- **EXTENDS / IMPLEMENTS** edges from type hierarchy
+- **Domain grouping** via 3-agent pipeline: Structure Analyst → Domain Architect → Completeness Validator
+
+The Repository Structure view renders this graph as an interactive collapsible tree.
+
+### 🤖 3-Agent Component Mapping Pipeline
+
+Component discovery uses three specialized expert agents:
+
+| Agent | Role | Guarantee |
+|-------|------|-----------|
+| **Structure Analyst** | Maps every directory to a flat micro-component | Orphan injection — zero path drops |
+| **Domain Architect** | Groups micro-components into business + technical domains | Mandatory taxonomy enforced |
+| **Completeness Validator** | Checks for dropped paths, self-corrects | Deterministic safety net |
+
+### 🔬 Advanced Semantic Features (15-Phase Deep Analysis)
+
+| Phase | Feature | Description |
+|-------|---------|-------------|
+| 1-9 | Core analysis | Instructions, profiling, call graph, data flow, complexity, cross-ref, recommendations, skills, dead code |
+| 10 | **HyDE Search** | Generates hypothetical search queries per module for intent-based matching |
+| 11 | **Roll-Up Summaries** | File → directory → architecture summaries (zoomable understanding) |
+| 12 | **Edge Labels** | Top 20 call graph edges get LLM intent descriptions |
+| 13 | **Blast Radius** | Entry points analyzed for downstream impact with LLM warnings |
+| 14 | **Health Cards** | Top 3 critical components audited by Explainer + Red Teamer + Critic |
+| 15 | **Dead Branches** | Config files scanned for feature flags making code unreachable |
 
 ### 📊 Codebase Readiness Metrics
 
