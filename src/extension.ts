@@ -241,6 +241,24 @@ export function activate(context: vscode.ExtensionContext) {
         try {
           const { runDeepAnalysis } = await import('./deep');
           const deepResult = await runDeepAnalysis(workspaceFolder.uri, copilotClient, tool, progress);
+          // Store deep analysis data regardless of recommendation count
+          (report as any).deepAnalysis = {
+            instructionQuality: deepResult.crossRef.instructionQuality,
+            coveragePercent: deepResult.crossRef.coveragePercent,
+            gapCount: deepResult.crossRef.coverageGaps.length,
+            driftCount: deepResult.crossRef.driftIssues.length,
+            complexity: deepResult.complexity,
+            callGraph: deepResult.callGraph,
+            dataFlow: deepResult.dataFlow,
+          };
+          // Enrich knowledge graph
+          if (report!.knowledgeGraph) {
+            try {
+              const { GraphBuilder } = await import("./graph/graphBuilder");
+              new GraphBuilder().enrichWithDeepAnalysis(report!.knowledgeGraph as any, deepResult as any);
+              logger.info(`Action Center: knowledge graph enriched`);
+            } catch (enrichErr) { logger.debug("Knowledge graph enrichment failed", { error: String(enrichErr) }); }
+          }
           // Merge deep recommendations into insights
           if (deepResult.recommendations.length > 0) {
             if (!report!.insights) report!.insights = [];
@@ -255,25 +273,7 @@ export function activate(context: vscode.ExtensionContext) {
                 confidenceScore: (rec as any).confidence || 0.85,
               });
             }
-            // Store deep quality scores on report
-            (report as any).deepAnalysis = {
-              instructionQuality: deepResult.crossRef.instructionQuality,
-              coveragePercent: deepResult.crossRef.coveragePercent,
-              gapCount: deepResult.crossRef.coverageGaps.length,
-              driftCount: deepResult.crossRef.driftIssues.length,
-              complexity: deepResult.complexity,
-              callGraph: deepResult.callGraph,
-              dataFlow: deepResult.dataFlow,
-            };
-            // Enrich knowledge graph with call graph, data flow, and semantic edges
-            if (report!.knowledgeGraph) {
-              try {
-                const { GraphBuilder } = await import('./graph/graphBuilder');
-                new GraphBuilder().enrichWithDeepAnalysis(report!.knowledgeGraph as any, deepResult as any);
-                logger.info(`Action Center: knowledge graph enriched — ${(report!.knowledgeGraph as any).edges.length} edges`);
-              } catch (enrichErr) { logger.debug('Knowledge graph enrichment failed', { error: String(enrichErr) }); }
-            }
-            logger.info(`Action Center: deep analysis added ${deepResult.recommendations.length} evidence-backed recommendations`);
+            logger.info(`Action Center: deep analysis added ${deepResult.recommendations.length} recommendations`);
           }
         } catch (err) {
           logger.warn('Action Center: deep analysis failed, using standard insights', err);
@@ -1805,6 +1805,25 @@ async function runScan(
         try {
           const { runDeepAnalysis } = await import('./deep');
           const deepResult = await runDeepAnalysis(workspaceFolder.uri, copilotClient, selectedTool, progress);
+          // Store deep analysis data regardless of recommendation count
+          (currentReport as any).deepAnalysis = {
+            instructionQuality: deepResult.crossRef.instructionQuality,
+            coveragePercent: deepResult.crossRef.coveragePercent,
+            gapCount: deepResult.crossRef.coverageGaps.length,
+            driftCount: deepResult.crossRef.driftIssues.length,
+            complexity: deepResult.complexity,
+            callGraph: deepResult.callGraph,
+            dataFlow: deepResult.dataFlow,
+          };
+          // Enrich knowledge graph with deep analysis data
+          if (currentReport.knowledgeGraph) {
+            try {
+              const { GraphBuilder } = await import('./graph/graphBuilder');
+              new GraphBuilder().enrichWithDeepAnalysis(currentReport.knowledgeGraph as any, deepResult as any);
+              logger.info(`Full scan: knowledge graph enriched — ${(currentReport.knowledgeGraph as any).edges.length} edges`);
+            } catch (enrichErr) { logger.debug('Knowledge graph enrichment failed', { error: String(enrichErr) }); }
+          }
+          // Merge deep recommendations into insights
           if (deepResult.recommendations.length > 0) {
             if (!currentReport.insights) currentReport.insights = [];
             for (const rec of deepResult.recommendations) {
@@ -1815,25 +1834,8 @@ async function runScan(
                 category: rec.type,
                 estimatedImpact: `+${rec.impactScore} points`,
                 affectedComponent: rec.affectedModules.join(', '),
-                confidenceScore: (rec as any).confidence || 0.85, // Deep analysis with validation
+                confidenceScore: (rec as any).confidence || 0.85,
               });
-            }
-            (currentReport as any).deepAnalysis = {
-              instructionQuality: deepResult.crossRef.instructionQuality,
-              coveragePercent: deepResult.crossRef.coveragePercent,
-              gapCount: deepResult.crossRef.coverageGaps.length,
-              driftCount: deepResult.crossRef.driftIssues.length,
-              complexity: deepResult.complexity,
-              callGraph: deepResult.callGraph,
-              dataFlow: deepResult.dataFlow,
-            };
-            // Enrich knowledge graph with deep analysis data
-            if (currentReport.knowledgeGraph) {
-              try {
-                const { GraphBuilder } = await import('./graph/graphBuilder');
-                new GraphBuilder().enrichWithDeepAnalysis(currentReport.knowledgeGraph as any, deepResult as any);
-                logger.info(`Full scan: knowledge graph enriched — ${(currentReport.knowledgeGraph as any).edges.length} edges`);
-              } catch (enrichErr) { logger.debug('Knowledge graph enrichment failed', { error: String(enrichErr) }); }
             }
             logger.info(`Full scan: deep analysis added ${deepResult.recommendations.length} recommendations`);
           }
