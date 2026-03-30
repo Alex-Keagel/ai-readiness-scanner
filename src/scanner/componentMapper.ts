@@ -953,10 +953,16 @@ export class ComponentMapper {
     // Find component descriptors
     const descTimer = logger.time('Deep map: descriptor discovery');
     const exclude = '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/.venv/**,**/target/**}';
-    const descPatterns = ['*/README.md', '*/*/README.md', '*/pyproject.toml', '*/*/pyproject.toml', '*/package.json', '*/*/package.json', '*/Cargo.toml', '*/go.mod'];
-    const allDescUris = await Promise.all(descPatterns.map(p => vscode.workspace.findFiles(new vscode.RelativePattern(workspaceUri, p), exclude, 10)));
+    const descPatterns = [
+      '*/README.md', '*/*/README.md', '*/*/*/README.md',
+      '*/pyproject.toml', '*/*/pyproject.toml', '*/*/*/pyproject.toml',
+      '*/package.json', '*/*/package.json',
+      '*/*.csproj', '*/*/*.csproj',
+      '*/Cargo.toml', '*/go.mod',
+    ];
+    const allDescUris = await Promise.all(descPatterns.map(p => vscode.workspace.findFiles(new vscode.RelativePattern(workspaceUri, p), exclude, 20)));
     const descriptorFiles = (await Promise.all(
-      allDescUris.flat().slice(0, 20).map(async uri => {
+      allDescUris.flat().slice(0, 30).map(async uri => {
         try {
           const raw = await vscode.workspace.fs.readFile(uri);
           return { content: Buffer.from(raw).toString('utf-8').split('\n').slice(0, 30).join('\n'), relativePath: vscode.workspace.asRelativePath(uri) };
@@ -967,9 +973,23 @@ export class ComponentMapper {
 
     const treeLines = tree.split('\n');
     const truncatedTree = treeLines.length > 200 ? treeLines.slice(0, 200).join('\n') + '\n...' : tree;
-    const descriptorContext = descriptorFiles.slice(0, 10).map(f => `### ${f.relativePath}\n\`\`\`\n${f.content.slice(0, 600)}\n\`\`\``).join('\n\n');
+    const descriptorContext = descriptorFiles.slice(0, 15).map(f => `### ${f.relativePath}\n\`\`\`\n${f.content.slice(0, 500)}\n\`\`\``).join('\n\n');
     const originalPaths = new Set(context.components.map(c => c.path));
-    const knownPathsList = [...originalPaths].slice(0, 50).join('\n');
+
+    // Discover deeper project paths (C# .csproj, Python pyproject.toml at 3+ levels)
+    try {
+      const deepProjects = await Promise.all([
+        vscode.workspace.findFiles(new vscode.RelativePattern(workspaceUri, '{*/*/*.csproj,*/*/*/*.csproj}'), exclude, 40),
+        vscode.workspace.findFiles(new vscode.RelativePattern(workspaceUri, '{*/*/*/pyproject.toml,*/*/*/*/pyproject.toml}'), exclude, 15),
+      ]);
+      for (const f of deepProjects.flat()) {
+        const dir = vscode.workspace.asRelativePath(f, false).replace(/\/[^/]+\.(csproj|toml)$/, '');
+        if (dir && !originalPaths.has(dir)) originalPaths.add(dir);
+      }
+      logger.info(`Deep map: ${originalPaths.size} known paths (including deep .csproj/.toml discovery)`);
+    } catch { /* non-critical */ }
+
+    const knownPathsList = [...originalPaths].slice(0, 60).join('\n');
 
     // ═══════════════════════════════════════════════════════════════
     // AGENT 1: Structure Analyst — flat list of all micro-components

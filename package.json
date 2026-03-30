@@ -208,6 +208,10 @@
       {
         "command": "ai-readiness.showContext",
         "title": "AI Readiness: Show Context Architecture"
+      },
+      {
+        "command": "ai-readiness.exportGraph",
+        "title": "AI Readiness: Export Knowledge Graph"
       }
     ],
     "menus": {

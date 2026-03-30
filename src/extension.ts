@@ -511,6 +511,49 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
 
+    // Export knowledge graph + deep analysis as JSON for debugging
+    vscode.commands.registerCommand('ai-readiness.exportGraph', async () => {
+      try {
+        let report = getValidReport();
+        if (!report) {
+          const latestRun = runStorage.getLatestRun();
+          if (latestRun) { report = latestRun.report; }
+        }
+        if (!report) {
+          vscode.window.showInformationMessage('Run a scan first.');
+          return;
+        }
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) return;
+
+        const exportData = {
+          projectName: report.projectName,
+          scannedAt: report.scannedAt,
+          overallScore: report.overallScore,
+          primaryLevel: report.primaryLevel,
+          componentCount: report.componentScores.length,
+          knowledgeGraph: report.knowledgeGraph,
+          deepAnalysis: (report as any).deepAnalysis,
+          componentScores: report.componentScores.map(c => ({
+            name: c.name, path: c.path, language: c.language, type: c.type,
+            score: c.overallScore, level: c.primaryLevel, depth: c.depth,
+            parentPath: c.parentPath, children: c.children,
+            isGenerated: c.isGenerated, description: c.description,
+            signals: c.signals,
+          })),
+        };
+
+        const filePath = vscode.Uri.joinPath(workspaceFolder.uri, `ai-readiness-graph-${report.projectName}.json`);
+        await vscode.workspace.fs.writeFile(filePath, Buffer.from(JSON.stringify(exportData, null, 2), 'utf-8'));
+        const doc = await vscode.workspace.openTextDocument(filePath);
+        await vscode.window.showTextDocument(doc, { preview: false });
+        vscode.window.showInformationMessage(`Knowledge graph exported to ${filePath.fsPath}`);
+      } catch (err) {
+        logger.error('Command exportGraph failed', err);
+        vscode.window.showErrorMessage(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }),
+
     // Open dedicated insights page — generate on-demand
     vscode.commands.registerCommand('ai-readiness.showInsights', async () => {
       if (!acquireLock('AI Strategy')) return;
