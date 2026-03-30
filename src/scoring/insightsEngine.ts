@@ -334,12 +334,38 @@ export class InsightsEngine {
     }
 
     timer?.end?.();
-    const critical = insights.filter(i => i.severity === 'critical').length;
-    const important = insights.filter(i => i.severity === 'important').length;
-    const nice = insights.filter(i => i.severity === 'nice-to-have').length;
-    logger.info(`Insights complete: ${insights.length} total (${critical} critical, ${important} important, ${nice} suggestions)`);
 
-    return insights.sort((a, b) => {
+    // Dedup insights: same title or same component+category = keep only the most severe
+    const seen = new Map<string, number>();
+    const deduped = insights.filter((insight, idx) => {
+      const titleKey = insight.title.toLowerCase().trim();
+      const compKey = insight.affectedComponent
+        ? `${insight.affectedComponent}::${insight.category}`.toLowerCase()
+        : null;
+
+      for (const key of [titleKey, compKey].filter(Boolean) as string[]) {
+        if (seen.has(key)) {
+          const existingIdx = seen.get(key)!;
+          const existing = insights[existingIdx];
+          const sevOrder: Record<string, number> = { critical: 0, important: 1, 'nice-to-have': 2 };
+          if (sevOrder[insight.severity] < sevOrder[existing.severity]) {
+            // New one is more severe — replace
+            seen.set(key, idx);
+            return true;
+          }
+          return false;
+        }
+        seen.set(key, idx);
+      }
+      return true;
+    });
+
+    const critical = deduped.filter(i => i.severity === 'critical').length;
+    const important = deduped.filter(i => i.severity === 'important').length;
+    const nice = deduped.filter(i => i.severity === 'nice-to-have').length;
+    logger.info(`Insights complete: ${deduped.length} total (deduped from ${insights.length}) — ${critical} critical, ${important} important, ${nice} suggestions`);
+
+    return deduped.sort((a, b) => {
       const sevOrder: Record<string, number> = { critical: 0, important: 1, 'nice-to-have': 2 };
       if (sevOrder[a.severity] !== sevOrder[b.severity]) {
         return sevOrder[a.severity] - sevOrder[b.severity];
@@ -443,48 +469,50 @@ export class InsightsEngine {
     const repoLevel = report.primaryLevel;
 
     for (const comp of report.componentScores) {
+      const issues: string[] = [];
+      const recs: string[] = [];
+      let worstSeverity: Insight['severity'] = 'nice-to-have';
+      let maxImpact = 0;
+
+      // Check: lagging behind
       if (comp.primaryLevel < repoLevel) {
         const missingSignals = comp.signals
           .filter(s => !s.present)
           .map(s => s.signal);
-
-        insights.push({
-          category: 'improvement',
-          severity: 'important',
-          title: `Component "${comp.name}" lagging behind`,
-          description: `Component \`${comp.name}\` at \`${comp.path}\` is only Level ${comp.primaryLevel} while the repo is Level ${repoLevel}. Missing: ${missingSignals.join(', ')}. This drags down the overall score.`,
-          recommendation: `Address the missing signals in \`${comp.path}\`: ${missingSignals.map(s => `add ${s}`).join(', ')}.`,
-          targetLevel: repoLevel,
-          affectedComponent: comp.name,
-          estimatedImpact: 5,
-        });
+        issues.push(`Level ${comp.primaryLevel} (repo is Level ${repoLevel}), missing: ${missingSignals.join(', ')}`);
+        recs.push(...missingSignals.map(s => `add ${s}`));
+        worstSeverity = 'important';
+        maxImpact = Math.max(maxImpact, 5);
       }
 
+      // Check: no README
       const readmeSignal = comp.signals.find(s => s.signal === 'README');
       if (readmeSignal && !readmeSignal.present) {
-        insights.push({
-          category: 'missing-readme-content',
-          severity: 'nice-to-have',
-          title: `Component "${comp.name}" has no README`,
-          description: `Component \`${comp.name}\` at \`${comp.path}\` has no README.md. An agent scanning this component won't understand its purpose, API surface, or how to work with it.`,
-          recommendation: `Create \`${comp.path}/README.md\` describing: what this component does, its public API, how to test it, and any gotchas.`,
-          targetLevel: 1,
-          affectedComponent: comp.name,
-          estimatedImpact: 4,
-        });
+        issues.push('no README.md — agents can\'t understand its purpose');
+        recs.push(`create \`${comp.path}/README.md\``);
+        maxImpact = Math.max(maxImpact, 4);
       }
 
+      // Check: no tests
       const testSignal = comp.signals.find(s => s.signal === 'Tests');
       if (testSignal && !testSignal.present) {
+        issues.push('no tests — agents can\'t verify changes');
+        recs.push(`add tests for \`${comp.path}\``);
+        worstSeverity = worstSeverity === 'nice-to-have' ? 'important' : worstSeverity;
+        maxImpact = Math.max(maxImpact, 6);
+      }
+
+      // Consolidate into a single insight per component
+      if (issues.length > 0) {
         insights.push({
-          category: 'improvement',
-          severity: 'important',
-          title: `Component "${comp.name}" has no tests`,
-          description: `Component \`${comp.name}\` at \`${comp.path}\` has no visible tests. Agents need tests to verify their changes don't break existing functionality.`,
-          recommendation: `Add tests for \`${comp.path}\`. Even a basic smoke test helps agents validate their work.`,
-          targetLevel: 2,
+          category: issues.length === 1 && !readmeSignal?.present && !testSignal?.present ? 'missing-readme-content' : 'improvement',
+          severity: worstSeverity,
+          title: `Component "${comp.name}" needs improvement (${issues.length} issue${issues.length > 1 ? 's' : ''})`,
+          description: `Component \`${comp.name}\` at \`${comp.path}\`: ${issues.join('; ')}.`,
+          recommendation: `Address: ${recs.join(', ')}.`,
+          targetLevel: repoLevel,
           affectedComponent: comp.name,
-          estimatedImpact: 6,
+          estimatedImpact: maxImpact,
         });
       }
     }

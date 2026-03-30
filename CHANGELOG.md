@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.2.1] — 2026-03-30
+
+
+
 ## [1.2.0] — 2026-03-30
 
 - feat: test coverage signal + 5 gap fixes

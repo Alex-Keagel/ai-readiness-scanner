@@ -297,4 +297,261 @@ describe('SkillEvaluator', () => {
       expect(results[0].score).toBeGreaterThanOrEqual(90);
     });
   });
+
+  // ─── Fix 3: Accuracy — relative path resolution ──────────────────
+
+  describe('accuracy — relative path resolution', () => {
+    beforeEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('validates paths relative to skill directory, not just repo root', async () => {
+      const skill = makeSkill({
+        path: '.github/skills/ev2/SKILL.md',
+        name: 'ev2',
+        content: `# EV2 Skill
+## Steps
+1. Read \`references/operation-types.md\` for operation type definitions
+2. Apply operation template
+## Inputs
+- \`operation_type\`: string
+## Outputs
+- \`result\`: string
+## Validation
+- Check output matches expected format`,
+      });
+
+      const client = mockCopilotClient();
+      client.isAvailable.mockReturnValue(false);
+      const evaluator = new SkillEvaluator(client);
+
+      // Stat: repo root path fails, but relative to skill dir succeeds
+      vi.spyOn(vscode.workspace.fs, 'stat').mockImplementation(async (uri) => {
+        const path = uri.toString();
+        if (path.includes('.github/skills/ev2/references/operation-types.md')) {
+          return { type: 1, ctime: 0, mtime: 0, size: 200 };
+        }
+        throw new Error('not found');
+      });
+
+      const results = await (evaluator as any).evaluateAccuracy([skill], vscode.Uri.file('/workspace'));
+      // Should NOT flag references/operation-types.md as invalid
+      const issues = results[0].issues as string[];
+      const pathIssues = issues.filter((i: string) => i.includes('operation-types.md'));
+      expect(pathIssues).toHaveLength(0);
+    });
+
+    it('still flags paths that don\'t exist at root OR relative to skill dir', async () => {
+      const skill = makeSkill({
+        path: '.github/skills/deploy/SKILL.md',
+        name: 'deploy',
+        content: `# Deploy
+## Steps
+1. Read \`ghost/nonexistent.md\`
+## Inputs
+## Outputs
+## Validation`,
+      });
+
+      const client = mockCopilotClient();
+      client.isAvailable.mockReturnValue(false);
+      const evaluator = new SkillEvaluator(client);
+
+      vi.spyOn(vscode.workspace.fs, 'stat').mockRejectedValue(new Error('not found'));
+
+      const results = await (evaluator as any).evaluateAccuracy([skill], vscode.Uri.file('/workspace'));
+      const issues = results[0].issues as string[];
+      expect(issues).toContainEqual(expect.stringContaining('ghost/nonexistent.md'));
+    });
+  });
+
+  // ─── Fix 4: Relevance — better project context ───────────────────
+
+  describe('relevance — project context discovery', () => {
+    beforeEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('discovers .csproj files for .NET project context', async () => {
+      const skill = makeSkill({ name: 'build-dotnet' });
+
+      const client = mockCopilotClient(
+        JSON.stringify([{ skill: 'build-dotnet', score: 80, issues: [], suggestions: [] }])
+      );
+      const evaluator = new SkillEvaluator(client);
+
+      // findFiles: return .csproj files
+      vi.spyOn(vscode.workspace, 'findFiles').mockImplementation(async (pattern) => {
+        const pat = typeof pattern === 'string' ? pattern : pattern.pattern;
+        if (pat.includes('*.csproj')) {
+          return [vscode.Uri.file('/workspace/src/MyApp.csproj')];
+        }
+        if (pat.includes('SKILL.md')) {
+          return [vscode.Uri.file('/workspace/.github/skills/build-dotnet/SKILL.md')];
+        }
+        return [];
+      });
+      vi.spyOn(vscode.workspace.fs, 'readFile').mockImplementation(async (uri) => {
+        const path = uri.toString();
+        if (path.includes('SKILL.md')) {
+          return new Uint8Array(Buffer.from(skill.content));
+        }
+        if (path.includes('.csproj')) {
+          return new Uint8Array(Buffer.from('<Project><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>'));
+        }
+        if (path.includes('package.json')) {
+          throw new Error('not found');
+        }
+        return new Uint8Array(Buffer.from(''));
+      });
+      (vscode.workspace as any).asRelativePath = vi.fn().mockImplementation((uri: any) => {
+        const path = typeof uri === 'string' ? uri : uri.toString();
+        if (path.includes('.csproj')) return 'src/MyApp.csproj';
+        return '.github/skills/build-dotnet/SKILL.md';
+      });
+
+      const results = await (evaluator as any).evaluateRelevance([skill], vscode.Uri.file('/workspace'));
+      // The LLM was called (client.analyze), and the prompt should include .NET context
+      expect(client.analyze).toHaveBeenCalled();
+      const prompt = client.analyze.mock.calls[0][0] as string;
+      expect(prompt).toContain('.NET');
+    });
+
+    it('discovers pyproject.toml for Python project context', async () => {
+      const skill = makeSkill({ name: 'test-python' });
+
+      const client = mockCopilotClient(
+        JSON.stringify([{ skill: 'test-python', score: 70, issues: [], suggestions: [] }])
+      );
+      const evaluator = new SkillEvaluator(client);
+
+      vi.spyOn(vscode.workspace, 'findFiles').mockResolvedValue([]);
+      vi.spyOn(vscode.workspace.fs, 'readFile').mockImplementation(async (uri) => {
+        const path = uri.toString();
+        if (path.includes('SKILL.md')) {
+          return new Uint8Array(Buffer.from(skill.content));
+        }
+        if (path.includes('pyproject.toml')) {
+          return new Uint8Array(Buffer.from('[project]\nname = "my-project"\ndependencies = ["requests", "pydantic"]'));
+        }
+        throw new Error('not found');
+      });
+      (vscode.workspace as any).asRelativePath = vi.fn().mockReturnValue('.github/skills/test-python/SKILL.md');
+
+      const results = await (evaluator as any).evaluateRelevance([skill], vscode.Uri.file('/workspace'));
+      expect(client.analyze).toHaveBeenCalled();
+      const prompt = client.analyze.mock.calls[0][0] as string;
+      expect(prompt).toContain('Python project');
+    });
+  });
+
+  // ─── Fix 6: Skill dedup — prevent reference files from being treated as skills ─
+
+  describe('discoverSkills — dedup and reference file filtering', () => {
+    beforeEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('does not discover reference .md files inside a skill directory that has SKILL.md', async () => {
+      const client = mockCopilotClient();
+      const evaluator = new SkillEvaluator(client);
+
+      vi.spyOn(vscode.workspace, 'findFiles').mockImplementation(async (pattern) => {
+        const pat = typeof pattern === 'string' ? pattern : pattern.pattern;
+        if (pat === '.github/skills/**/SKILL.md') {
+          return [
+            vscode.Uri.file('/workspace/.github/skills/adhoc-operations/SKILL.md'),
+          ];
+        }
+        if (pat === '.github/skills/**/*.md') {
+          return [
+            vscode.Uri.file('/workspace/.github/skills/adhoc-operations/SKILL.md'),
+            vscode.Uri.file('/workspace/.github/skills/adhoc-operations/references/operation-types.md'),
+            vscode.Uri.file('/workspace/.github/skills/adhoc-operations/references/rollout-guide.md'),
+          ];
+        }
+        return [];
+      });
+      vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(
+        new Uint8Array(Buffer.from('# Skill content'))
+      );
+      (vscode.workspace as any).asRelativePath = vi.fn().mockImplementation((uri: any) => {
+        const path = typeof uri === 'string' ? uri : uri.fsPath || uri.toString();
+        if (path.includes('operation-types.md')) return '.github/skills/adhoc-operations/references/operation-types.md';
+        if (path.includes('rollout-guide.md')) return '.github/skills/adhoc-operations/references/rollout-guide.md';
+        return '.github/skills/adhoc-operations/SKILL.md';
+      });
+
+      const skills = await (evaluator as any).discoverSkills(vscode.Uri.file('/workspace'));
+
+      // Should only have 1 skill (the SKILL.md), NOT the reference .md files
+      expect(skills).toHaveLength(1);
+      expect(skills[0].name).toBe('adhoc-operations');
+      expect(skills[0].path).toBe('.github/skills/adhoc-operations/SKILL.md');
+    });
+
+    it('discovers .md files only at top level of skill dir when no SKILL.md exists', async () => {
+      const client = mockCopilotClient();
+      const evaluator = new SkillEvaluator(client);
+
+      vi.spyOn(vscode.workspace, 'findFiles').mockImplementation(async (pattern) => {
+        const pat = typeof pattern === 'string' ? pattern : pattern.pattern;
+        // No SKILL.md files found
+        if (pat.includes('SKILL.md')) return [];
+        if (pat === '.github/skills/**/*.md') {
+          return [
+            vscode.Uri.file('/workspace/.github/skills/custom-workflow/README.md'),
+          ];
+        }
+        return [];
+      });
+      vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(
+        new Uint8Array(Buffer.from('# Custom workflow'))
+      );
+      (vscode.workspace as any).asRelativePath = vi.fn().mockReturnValue('.github/skills/custom-workflow/README.md');
+
+      const skills = await (evaluator as any).discoverSkills(vscode.Uri.file('/workspace'));
+
+      // Should discover the README.md as a skill since no SKILL.md exists
+      expect(skills).toHaveLength(1);
+      expect(skills[0].name).toBe('custom-workflow');
+    });
+
+    it('does not produce duplicate skills by name', async () => {
+      const client = mockCopilotClient();
+      const evaluator = new SkillEvaluator(client);
+
+      vi.spyOn(vscode.workspace, 'findFiles').mockImplementation(async (pattern) => {
+        const pat = typeof pattern === 'string' ? pattern : pattern.pattern;
+        if (pat === '.github/skills/**/SKILL.md') {
+          return [
+            vscode.Uri.file('/workspace/.github/skills/build/SKILL.md'),
+            vscode.Uri.file('/workspace/.github/skills/test/SKILL.md'),
+          ];
+        }
+        if (pat === '.github/skills/**/*.md') {
+          return [
+            vscode.Uri.file('/workspace/.github/skills/build/SKILL.md'),
+            vscode.Uri.file('/workspace/.github/skills/test/SKILL.md'),
+          ];
+        }
+        return [];
+      });
+      vi.spyOn(vscode.workspace.fs, 'readFile').mockResolvedValue(
+        new Uint8Array(Buffer.from('# Skill'))
+      );
+      (vscode.workspace as any).asRelativePath = vi.fn().mockImplementation((uri: any) => {
+        const path = typeof uri === 'string' ? uri : uri.fsPath || uri.toString();
+        if (path.includes('build')) return '.github/skills/build/SKILL.md';
+        return '.github/skills/test/SKILL.md';
+      });
+
+      const skills = await (evaluator as any).discoverSkills(vscode.Uri.file('/workspace'));
+
+      // Should be exactly 2, no duplicates
+      expect(skills).toHaveLength(2);
+      const names = skills.map((s: any) => s.name);
+      expect(new Set(names).size).toBe(names.length);
+    });
+  });
 });

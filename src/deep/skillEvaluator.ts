@@ -134,13 +134,13 @@ export class SkillEvaluator {
 
   private async discoverSkills(workspaceUri: vscode.Uri): Promise<SkillFile[]> {
     const skills: SkillFile[] = [];
-    const patterns = [
+    // Phase 1: Find SKILL.md files specifically (the canonical skill definition)
+    const skillMdPatterns = [
       '.github/skills/**/SKILL.md',
-      '.github/skills/**/*.md',
-      '.windsurf/skills/**/*.md',
+      '.windsurf/skills/**/SKILL.md',
     ];
 
-    for (const glob of patterns) {
+    for (const glob of skillMdPatterns) {
       try {
         const found = await vscode.workspace.findFiles(
           new vscode.RelativePattern(workspaceUri, glob),
@@ -153,6 +153,53 @@ export class SkillEvaluator {
             const parts = relPath.split('/');
             const name = parts[parts.length - 2] || parts[parts.length - 1].replace('.md', '');
             if (!skills.some(s => s.path === relPath)) {
+              skills.push({ path: relPath, content, name });
+            }
+          } catch { /* skip unreadable */ }
+        }
+      } catch { /* skip bad glob */ }
+    }
+
+    // Phase 2: Find other .md files in skill directories, but only if they're
+    // the ONLY .md file in that skill dir (i.e., no SKILL.md exists)
+    const otherMdPatterns = [
+      '.github/skills/**/*.md',
+      '.windsurf/skills/**/*.md',
+    ];
+    // Track which skill directories already have a SKILL.md
+    const coveredSkillDirs = new Set(skills.map(s => {
+      const parts = s.path.split('/');
+      return parts.slice(0, -1).join('/');
+    }));
+
+    for (const glob of otherMdPatterns) {
+      try {
+        const found = await vscode.workspace.findFiles(
+          new vscode.RelativePattern(workspaceUri, glob),
+          '**/node_modules/**', 100
+        );
+        for (const uri of found) {
+          try {
+            const relPath = vscode.workspace.asRelativePath(uri, false);
+            // Skip if already discovered
+            if (skills.some(s => s.path === relPath)) continue;
+            // Skip if this file is inside a subdirectory of a skill that already has SKILL.md
+            // e.g., .github/skills/adhoc-operations/references/operation-types.md should be skipped
+            // if .github/skills/adhoc-operations/ already has SKILL.md
+            const parts = relPath.split('/');
+            const skillsIdx = parts.indexOf('skills');
+            if (skillsIdx >= 0 && skillsIdx + 1 < parts.length) {
+              const topSkillDir = parts.slice(0, skillsIdx + 2).join('/');
+              if (coveredSkillDirs.has(topSkillDir)) continue; // parent skill already has SKILL.md
+              // Also skip if this file is in a nested subdirectory (references/, examples/, etc.)
+              // Only pick up .md files at the top level of a skill directory
+              const depth = parts.length - skillsIdx - 2; // how many levels below skills/name/
+              if (depth > 1) continue; // nested file like skills/name/subdir/file.md — skip
+            }
+
+            const content = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf-8');
+            const name = parts[parts.length - 2] || parts[parts.length - 1].replace('.md', '');
+            if (!skills.some(s => s.name === name)) {
               skills.push({ path: relPath, content, name });
             }
           } catch { /* skip unreadable */ }
@@ -289,9 +336,25 @@ export class SkillEvaluator {
       const pathRefs = this.extractPaths(skill.content);
       let invalidPaths = 0;
       for (const ref of pathRefs) {
+        let found = false;
+        // Check at repo root
         try {
           await vscode.workspace.fs.stat(vscode.Uri.joinPath(workspaceUri, ref));
-        } catch {
+          found = true;
+        } catch { /* not at root */ }
+
+        // Check relative to the skill file's directory
+        if (!found) {
+          const skillDir = skill.path.substring(0, skill.path.lastIndexOf('/'));
+          if (skillDir) {
+            try {
+              await vscode.workspace.fs.stat(vscode.Uri.joinPath(workspaceUri, `${skillDir}/${ref}`));
+              found = true;
+            } catch { /* not relative either */ }
+          }
+        }
+
+        if (!found) {
           invalidPaths++;
           issues.push(`Referenced path "${ref}" does not exist`);
         }
@@ -397,14 +460,44 @@ Respond ONLY as JSON:
       return skills.map(() => ({ score: 50, issues: ['LLM unavailable'], suggestions: [] }));
     }
 
-    // Get current project context
+    // Get current project context from multiple manifest types
+    let projectContext = '';
     const packageJson = await this.readFile(workspaceUri, 'package.json');
-    let projectContext = 'No package.json found';
     if (packageJson) {
       try {
-        projectContext = `package.json scripts: ${Object.keys(JSON.parse(packageJson).scripts || {}).join(', ')}`;
-      } catch { projectContext = 'package.json exists but could not be parsed'; }
+        const parsed = JSON.parse(packageJson);
+        projectContext += `package.json scripts: ${Object.keys(parsed.scripts || {}).join(', ')}. `;
+        if (parsed.dependencies) projectContext += `JS deps: ${Object.keys(parsed.dependencies).slice(0, 10).join(', ')}. `;
+      } catch { projectContext += 'package.json exists. '; }
     }
+
+    // Check for C#/.NET projects
+    const csprojFiles = await vscode.workspace.findFiles(new vscode.RelativePattern(workspaceUri, '**/*.csproj'), '**/node_modules/**', 10);
+    if (csprojFiles.length > 0) {
+      const csprojNames = csprojFiles.map(f => vscode.workspace.asRelativePath(f, false));
+      projectContext += `.NET projects (${csprojFiles.length}): ${csprojNames.slice(0, 5).join(', ')}. `;
+      // Read first csproj for framework info
+      try {
+        const content = Buffer.from(await vscode.workspace.fs.readFile(csprojFiles[0])).toString('utf-8');
+        const framework = content.match(/<TargetFramework>(.*?)<\/TargetFramework>/)?.[1];
+        if (framework) projectContext += `Target: ${framework}. `;
+      } catch { /* skip */ }
+    }
+
+    // Check for Python projects
+    const pyprojectToml = await this.readFile(workspaceUri, 'pyproject.toml');
+    if (pyprojectToml) {
+      const deps = pyprojectToml.match(/dependencies\s*=\s*\[([\s\S]*?)\]/)?.[1];
+      projectContext += `Python project (pyproject.toml). ${deps ? `Deps: ${deps.replace(/\n/g, ' ').slice(0, 200)}. ` : ''}`;
+    }
+
+    // Check for build/CI files
+    const ciFiles = await vscode.workspace.findFiles(new vscode.RelativePattern(workspaceUri, '{.github/workflows/*.yml,.azure-pipelines.yml,azurepipelines-build.yml,.azuredevops/**/*.yml}'), null, 5);
+    if (ciFiles.length > 0) {
+      projectContext += `CI/CD: ${ciFiles.map(f => vscode.workspace.asRelativePath(f, false)).join(', ')}. `;
+    }
+
+    if (!projectContext) projectContext = 'No package.json, pyproject.toml, or .csproj found';
 
     const batch = skills.slice(0, 15).map(s =>
       `SKILL "${s.name}": ${s.content.slice(0, 800)}`

@@ -474,5 +474,174 @@ describe('CrossRefEngine', () => {
       const semanticDrift = result.driftIssues.filter(d => d.type === 'semantic-drift');
       expect(semanticDrift.length).toBeGreaterThan(0);
     });
+
+    // ─── Fix 2: Stale path false positives — relative path resolution ────
+
+    it('does NOT flag path-drift when path exists relative to source file directory', async () => {
+      // Simulates: skill at .github/skills/ev2/SKILL.md references "references/operation-types.md"
+      // The path doesn't exist at repo root, but DOES exist at .github/skills/ev2/references/operation-types.md
+      const instructions = makeInstructions({
+        claims: [makeClaim({
+          claim: 'references/operation-types.md',
+          sourceFile: '.github/skills/ev2/SKILL.md',
+          sourceLine: 10,
+        })],
+        coveredPaths: new Set<string>(),
+        files: [{ path: '.github/skills/ev2/SKILL.md', content: '# EV2', tool: 'copilot', type: 'skill', tokens: 10 }],
+      });
+      const codebase = makeCodebase({ modules: [] });
+
+      // First stat call (repo root: /workspace/references/operation-types.md) → fails
+      // Second stat call (relative: /workspace/.github/skills/ev2/references/operation-types.md) → succeeds
+      const statSpy = vi.spyOn(vscode.workspace.fs, 'stat');
+      statSpy.mockImplementation(async (uri) => {
+        const path = uri.toString();
+        if (path.includes('.github/skills/ev2/references/operation-types.md')) {
+          return { type: 1, ctime: 0, mtime: 0, size: 100 };
+        }
+        throw new Error('not found');
+      });
+
+      const engine = new CrossRefEngine();
+      const result = await engine.analyze(instructions, codebase, vscode.Uri.file('/workspace'));
+
+      const pathDrift = result.driftIssues.filter(d => d.type === 'path-drift');
+      expect(pathDrift).toHaveLength(0); // should NOT be flagged as drift
+    });
+
+    it('DOES flag path-drift when path exists neither at root nor relative to source', async () => {
+      const instructions = makeInstructions({
+        claims: [makeClaim({
+          claim: 'nonexistent/ghost.md',
+          sourceFile: '.github/skills/ev2/SKILL.md',
+          sourceLine: 5,
+        })],
+        coveredPaths: new Set<string>(),
+        files: [{ path: '.github/skills/ev2/SKILL.md', content: '# EV2', tool: 'copilot', type: 'skill', tokens: 10 }],
+      });
+      const codebase = makeCodebase({ modules: [] });
+
+      vi.spyOn(vscode.workspace.fs, 'stat').mockRejectedValue(new Error('not found'));
+
+      const engine = new CrossRefEngine();
+      const result = await engine.analyze(instructions, codebase, vscode.Uri.file('/workspace'));
+
+      const pathDrift = result.driftIssues.filter(d => d.type === 'path-drift');
+      expect(pathDrift).toHaveLength(1);
+      expect(pathDrift[0].reality).toContain('nonexistent/ghost.md');
+    });
+  });
+
+  // ─── Fix 5: Generalized glob matching in IQ coverage ──────────────
+
+  describe('scoreQuality — generalized applyTo glob matching', () => {
+    const engine = new CrossRefEngine();
+    const score = (instructions: InstructionProfile, codebase: CodebaseProfile) =>
+      (engine as any).scoreQuality(instructions, codebase);
+
+    it('covers Python modules via **/*.py glob', () => {
+      const instructions = makeInstructions({
+        files: [{
+          path: '.github/instructions/python.md',
+          content: '---\napplyTo: "**/*.py"\n---\nPython coding standards',
+          tool: 'copilot',
+          type: 'scoped-instruction',
+          tokens: 50,
+        }],
+      });
+      const codebase = makeCodebase({
+        modules: [
+          makeModule({ path: 'src/engine.py', role: 'core-logic', lines: 200 }),
+          makeModule({ path: 'src/parser.py', role: 'core-logic', lines: 150 }),
+        ],
+      });
+
+      const q = score(instructions, codebase);
+      expect(q.coverage).toBe(100); // both .py modules covered
+    });
+
+    it('covers Bicep modules via **/*.bicep glob', () => {
+      const instructions = makeInstructions({
+        files: [{
+          path: '.github/instructions/bicep.md',
+          content: 'applyTo: "**/*.bicep"\nBicep standards',
+          tool: 'copilot',
+          type: 'scoped-instruction',
+          tokens: 30,
+        }],
+      });
+      const codebase = makeCodebase({
+        modules: [
+          makeModule({ path: 'infra/main.bicep', role: 'core-logic', lines: 300 }),
+        ],
+      });
+
+      const q = score(instructions, codebase);
+      expect(q.coverage).toBe(100);
+    });
+
+    it('covers YAML modules via **/*.yml glob', () => {
+      const instructions = makeInstructions({
+        files: [{
+          path: '.github/instructions/yaml.md',
+          content: 'applyTo: "**/*.yml"\nYAML conventions',
+          tool: 'copilot',
+          type: 'scoped-instruction',
+          tokens: 30,
+        }],
+      });
+      const codebase = makeCodebase({
+        modules: [
+          makeModule({ path: 'detection/rules/alert.yml', role: 'core-logic', lines: 150 }),
+        ],
+      });
+
+      const q = score(instructions, codebase);
+      expect(q.coverage).toBe(100);
+    });
+
+    it('covers modules via directory prefix glob', () => {
+      const instructions = makeInstructions({
+        files: [{
+          path: '.github/instructions/detection.md',
+          content: 'applyTo: "detection/**"\nDetection rules',
+          tool: 'copilot',
+          type: 'scoped-instruction',
+          tokens: 30,
+        }],
+      });
+      const codebase = makeCodebase({
+        modules: [
+          makeModule({ path: 'detection/adf/pipeline.json', role: 'core-logic', lines: 200 }),
+          makeModule({ path: 'detection/rules/main.py', role: 'core-logic', lines: 150 }),
+          makeModule({ path: 'src/other.ts', role: 'core-logic', lines: 300 }), // NOT covered
+        ],
+      });
+
+      const q = score(instructions, codebase);
+      // 2 of 3 covered → 67%
+      expect(q.coverage).toBe(67);
+    });
+
+    it('handles simple wildcard patterns like src/*.py', () => {
+      const instructions = makeInstructions({
+        files: [{
+          path: '.github/instructions/src.md',
+          content: 'applyTo: "src/*.py"\nSource conventions',
+          tool: 'copilot',
+          type: 'scoped-instruction',
+          tokens: 30,
+        }],
+      });
+      const codebase = makeCodebase({
+        modules: [
+          makeModule({ path: 'src/engine.py', role: 'core-logic', lines: 200 }),
+          makeModule({ path: 'lib/helper.py', role: 'core-logic', lines: 150 }), // NOT covered
+        ],
+      });
+
+      const q = score(instructions, codebase);
+      expect(q.coverage).toBe(50); // 1 of 2
+    });
   });
 });

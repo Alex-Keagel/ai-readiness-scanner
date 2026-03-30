@@ -163,10 +163,26 @@ export class CrossRefEngine {
     for (const claim of instructions.claims.filter(c => c.category === 'path-reference')) {
       const pathExists = codebase.modules.some(m => m.path.includes(claim.claim) || claim.claim.includes(m.path));
       if (!pathExists) {
-        // Check if directory exists
+        // Check if path exists at repo root
+        let found = false;
         try {
           await vscode.workspace.fs.stat(vscode.Uri.joinPath(workspaceUri, claim.claim));
-        } catch {
+          found = true;
+        } catch { /* not at root */ }
+
+        // Also check relative to the source file's directory (skills reference relative paths)
+        if (!found && claim.sourceFile) {
+          const sourceDir = claim.sourceFile.substring(0, claim.sourceFile.lastIndexOf('/'));
+          if (sourceDir) {
+            const resolvedPath = `${sourceDir}/${claim.claim}`;
+            try {
+              await vscode.workspace.fs.stat(vscode.Uri.joinPath(workspaceUri, resolvedPath));
+              found = true;
+            } catch { /* not relative either */ }
+          }
+        }
+
+        if (!found) {
           issues.push({
             type: 'path-drift',
             claim,
@@ -307,16 +323,17 @@ Respond as JSON array:
       if ([...mentionedPaths].some(p => m.path.includes(p))) return true;
       // Covered by applyTo glob
       for (const glob of applyToGlobs) {
-        // Simple glob matching: ** matches anything, * matches within segment
         const patterns = glob.split(',').map(g => g.trim());
         for (const pattern of patterns) {
-          if (pattern.includes('**/*.py') && m.path.endsWith('.py')) return true;
-          if (pattern.includes('**/*.cs') && m.path.endsWith('.cs')) return true;
-          if (pattern.includes('**/*.kql') && m.path.endsWith('.kql')) return true;
-          if (pattern.includes('**/*.ts') && m.path.endsWith('.ts')) return true;
+          // Extension-based glob: **/*.ext
+          const extMatch = pattern.match(/\*\*\/\*\.(\w+)/);
+          if (extMatch && m.path.endsWith(`.${extMatch[1]}`)) return true;
           // Directory glob: "detection/**" matches detection/adf/foo.json
           const dirPattern = pattern.replace(/\*\*.*$/, '').replace(/['"{}]/g, '');
           if (dirPattern && m.path.startsWith(dirPattern)) return true;
+          // Simple wildcard: "src/*.py" → check prefix + extension
+          const simpleMatch = pattern.match(/^([^*]+)\*\.(\w+)$/);
+          if (simpleMatch && m.path.startsWith(simpleMatch[1]) && m.path.endsWith(`.${simpleMatch[2]}`)) return true;
         }
       }
       return false;
