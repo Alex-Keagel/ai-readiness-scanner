@@ -1096,37 +1096,86 @@ Respond as JSON: {"components":[{"name":"...","path":"...","language":"...","typ
       return `- ${c.path} | ${c.name} | ${c.language} | ${c.type}${c.description ? `\n  Description: ${c.description}` : ''}`;
     };
 
-    // Group micro-components by top-level directory for batching
-    const dirGroups = new Map<string, ComponentInfo[]>();
+    // Build import graph from semantic data for community detection
+    const importGraph = new Map<string, Set<string>>();
     for (const c of microComponents) {
-      const topDir = c.path.split('/')[0] || c.path;
-      if (!dirGroups.has(topDir)) dirGroups.set(topDir, []);
-      dirGroups.get(topDir)!.push(c);
+      importGraph.set(c.path, new Set());
     }
+    if (semanticData) {
+      const compPaths = new Set(microComponents.map(c => c.path));
+      for (const entry of semanticData) {
+        // Find which component this file belongs to
+        const ownerComp = microComponents.find(c => entry.path.startsWith(c.path + '/') || entry.path === c.path);
+        if (!ownerComp) continue;
+        for (const dep of entry.dependencies) {
+          // Find which component this dependency belongs to
+          const depNorm = dep.replace(/-/g, '_');
+          const targetComp = microComponents.find(c => {
+            const cName = c.path.split('/').pop()?.replace(/-/g, '_') || '';
+            return depNorm.includes(cName) || cName.includes(depNorm);
+          });
+          if (targetComp && targetComp.path !== ownerComp.path) {
+            if (!importGraph.has(ownerComp.path)) importGraph.set(ownerComp.path, new Set());
+            importGraph.get(ownerComp.path)!.add(targetComp.path);
+            // Bidirectional for community detection
+            if (!importGraph.has(targetComp.path)) importGraph.set(targetComp.path, new Set());
+            importGraph.get(targetComp.path)!.add(ownerComp.path);
+          }
+        }
+      }
+    }
+
+    // Community detection: find connected components in import graph
+    const findCommunities = (nodes: ComponentInfo[], edges: Map<string, Set<string>>): ComponentInfo[][] => {
+      const visited = new Set<string>();
+      const communities: ComponentInfo[][] = [];
+
+      for (const node of nodes) {
+        if (visited.has(node.path)) continue;
+        // BFS from this node
+        const community: ComponentInfo[] = [];
+        const queue = [node.path];
+        while (queue.length > 0) {
+          const current = queue.shift()!;
+          if (visited.has(current)) continue;
+          visited.add(current);
+          const comp = nodes.find(n => n.path === current);
+          if (comp) community.push(comp);
+          const neighbors = edges.get(current) || new Set();
+          for (const neighbor of neighbors) {
+            if (!visited.has(neighbor)) queue.push(neighbor);
+          }
+        }
+        if (community.length > 0) communities.push(community);
+      }
+
+      // Split large communities into sub-batches of max 25
+      const result: ComponentInfo[][] = [];
+      for (const comm of communities) {
+        if (comm.length <= 25) {
+          result.push(comm);
+        } else {
+          for (let i = 0; i < comm.length; i += 25) {
+            result.push(comm.slice(i, i + 25));
+          }
+        }
+      }
+      return result;
+    };
 
     let domainComponents: ComponentInfo[] = [];
 
     if (microComponents.length > 40) {
-      // ── PARALLEL BATCHED GROUPING for large repos ──
-      // Split into batches of ~15-20 components, run in parallel, then merge
-      const batches: ComponentInfo[][] = [];
-      let currentBatch: ComponentInfo[] = [];
-      for (const [, items] of dirGroups) {
-        if (currentBatch.length + items.length > 20 && currentBatch.length > 0) {
-          batches.push(currentBatch);
-          currentBatch = [];
-        }
-        currentBatch.push(...items);
-      }
-      if (currentBatch.length > 0) batches.push(currentBatch);
+      // ── GRAPH-BASED COMMUNITY BATCHING for large repos ──
+      const communities = findCommunities(microComponents, importGraph);
+      const edgeCount = [...importGraph.values()].reduce((s, v) => s + v.size, 0) / 2;
+      logger.info(`Deep map [Agent 2]: ${communities.length} communities detected (${Math.round(edgeCount)} edges) from ${microComponents.length} components`);
 
-      logger.info(`Deep map [Agent 2]: splitting ${microComponents.length} components into ${batches.length} parallel batches`);
-
-      const batchPromises = batches.map(async (batch, idx) => {
+      const batchPromises = communities.map(async (batch, idx) => {
         const batchList = batch.map(c => enrichComponent(c)).join('\n');
         const batchPrompt = `You are a **Domain Architect**. Group these ${batch.length} components into 2-5 business or technical domains.
 
-COMPONENTS (batch ${idx + 1}/${batches.length}):
+COMPONENTS (batch ${idx + 1}/${communities.length}):
 ${batchList}
 
 Create domains like: "Data Processing", "Resource Provider", "Shared Libraries", "Infrastructure", "Testing", "Developer Experience", "Security", "Monitoring".
@@ -1151,7 +1200,7 @@ Respond as JSON: {"components":[{"name":"Domain","path":"primary-path","language
 
       const batchResults = await Promise.all(batchPromises);
       domainComponents = batchResults.flat();
-      logger.info(`Deep map [Agent 2]: ${domainComponents.length} components from ${batches.length} parallel batches`);
+      logger.info(`Deep map [Agent 2]: ${domainComponents.length} components from ${communities.length} parallel batches`);
 
     } else {
       // ── SINGLE CALL for smaller repos ──
