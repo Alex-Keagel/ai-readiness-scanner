@@ -412,7 +412,7 @@ export class ComponentMapper {
       .map(f => f.path.slice(basePath.length + 1))
       .filter(p => {
         const depth = p.split('/').length;
-        return depth <= 2;
+        return depth <= 4;  // Show 4 levels deep for complete picture
       })
       .sort();
 
@@ -425,20 +425,21 @@ export class ComponentMapper {
 
   private formatAsTree(paths: string[]): string[] {
     const lines: string[] = [];
-    const dirs = new Set<string>();
+    const seen = new Set<string>();
 
     for (const p of paths) {
       const parts = p.split('/');
-      if (parts.length === 1) {
-        lines.push(parts[0]);
-      } else {
-        const dir = parts[0];
-        if (!dirs.has(dir)) {
-          dirs.add(dir);
-          lines.push(`${dir}/`);
+      // Show directory hierarchy with proper indentation
+      for (let i = 0; i < parts.length - 1; i++) {
+        const dirPath = parts.slice(0, i + 1).join('/');
+        if (!seen.has(dirPath)) {
+          seen.add(dirPath);
+          lines.push(`${'  '.repeat(i)}${parts[i]}/`);
         }
-        lines.push(`  ${parts.slice(1).join('/')}`);
       }
+      // Show the file at proper depth
+      const indent = '  '.repeat(Math.max(0, parts.length - 1));
+      lines.push(`${indent}${parts[parts.length - 1]}`);
     }
     return lines;
   }
@@ -458,6 +459,7 @@ export class ComponentMapper {
     'src', 'lib', 'apps', 'packages', 'components', 'services',
     'modules', 'infrastructure', 'deploy', 'detection', 'scripts',
     'tools', 'ci', 'functions', 'workers', 'lambdas', 'plugins',
+    '.build', '.pipelines', 'pipelines', 'dashboards', 'tests',
   ]);
 
   /** Manifest files that signal a directory is its own component */
@@ -972,7 +974,7 @@ export class ComponentMapper {
     descTimer?.end?.();
 
     const treeLines = tree.split('\n');
-    const truncatedTree = treeLines.length > 200 ? treeLines.slice(0, 200).join('\n') + '\n...' : tree;
+    const truncatedTree = treeLines.length > 400 ? treeLines.slice(0, 400).join('\n') + '\n...' : tree;
     const descriptorContext = descriptorFiles.slice(0, 15).map(f => `### ${f.relativePath}\n\`\`\`\n${f.content.slice(0, 500)}\n\`\`\``).join('\n\n');
     const originalPaths = new Set(context.components.map(c => c.path));
 
