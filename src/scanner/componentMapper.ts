@@ -1093,11 +1093,21 @@ export class ComponentMapper {
       // Check generated
       const isGenerated = this.detectGenerated(dirPath, name, language, '');
 
-      // Get description from semantic data
+      // Build description from semantic data — aggregate file summaries
       let description = '';
       if (matchingSemantic.length > 0) {
-        const summaries = matchingSemantic.filter(s => s.summary).map(s => s.summary);
-        if (summaries.length > 0) description = summaries[0];
+        const summaries = matchingSemantic.filter(s => s.summary && s.summary.length > 10).map(s => s.summary);
+        const allExports = [...new Set(matchingSemantic.flatMap(s => s.exports))];
+        const allDeps = [...new Set(matchingSemantic.flatMap(s => s.dependencies))];
+        
+        if (summaries.length > 0) {
+          // Use most detailed summary (longest) as component description
+          description = summaries.sort((a, b) => b.length - a.length)[0];
+        }
+        // Enrich: if we know exports and deps, append key info
+        if (allExports.length > 0 && !description) {
+          description = `Exports: ${allExports.slice(0, 5).join(', ')}`;
+        }
       }
 
       components.push({
@@ -1234,44 +1244,64 @@ export class ComponentMapper {
     }
 
     // ═══════════════════════════════════════════════════════════
-    // PHASE 2: LLM naming — add business domain descriptions
+    // PHASE 2: LLM enrichment — rename, describe, reclassify
     // ═══════════════════════════════════════════════════════════
     if (this.copilotClient?.isAvailable() && components.length > 0) {
-      logger.info('Deep map [LLM]: adding business descriptions...');
-      const namingTimer = logger.time('Deep map: LLM naming');
+      logger.info('Deep map [LLM]: enriching component names and descriptions...');
+      const namingTimer = logger.time('Deep map: LLM enrichment');
 
-      // Only name top-level and second-level components (max 30)
-      const toName = components
-        .filter(c => !c.parentPath || components.filter(x => x.parentPath === c.parentPath).length <= 10)
-        .filter(c => !c.description)
-        .slice(0, 30);
+      // Select components needing enrichment: top-level + containers + those without descriptions
+      const toEnrich = components.filter(c => {
+        // Always enrich top-level and second-level
+        if (!c.parentPath) return true;
+        const parent = components.find(p => p.path === c.parentPath);
+        if (parent && !parent.parentPath) return true;
+        // Also enrich anything without a description
+        if (!c.description) return true;
+        return false;
+      }).slice(0, 40);
 
-      if (toName.length > 0) {
-        const compList = toName.map(c => {
+      if (toEnrich.length > 0) {
+        const compList = toEnrich.map(c => {
           const sem = (semanticData || []).filter(s => s.path.startsWith(c.path + '/'));
+          const childCount = components.filter(x => x.parentPath === c.path).length;
           const imports = [...new Set(sem.flatMap(s => s.dependencies))].slice(0, 5);
-          return `- ${c.path} [${c.language}, ${c.type}]${imports.length ? ` imports: ${imports.join(', ')}` : ''}`;
+          const exports = [...new Set(sem.flatMap(s => s.exports))].slice(0, 5);
+          const summaries = sem.filter(s => s.summary).map(s => s.summary).slice(0, 2);
+          return `- path: ${c.path} | name: ${c.name} | lang: ${c.language} | type: ${c.type} | children: ${childCount}${summaries.length ? `\n  file summaries: ${summaries.join('; ')}` : ''}${imports.length ? `\n  imports: ${imports.join(', ')}` : ''}${exports.length ? `\n  exports: ${exports.join(', ')}` : ''}${c.description ? `\n  current desc: ${c.description}` : ''}`;
         }).join('\n');
 
         try {
-          const prompt = `Give each component a concise business-level description (one sentence).
+          const prompt = `You are enriching a component tree. For each component, provide:
+1. A better display name (e.g., "src" → "Zero Trust Segmentation Services", "common" → "Platform Libraries")
+2. A concise business-level description (one sentence)
+
+Rules:
+- Generic container names like "src", "common", "lib", "apps" should get meaningful business names
+- Names should describe WHAT it does, not WHERE it is
+- Descriptions should help a developer understand the business purpose
+- Do NOT change names that are already meaningful (e.g., "auto_segmentation" is fine)
 
 Components:
 ${compList}
 
-Respond as JSON array: [{"path":"...","description":"one sentence"}]`;
+Respond as JSON array: [{"path":"...","name":"Better Name","description":"one sentence business description"}]`;
 
           const response = await this.copilotClient!.analyzeFast(prompt);
           const match = response.match(/\[[\s\S]*\]/);
           if (match) {
-            const descriptions = JSON.parse(match[0]) as { path: string; description: string }[];
-            for (const d of descriptions) {
-              const comp = components.find(c => c.path === d.path);
-              if (comp && d.description) comp.description = d.description;
+            const enrichments = JSON.parse(match[0]) as { path: string; name?: string; description?: string }[];
+            for (const e of enrichments) {
+              const comp = components.find(c => c.path === e.path);
+              if (comp) {
+                if (e.name && e.name !== comp.name) comp.name = e.name;
+                if (e.description) comp.description = e.description;
+              }
             }
+            logger.info(`Deep map [LLM]: enriched ${enrichments.length} components with names/descriptions`);
           }
         } catch (err) {
-          logger.debug('Deep map [LLM]: naming failed, using defaults', { error: String(err) });
+          logger.debug('Deep map [LLM]: enrichment failed, using defaults', { error: String(err) });
         }
       }
       namingTimer?.end?.();
