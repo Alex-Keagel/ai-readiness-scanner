@@ -103,7 +103,18 @@ export class RecommendationSynthesizer {
       ]);
       const badPaths = instructions.claims
         .filter(c => c.category === 'path-reference')
-        .filter(c => !allKnownPaths.has(c.claim) && ![...allKnownPaths].some(p => p.includes(c.claim) || c.claim.includes(p)))
+        .filter(c => {
+          const claim = c.claim;
+          // Check absolute path
+          if (allKnownPaths.has(claim) || [...allKnownPaths].some(p => p.includes(claim) || claim.includes(p))) return false;
+          // Check relative to source file directory (skills reference relative paths)
+          if (c.sourceFile) {
+            const sourceDir = c.sourceFile.substring(0, c.sourceFile.lastIndexOf('/'));
+            const resolvedPath = sourceDir ? `${sourceDir}/${claim}` : claim;
+            if (allKnownPaths.has(resolvedPath) || [...allKnownPaths].some(p => p.includes(resolvedPath) || resolvedPath.includes(p))) return false;
+          }
+          return true;
+        })
         .slice(0, 5);
 
       if (badPaths.length > 0) {

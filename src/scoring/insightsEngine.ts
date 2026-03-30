@@ -713,6 +713,7 @@ EXISTING AUTOMATIONS (DO NOT suggest any that overlap with these):
 ${report.levels.flatMap(l => l.signals).filter(s => s.detected && (s.signalId.includes('skill') || s.signalId.includes('agent') || s.signalId.includes('workflow'))).map(s => `- ${s.signalId}: ${s.finding} (files: ${(s.files || []).join(', ')})`).join('\n') || 'None found'}
 
 IMPORTANT: Do NOT suggest skills that already exist above. Only suggest NEW skills for tasks not yet covered. If all common tasks are already covered, return fewer suggestions or an empty array.
+IMPORTANT: Only suggest skills relevant to the languages and technologies ACTUALLY PRESENT in this repo (listed above in LANGUAGES). Do NOT suggest KQL/Kusto skills if the repo has no .kql files. Do NOT suggest C# skills for Python-only repos.
 
 Suggest up to 3 specific NEW ${sf.concept.split('(')[0].trim().toLowerCase()} that would be valuable and do NOT overlap with existing ones. Generate the EXACT file path and a brief content outline following the platform's format.
 
