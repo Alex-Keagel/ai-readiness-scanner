@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.1] — 2026-03-30
+
+- feat: v1.0.0 — initial release
+- feat: domain-oriented component grouping via LLM prompt
+- fix: Python dependency detection — hyphen/underscore normalization
+- feat: dead code detection + README overhaul for v1.7.15
+- feat: v1.7.14 — SRE metrics, unified pipeline, scoring accuracy overhaul
+- feat: add 6 dev workflow skills for GitHub Copilot CLI
+- chore: remove globalState migration fallback — clean workspaceState only
+- fix: migrate ALL storage from globalState to workspaceState
+- fix: cross-repo contamination — validate report matches workspace
+- fix: 4 scan result bugs from ZTS analysis
+
 All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
