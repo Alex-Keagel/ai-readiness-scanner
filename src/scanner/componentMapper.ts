@@ -1165,59 +1165,66 @@ Respond as JSON array: [{"path":"...","description":"one sentence"}]`;
     }
 
     // ═══════════════════════════════════════════════════════════
-    // PHASE 3: Intelligent grouping — merge related dirs, hide noise
+    // PHASE 3: Intelligent grouping — merge related dirs, create logical groups
     // ═══════════════════════════════════════════════════════════
     logger.info('Deep map [grouping]: creating logical domain groups...');
 
-    // 3a. Merge all config dotfiles into one "Developer Configuration" group
+    // Helper to create a virtual group and reparent components
+    const createGroup = (name: string, path: string, type: ComponentInfo['type'], description: string, memberPaths: string[]) => {
+      if (memberPaths.length === 0) return;
+      const group: ComponentInfo = { name, path, language: 'Multi', type, description, children: memberPaths };
+      components.push(group);
+      for (const c of components) {
+        if (memberPaths.includes(c.path) && !c.parentPath) c.parentPath = path;
+      }
+    };
+
+    // 3a. Group config dotfiles → "Developer Configuration"
     const configPaths = components.filter(c => c.type === 'config' && !c.parentPath).map(c => c.path);
     if (configPaths.length > 1) {
-      const configGroup: ComponentInfo = {
-        name: 'Developer Configuration',
-        path: '.devconfig',
-        language: 'Multi',
-        type: 'config',
-        description: 'IDE settings, AI assistant rules, editor configuration, and repository metadata',
-        children: configPaths,
-      };
-      components.push(configGroup);
-      for (const c of components) {
-        if (configPaths.includes(c.path) && !c.parentPath) c.parentPath = '.devconfig';
-      }
+      createGroup('Developer Configuration', '.devconfig', 'config',
+        'IDE settings, AI assistant rules, editor configuration, and repository metadata', configPaths);
     }
 
-    // 3b. Merge all infra dirs into one "Infrastructure & DevOps" group
+    // 3b. Group infra dirs → "Infrastructure & DevOps"
     const infraPaths = components.filter(c => c.type === 'infra' && !c.parentPath).map(c => c.path);
     if (infraPaths.length > 1) {
-      const infraGroup: ComponentInfo = {
-        name: 'Infrastructure & DevOps',
-        path: '.infrastructure',
-        language: 'Multi',
-        type: 'infra',
-        description: 'CI/CD pipelines, deployment configuration, release management, and infrastructure-as-code',
-        children: infraPaths,
-      };
-      components.push(infraGroup);
-      for (const c of components) {
-        if (infraPaths.includes(c.path) && !c.parentPath) c.parentPath = '.infrastructure';
+      createGroup('Infrastructure & DevOps', '.infrastructure', 'infra',
+        'CI/CD pipelines, deployment, release management, and infrastructure-as-code', infraPaths);
+    }
+
+    // 3c. Group test projects → "Testing"
+    const testPaths = components.filter(c =>
+      !c.parentPath && (c.name.endsWith('.Tests') || c.name.endsWith('Tests') || c.name.startsWith('test') ||
+        c.path.includes('.Tests/') || c.path.includes('/test/') || c.path.includes('/E2E/'))
+    ).map(c => c.path);
+    if (testPaths.length > 2) {
+      createGroup('Testing', '.testing', 'app',
+        'Unit tests, integration tests, E2E tests, and test utilities', testPaths);
+    }
+
+    // 3d. Group scripts → under Infrastructure if they exist standalone
+    const scriptPaths = components.filter(c => c.type === 'script' && !c.parentPath).map(c => c.path);
+    if (scriptPaths.length > 0) {
+      const infraGroup = components.find(c => c.path === '.infrastructure');
+      if (infraGroup) {
+        for (const c of components) {
+          if (scriptPaths.includes(c.path) && !c.parentPath) {
+            c.parentPath = '.infrastructure';
+            infraGroup.children = infraGroup.children || [];
+            infraGroup.children.push(c.path);
+          }
+        }
       }
     }
 
-    // 3c. Remove standalone dotfile components that aren't meaningful
-    const NOISE_PATTERNS = [/^\.gitattributes$/, /^\.gitmodules$/, /^\.gitignore$/, /^\.editorconfig$/, /^\.npmrc$/];
-    const beforeCount = components.length;
-    const filtered = components.filter(c => {
-      if (NOISE_PATTERNS.some(p => p.test(c.path))) return false;
-      return true;
-    });
-    if (filtered.length < beforeCount) {
-      logger.info(`Deep map [grouping]: removed ${beforeCount - filtered.length} noise components`);
-    }
+    // 3e. Remove noise — standalone dotfiles, single-file components at root
+    const NOISE_PATTERNS = [/^\.gitattributes$/, /^\.gitmodules$/, /^\.gitignore$/, /^\.editorconfig$/, /^\.npmrc$/, /^\.eslintrc/];
+    const filtered = components.filter(c => !NOISE_PATTERNS.some(p => p.test(c.path)));
 
-    // 3d. Ensure top-level dirs without parentPath that are just containers get proper names
+    // 3f. Generate descriptions for containers
     for (const c of filtered) {
       if (!c.description || c.description === `${c.language} ${c.type}`) {
-        // Generate a basic description from path and children
         const childCount = filtered.filter(x => x.parentPath === c.path).length;
         if (childCount > 0) {
           c.description = `Contains ${childCount} sub-components`;
@@ -1225,7 +1232,8 @@ Respond as JSON array: [{"path":"...","description":"one sentence"}]`;
       }
     }
 
-    logger.info(`Deep map: COMPLETE — ${filtered.length} components (${filtered.filter(c => !c.parentPath).length} top-level)`);
+    const topLevel = filtered.filter(c => !c.parentPath);
+    logger.info(`Deep map: COMPLETE — ${filtered.length} components (${topLevel.length} top-level groups)`);
     return filtered;
   }
 
