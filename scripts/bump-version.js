@@ -107,5 +107,17 @@ if (config.changelog && fs.existsSync(changelogPath)) {
   fs.writeFileSync(changelogPath, updated);
 }
 
+// Update README.md version badge
+const readmePath = path.join(ROOT, 'README.md');
+if (fs.existsSync(readmePath)) {
+  let readme = fs.readFileSync(readmePath, 'utf-8');
+  readme = readme.replace(
+    /version-[\d.]+(-[\w.]+)?-blue/,
+    `version-${newVersion}-blue`
+  );
+  fs.writeFileSync(readmePath, readme);
+  console.log(`📝 README.md version badge updated`);
+}
+
 console.log(`✅ Version bumped to ${newVersion}`);
 console.log(`Run: git add -A && git commit -m "${config.commitMessage.replace('${version}', newVersion)}" && git tag ${config.tagPrefix}${newVersion}`);
