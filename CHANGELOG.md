@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.1.6] — 2026-03-30
+
+- fix: 3 remaining recommendation bugs from audit
+
 ## [1.1.5] — 2026-03-30
 
 - fix: skill completeness accepts alternative headers + cross-ref recognizes applyTo globs
