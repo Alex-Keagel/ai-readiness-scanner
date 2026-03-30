@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.0.7] — 2026-03-30
+
+- fix: batch explosion + rate limiting — merge orphans, limit concurrency, retry
+
 ## [1.0.6] — 2026-03-30
 
 - feat: graph-based community chunking for large repo batching
