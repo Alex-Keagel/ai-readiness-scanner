@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.6] — 2026-03-30
+
+- feat: graph-based community chunking for large repo batching
+- feat: graph-first component grouping — semantic data feeds Domain Architect
+
 ## [1.0.5] — 2026-03-30
 
 - feat: fully dynamic scan — no hardcoded depth/pattern limits
