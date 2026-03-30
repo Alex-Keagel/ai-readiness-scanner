@@ -33,6 +33,7 @@ export interface DeepAnalysisResult {
   complexity?: ComplexityAnalysisResult;
   callGraph?: CallGraphResult;
   dataFlow?: DataFlowResult;
+  deadExports?: { path: string; exportName: string; lines: number; role: string }[];
 }
 
 /**
@@ -170,9 +171,45 @@ export async function runDeepAnalysis(
     logger.warn('Deep: skill evaluation failed', err);
   }
 
+  // Phase 9: Dead code detection
+  let deadExports: { path: string; exportName: string; lines: number; role: string }[] = [];
+  try {
+    const { WorkspaceIndexer } = await import('../semantic/indexer');
+    const indexer = new WorkspaceIndexer(new (await import('../semantic/cache')).SemanticCache(context!));
+    const importGraph = new Map<string, string[]>();
+    for (const mod of codebase.modules) {
+      const { project } = indexer.separateImports(
+        '', // content not needed, we use module data
+        mod.path
+      );
+      importGraph.set(mod.path, project);
+    }
+    deadExports = indexer.detectDeadExports(codebase.modules as any, importGraph);
+    if (deadExports.length > 0) {
+      logger.info(`Deep: ${deadExports.length} potentially dead exports detected`);
+      // Add recommendation for significant dead code
+      const topDead = deadExports.slice(0, 5);
+      if (topDead.length >= 3) {
+        recommendations.push({
+          id: 'dead-exports',
+          type: 'dead-code',
+          severity: 'important',
+          title: `${deadExports.length} exported modules appear unused — potential dead code`,
+          description: `These modules export symbols but are never imported by other project files. They may be dead code, entry points, or externally consumed. Review and either document their purpose or remove them.`,
+          evidence: topDead.map(d => `${d.path} exports "${d.exportName}" (${d.lines} lines, role: ${d.role})`),
+          targetFile: '(project-level)',
+          impactScore: 30,
+          affectedModules: topDead.map(d => d.path),
+        });
+      }
+    }
+  } catch (err) {
+    logger.debug('Deep: dead code detection skipped', { error: String(err) });
+  }
+
   // Re-sort all recommendations by impact
   recommendations.sort((a, b) => b.impactScore - a.impactScore);
 
   timer?.end?.();
-  return { recommendations, crossRef: crossRefResult, skillEvaluations, complexity, callGraph, dataFlow };
+  return { recommendations, crossRef: crossRefResult, skillEvaluations, complexity, callGraph, dataFlow, deadExports };
 }

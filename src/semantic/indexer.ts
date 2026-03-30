@@ -722,4 +722,63 @@ Respond as JSON array: [{"summary":"...","keywords":"k1, k2, k3"}, ...]`;
     };
     return map[ext];
   }
+
+  // ─── Dead Code Detection ────────────────────────────────────────
+
+  /**
+   * Detect exported symbols that are never imported by any other module.
+   * Returns modules/exports that appear dead (exported but unused).
+   */
+  detectDeadExports(
+    modules: { path: string; exports: string[]; lines: number; role: string }[],
+    importGraph: Map<string, string[]>
+  ): { path: string; exportName: string; lines: number; role: string }[] {
+    // Build set of all imported symbols across all modules
+    const allImportedPaths = new Set<string>();
+    for (const [, targets] of importGraph) {
+      for (const t of targets) {
+        allImportedPaths.add(t);
+      }
+    }
+
+    // Also build a set of import path fragments (for relative imports like '../utils')
+    const importedFragments = new Set<string>();
+    for (const p of allImportedPaths) {
+      // Extract the module name from the import path
+      const parts = p.split('/');
+      importedFragments.add(parts[parts.length - 1]);
+      if (parts.length >= 2) {
+        importedFragments.add(parts.slice(-2).join('/'));
+      }
+    }
+
+    const deadExports: { path: string; exportName: string; lines: number; role: string }[] = [];
+
+    for (const mod of modules) {
+      if (mod.role === 'test' || mod.role === 'generated' || mod.role === 'config') continue;
+      if (mod.exports.length === 0) continue;
+
+      // Check if this module is imported by anyone
+      const modName = mod.path.replace(/\.\w+$/, ''); // strip extension
+      const modParts = modName.split('/');
+      const isImported = allImportedPaths.has(mod.path) ||
+        allImportedPaths.has(modName) ||
+        importedFragments.has(modParts[modParts.length - 1]) ||
+        (modParts.length >= 2 && importedFragments.has(modParts.slice(-2).join('/')));
+
+      if (!isImported && mod.lines > 50) {
+        // Module exports things but nobody imports it
+        for (const exp of mod.exports.slice(0, 5)) {
+          deadExports.push({
+            path: mod.path,
+            exportName: exp,
+            lines: mod.lines,
+            role: mod.role,
+          });
+        }
+      }
+    }
+
+    return deadExports.sort((a, b) => b.lines - a.lines);
+  }
 }

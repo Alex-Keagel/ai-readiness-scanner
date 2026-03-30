@@ -1,9 +1,9 @@
 # AI Readiness Scanner for VS Code
 
 [![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-Install-007ACC?logo=visual-studio-code&logoColor=white)](https://marketplace.visualstudio.com/)
-[![Version](https://img.shields.io/badge/version-1.5.0-blue)](https://marketplace.visualstudio.com/)
+[![Version](https://img.shields.io/badge/version-1.7.14-blue)](https://marketplace.visualstudio.com/)
 [![Powered by](https://img.shields.io/badge/Powered%20by-GitHub%20Copilot%20LM%20API-8957e5?logo=github)](https://github.com/features/copilot)
-[![Tests](https://img.shields.io/badge/tests-496%20passing-brightgreen)](https://github.com/)
+[![Tests](https://img.shields.io/badge/tests-638%20passing-brightgreen)](https://github.com/)
 
 > **Is your codebase ready for AI coding agents?** Find out in 60 seconds.
 
@@ -46,13 +46,30 @@ Your current level shows in the status bar: `🏆 L3: Skill-Equipped (72%)`
 
 ### 🧠 Semantic Code Understanding
 
-Not just "does the file exist" — the scanner **reads and understands** your code:
+Not just "does the file exist" — the scanner **reads, maps, and reasons** about your code:
 
-- **Fan-in analysis** — identifies hub files imported by many others
-- **Git velocity** — detects frequently-changed, multi-author files
-- **Security patterns** — flags auth, crypto, and API integration code
-- **LLM enrichment** — summarizes what each important file actually does
-- **TF-IDF vector search** — enables semantic querying of your entire codebase
+**Architecture Discovery**
+- **Call graph extraction** — maps function calls across modules (direct, cross-module, callback, event-driven)
+- **Data flow tracing** — traces data from source → transformation → sink across your pipeline
+- **Type hierarchy** — extracts class inheritance and interface implementations (extends/implements)
+- **Import graph separation** — distinguishes project imports from package imports for accurate fan-in
+
+**Intelligence Layer**
+- **Module role classification** — auto-classifies every file as entry-point, core-logic, utility, UI, config, test, or generated
+- **Complexity factor** — per-component score (0-1.0) based on size, fan-in, exports, call graph centrality, and pipeline involvement
+- **Product detection** — LLM identifies which components are customer-facing products vs internal support
+- **Generated code detection** — flags backup files, protobuf stubs, and exported code (scored differently)
+- **Dead code detection** — finds exported symbols never imported by other modules
+
+**Semantic Search**
+- **LLM enrichment** — summarizes what each important file actually does using GitHub Copilot
+- **TF-IDF vector search** — enables semantic querying across your entire codebase
+- **Fan-in analysis** — identifies hub files imported by many others (high-impact change targets)
+
+**Language-Aware Analysis**
+- **Type strictness scoring** — C#/Java get inherent credit (statically typed), Python scores based on hint coverage, config files excluded
+- **Semantic density** — measures documentation-to-code ratio per module (docstrings, comments, descriptive names)
+- **KQL/SQL awareness** — query languages scored as data components, not penalized for missing type hints
 
 ### 💡 Actionable Insights with One-Click Fix
 
@@ -119,18 +136,39 @@ Use natural language in Copilot Chat:
 
 | Command | What It Does |
 |---------|-------------|
-| `@readiness /scan` | Full scan with LLM analysis |
-| `@readiness /quick` | Instant deterministic scan |
+| `@readiness /scan` | Full scan with deep analysis |
 | `@readiness /levelup` | Guided progression to next level |
-| `@readiness /vibe` | Agentic proficiency assessment |
+| `@readiness /vibe` | Agentic proficiency + SRE assessment |
 | `@readiness /guide` | Platform setup guide |
 | `@readiness /migrate cline copilot` | Convert configs between platforms |
 | `@readiness /graph` | Repository structure visualization |
 | `@readiness /live` | Real-time AI tokens-per-minute |
 
-### 📈 Vibe Report
+### 📈 Vibe Report & SRE Metrics
 
-Assess your team's agentic coding proficiency across 5 dimensions: Autonomy, Delegation, Recovery, Depth, and Output quality. Track metrics over time with sparkline charts.
+Assess your team's agentic coding proficiency with two layers of analysis:
+
+**Agentic Proficiency Score (APS)** — 5 dimensions: Autonomy, Delegation, Recovery, Depth, Output quality. Track growth over time with sparkline charts.
+
+**SRE Reliability Metrics** — 13 metrics computed from actual conversation content:
+
+| Metric | What It Measures |
+|--------|-----------------|
+| Hallucination Index | How often the agent gets corrected |
+| Laziness Index | Short responses, refusals, placeholder code |
+| First-Try Success | % of sessions with zero corrections |
+| Flow Score | Productive momentum without friction |
+| Context Rot | Quality degradation as sessions get longer |
+| Loop Detection | Stuck correction cycles (3+ rounds) |
+| Session Health | Clean / Bumpy / Troubled classification |
+| Prompt Effectiveness | Success rate by category (fix, test, create, etc.) |
+| Regression Detection | Quality decline alerts (recent vs earlier) |
+| DORA Metrics | Deploy frequency, lead time, change failure rate, MTTR |
+| Activity Heatmap | When you're most productive (day × hour) |
+| Code Churn | Files re-edited across commits (instability signal) |
+| Cost Per Outcome | Estimated spend per session, message, and tool call |
+
+Supports **all 4 platforms**: Copilot CLI, Claude Code, Cline, Roo Code. Per-platform AND cross-platform comparison.
 
 ### 🎨 Tactical Glassbox Theme
 
@@ -272,7 +310,7 @@ The report shows 5 diagnostic metrics on a radar chart. Each is **platform-aware
 | Metric | Formula | Scope | What It Means for Agents |
 |--------|---------|-------|-------------------------|
 | **Business Logic Alignment** | avg(signal.score) for LLM-validated signals | App/library components only | Do your instructions accurately describe the actual application code? Infra/config signals excluded. |
-| **Type & Environment Strictness** | (annotations/declarations × 80) + strict mode bonus | App/library code only | Can agents use LSP for cross-file navigation? Measured on service/app/library code, not config files. |
+| **Type & Environment Strictness** | Language-aware: base score per language (C#=85, Python=45+hints) + annotation bonus. Config/data files excluded. | App/library code only | Can agents use LSP for cross-file navigation? Statically typed langs get inherent credit. |
 | **Semantic Density** | documentedProcedures / totalProcedures × 100 | App/library code only | What % of functions and classes have a docstring or comment? Binary per procedure — verbose inline comments don't count, only documented APIs. |
 | **Instruction/Reality Sync** | validChecks / totalChecks × 100 | Selected platform only | Are file paths and commands in YOUR platform's instruction files real? Copilot scan only checks `.github/` paths, not `.clinerules/`. |
 | **Context Efficiency** | 60% component coverage + 40% budget efficiency | Selected platform only | Per-component: do instructions cover each important component? Budget: is token usage in the sweet spot (1-8%) for the platform's context window? |
@@ -322,21 +360,17 @@ Access via Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
 | Command | Description |
 |---------|-------------|
-| `AI Readiness: Scan Workspace` | Run a full scan with LLM analysis |
-| `AI Readiness: Quick Scan` | Fast deterministic scan (no LLM) |
+| `AI Readiness: Full Scan` | Run a complete scan with LLM deep analysis |
 | `AI Readiness: Show Insights` | Open AI Strategy panel |
+| `AI Readiness: Action Center` | Tactical fixes with one-click generation |
 | `AI Readiness: Show Guide` | Platform configuration guide |
 | `AI Readiness: Show Graph` | Repository structure tree |
 | `AI Readiness: Show Report` | Open last scan report |
-| `AI Readiness: Show Context` | View scanning context |
-| `AI Readiness: Compare Runs` | Side-by-side run comparison |
-| `AI Readiness: Vibe Report` | Agentic proficiency report |
+| `AI Readiness: Compare Scans` | Side-by-side run comparison |
+| `AI Readiness: Vibe Report` | Agentic proficiency + SRE metrics |
 | `AI Readiness: Start Live Tracking` | Real-time AIPM dashboard |
-| `AI Readiness: Stop Live Tracking` | Stop live tracking |
-| `AI Readiness: Fix All` | Generate fixes for all recommendations |
 | `AI Readiness: Migrate` | Convert configs between platforms |
 | `AI Readiness: Clear History` | Reset scan history |
-| `AI Readiness: Clear Semantic Cache` | Purge LLM enrichment cache |
 
 ---
 
@@ -350,7 +384,7 @@ Access via Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
 - **All analysis runs locally** in your VS Code instance
 - Code snippets are sent to GitHub Copilot's LM API (same as Copilot Chat) — never to third parties
-- Scan results are cached in VS Code's `globalState` — no external storage
+- Scan results are cached in VS Code's `workspaceState` — isolated per workspace, no external storage
 - No telemetry is collected
 
 ---

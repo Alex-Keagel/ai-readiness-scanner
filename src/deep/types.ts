@@ -73,7 +73,7 @@ export interface CodebaseProfile {
 
 // ─── Gap Analysis ───────────────────────────────────────────────────
 
-export type GapType = 'uncovered-module' | 'uncovered-pipeline' | 'stale-path' | 'missing-workflow' | 'missing-skill' | 'weak-description' | 'structural-drift' | 'semantic-drift';
+export type GapType = 'uncovered-module' | 'uncovered-pipeline' | 'stale-path' | 'missing-workflow' | 'missing-skill' | 'weak-description' | 'structural-drift' | 'semantic-drift' | 'dead-code';
 
 export interface CoverageGap {
   type: GapType;
