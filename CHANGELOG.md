@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.1.0] — 2026-03-30
+
+- feat: replace LLM structure discovery with deterministic manifest-based tree
+
 ## [1.0.7] — 2026-03-30
 
 - fix: batch explosion + rate limiting — merge orphans, limit concurrency, retry
