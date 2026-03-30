@@ -984,7 +984,7 @@ export class ComponentMapper {
     // Limit descriptors to top 10
     const topDescriptors = componentDescriptors.slice(0, 10);
 
-    const prompt = `Analyze this repository structure and identify its component hierarchy. Group components SEMANTICALLY by purpose, not just by directory.
+    const prompt = `Analyze this repository and create a DOMAIN-ORIENTED component hierarchy. Group components by their BUSINESS CAPABILITY, not by directory layout.
 
 DIRECTORY STRUCTURE:
 ${truncatedTree}
@@ -995,41 +995,49 @@ ${topDescriptors.map(f => `### ${f.relativePath}\n\`\`\`\n${f.content.slice(0, 8
 DETECTED LANGUAGES: ${context.languages.join(', ')}
 PROJECT TYPE: ${context.projectType}
 
-RULES:
-1. Group by SEMANTIC PURPOSE, not just directory. A "Data Processing" group can contain Python code + KQL queries + Bicep infra if they serve the same purpose.
-2. Go AT LEAST 2-3 levels deep. subComponents can have their own subComponents.
-3. Every leaf directory with code should appear somewhere in the tree.
-4. Don't create a component for every single file — group related files under meaningful components.
+CRITICAL RULES:
+1. Create TOP-LEVEL DOMAIN GROUPS based on business capabilities — NOT directories.
+   Example: "Bot Detection & Classification" should contain the bot_classification app, bot_detection library, AND related KQL functions — even though they live in different directories.
+2. Components from different directories CAN and SHOULD be grouped under the same domain parent if they serve the same purpose.
+3. Each domain group's "path" should be the primary directory, but its subComponents can reference paths from anywhere in the repo.
+4. Go 2-3 levels deep. subComponents can have their own subComponents.
+5. Every leaf directory with code should appear somewhere in the tree.
+6. Don't create a component for every single file — group related files under meaningful components.
+7. Infrastructure (CI/CD, deployment, dev setup) should be its own domain, not scattered across other domains.
+8. Configuration files (IDE settings, linting, AI rules) should be grouped under a "Developer Configuration" domain.
 
 For each node:
-- name: descriptive name (not just directory name)
-- path: relative path from repo root
+- name: descriptive business-capability name (e.g., "Bot Detection & Classification", NOT "python-workspace/components/bot_detection")
+- path: primary relative path from repo root
 - language: primary language (or "Multi" if mixed)
 - type: app | library | service | script | config | infra | data
-- description: one sentence
-- subComponents: nested components (can be deeply nested)
+- description: one sentence explaining the business purpose
+- subComponents: nested components (can reference paths from different directories)
 
 Respond with ONLY valid JSON:
 {
   "components": [
     {
-      "name": "Data Processing Pipeline",
-      "path": "src/DataProcessing",
-      "language": "C#",
+      "name": "Bot Detection & Classification",
+      "path": "python-workspace/components/bot_detection",
+      "language": "Multi",
       "type": "service",
-      "description": "Processes and transforms network telemetry data",
+      "description": "End-to-end bot detection, classification, and alerting capability",
       "subComponents": [
-        {
-          "name": "Processing Engine",
-          "path": "src/DataProcessing/DataProcessing.Service",
-          "language": "C#",
-          "type": "app",
-          "description": "Core data processing orchestrator",
-          "subComponents": [
-            { "name": "Rate Limit Rules", "path": "src/DataProcessing/DataProcessing.Service/Rules", "language": "C#", "type": "library", "description": "Rule evaluation for rate limiting" }
-          ]
-        },
-        { "name": "Processing Tests", "path": "src/DataProcessing/DataProcessing.Tests", "language": "C#", "type": "app", "description": "Unit and integration tests" }
+        { "name": "Bot Detection Library", "path": "python-workspace/components/bot_detection", "language": "Python", "type": "library", "description": "Core bot detection heuristics and ML models" },
+        { "name": "Bot Classification App", "path": "python-workspace/apps/bot_classification", "language": "Python", "type": "app", "description": "Application for classifying bot traffic patterns" },
+        { "name": "Bot Detection KQL Functions", "path": "KustoFunctions/BotDetection", "language": "KQL", "type": "data", "description": "Kusto query functions for bot signal extraction" }
+      ]
+    },
+    {
+      "name": "Infrastructure & Deployment",
+      "path": "detection/infra",
+      "language": "Multi",
+      "type": "infra",
+      "description": "Cloud infrastructure provisioning and CI/CD pipelines",
+      "subComponents": [
+        { "name": "EV2 Deployment", "path": "detection/infra", "language": "Bicep", "type": "infra", "description": "ARM/Bicep templates for Azure resource deployment" },
+        { "name": "CI/CD Pipeline", "path": "ci", "language": "YAML", "type": "config", "description": "Azure DevOps build pipeline definition" }
       ]
     }
   ]
