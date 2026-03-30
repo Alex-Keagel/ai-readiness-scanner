@@ -1117,6 +1117,65 @@ export class ComponentMapper {
       comp.children = components.filter(c => c.parentPath === comp.path).map(c => c.path);
     }
 
+    // Create virtual parents for orphan components sharing a directory
+    // e.g., detection/adf + detection/infra → create detection/ parent
+    const orphans = components.filter(c => !c.parentPath);
+    const orphanParents = new Map<string, ComponentInfo[]>();
+    for (const o of orphans) {
+      const parts = o.path.split('/');
+      if (parts.length >= 2) {
+        const parentDir = parts[0];
+        if (!orphanParents.has(parentDir)) orphanParents.set(parentDir, []);
+        orphanParents.get(parentDir)!.push(o);
+      }
+    }
+    for (const [parentDir, children] of orphanParents) {
+      if (children.length < 2) continue;
+      if (components.some(c => c.path === parentDir)) continue; // already exists
+      
+      // Create virtual parent
+      const parentLang = children[0].language;
+      const parentType = children.some(c => c.type === 'infra') ? 'infra' : children[0].type;
+      components.push({
+        name: parentDir,
+        path: parentDir,
+        language: parentLang,
+        type: parentType,
+        description: `Contains ${children.length} sub-components`,
+        children: children.map(c => c.path),
+      });
+      for (const c of children) {
+        c.parentPath = parentDir;
+      }
+      logger.info(`Deep map: created virtual parent '${parentDir}/' for ${children.length} orphan children`);
+    }
+
+    // Also add standalone top-level dirs that have source files but no manifest
+    try {
+      const topDirs = await vscode.workspace.fs.readDirectory(workspaceUri);
+      for (const [dirName, type] of topDirs) {
+        if (type !== vscode.FileType.Directory) continue;
+        if (EXCLUDE.has(dirName) || dirName.startsWith('.')) continue;
+        if (components.some(c => c.path === dirName)) continue;
+        
+        const dirUri = vscode.Uri.joinPath(workspaceUri, dirName);
+        const hasFiles = await vscode.workspace.findFiles(
+          new vscode.RelativePattern(dirUri, '**/*.{py,ipynb,cs,ts,js,kql,bicep,ps1,sh,md}'),
+          '{**/node_modules/**,**/.git/**,**/obj/**,**/bin/**,**/.venv/**}', 1
+        );
+        if (hasFiles.length > 0) {
+          components.push({
+            name: dirName,
+            path: dirName,
+            language: 'Multi',
+            type: 'unknown',
+            description: '',
+            children: [],
+          });
+        }
+      }
+    } catch { /* skip */ }
+
     discoveryTimer?.end?.();
     logger.info(`Deep map [deterministic]: ${components.length} components discovered (${manifestDirs.size} manifest dirs)`);
 
