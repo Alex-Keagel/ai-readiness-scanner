@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.2.0] — 2026-03-30
+
+- feat: test coverage signal + 5 gap fixes
+
 ## [1.1.7] — 2026-03-30
 
 - fix: virtual group scoring + config component weighting
