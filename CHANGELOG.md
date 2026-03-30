@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.2] — 2026-03-30
+
+- fix: deeper component discovery + graph export + ground truth reports
+- docs: update README with unified knowledge graph, 3-agent pipeline, advanced features
+
 ## [1.0.1] — 2026-03-30
 
 - feat: v1.0.0 — initial release
