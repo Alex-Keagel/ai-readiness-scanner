@@ -1150,16 +1150,27 @@ Respond as JSON: {"components":[{"name":"...","path":"...","language":"...","typ
       }
 
       // Split large communities into sub-batches of max 25
+      // Split large communities, merge small ones into batches of 10-25
       const result: ComponentInfo[][] = [];
+      const smalls: ComponentInfo[] = []; // accumulate orphans/small communities
       for (const comm of communities) {
-        if (comm.length <= 25) {
-          result.push(comm);
-        } else {
+        if (comm.length > 25) {
+          // Split large community
           for (let i = 0; i < comm.length; i += 25) {
             result.push(comm.slice(i, i + 25));
           }
+        } else if (comm.length >= 5) {
+          // Medium community — keep as own batch
+          result.push(comm);
+        } else {
+          // Small community (1-4 nodes) — accumulate into merged batch
+          smalls.push(...comm);
+          if (smalls.length >= 15) {
+            result.push(smalls.splice(0, 15));
+          }
         }
       }
+      if (smalls.length > 0) result.push(smalls); // remaining orphans
       return result;
     };
 
@@ -1169,11 +1180,18 @@ Respond as JSON: {"components":[{"name":"...","path":"...","language":"...","typ
       // ── GRAPH-BASED COMMUNITY BATCHING for large repos ──
       const communities = findCommunities(microComponents, importGraph);
       const edgeCount = [...importGraph.values()].reduce((s, v) => s + v.size, 0) / 2;
-      logger.info(`Deep map [Agent 2]: ${communities.length} communities detected (${Math.round(edgeCount)} edges) from ${microComponents.length} components`);
+      logger.info(`Deep map [Agent 2]: ${communities.length} batches (from graph communities, ${Math.round(edgeCount)} edges, ${microComponents.length} components)`);
 
-      const batchPromises = communities.map(async (batch, idx) => {
-        const batchList = batch.map(c => enrichComponent(c)).join('\n');
-        const batchPrompt = `You are a **Domain Architect**. Group these ${batch.length} components into 2-5 business or technical domains.
+      // Process with concurrency limit (max 5 parallel) + retry on rate limit
+      const MAX_CONCURRENT = 5;
+      const batchResults: ComponentInfo[][] = [];
+
+      for (let start = 0; start < communities.length; start += MAX_CONCURRENT) {
+        const chunk = communities.slice(start, start + MAX_CONCURRENT);
+        const chunkPromises = chunk.map(async (batch, chunkIdx) => {
+          const idx = start + chunkIdx;
+          const batchList = batch.map(c => enrichComponent(c)).join('\n');
+          const batchPrompt = `You are a **Domain Architect**. Group these ${batch.length} components into 2-5 business or technical domains.
 
 COMPONENTS (batch ${idx + 1}/${communities.length}):
 ${batchList}
@@ -1187,20 +1205,39 @@ RULES:
 
 Respond as JSON: {"components":[{"name":"Domain","path":"primary-path","language":"Multi","type":"service","description":"...","subComponents":[...]}]}`;
 
-        try {
-          const r = await this.copilotClient!.analyzeFast(batchPrompt);
-          const m = r.match(/\{[\s\S]*\}/);
-          if (m) {
-            const parsed = JSON.parse(m[0]);
-            if (Array.isArray(parsed.components)) return this.flattenComponents(parsed.components);
+          // Retry with exponential backoff (max 2 retries)
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              const r = await this.copilotClient!.analyzeFast(batchPrompt);
+              const m = r.match(/\{[\s\S]*\}/);
+              if (m) {
+                const parsed = JSON.parse(m[0]);
+                if (Array.isArray(parsed.components)) return this.flattenComponents(parsed.components);
+              }
+              return batch; // LLM returned invalid JSON — use flat
+            } catch (err) {
+              const errStr = String(err);
+              if (errStr.includes('RateLimited') && attempt < 2) {
+                const delay = (attempt + 1) * 3000; // 3s, 6s
+                logger.debug(`Deep map [Agent 2] batch ${idx} rate limited, retrying in ${delay}ms...`);
+                await new Promise(resolve => setTimeout(resolve, delay));
+                continue;
+              }
+              if (attempt === 2 || !errStr.includes('RateLimited')) {
+                logger.debug(`Deep map [Agent 2] batch ${idx} failed`, { error: errStr });
+                return batch; // fallback: return flat
+              }
+            }
           }
-        } catch (err) { logger.debug(`Deep map [Agent 2] batch ${idx} failed`, { error: String(err) }); }
-        return batch; // fallback: return flat
-      });
+          return batch;
+        });
 
-      const batchResults = await Promise.all(batchPromises);
+        const chunkResults = await Promise.all(chunkPromises);
+        batchResults.push(...chunkResults);
+      }
+
       domainComponents = batchResults.flat();
-      logger.info(`Deep map [Agent 2]: ${domainComponents.length} components from ${communities.length} parallel batches`);
+      logger.info(`Deep map [Agent 2]: ${domainComponents.length} components from ${communities.length} batches (max ${MAX_CONCURRENT} concurrent)`);
 
     } else {
       // ── SINGLE CALL for smaller repos ──
