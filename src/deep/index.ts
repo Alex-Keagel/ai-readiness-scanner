@@ -25,6 +25,10 @@ import type { SkillEvaluation } from './skillEvaluator';
 import type { ComplexityAnalysisResult } from './complexityAnalyzer';
 import type { CallGraphResult } from '../semantic/callGraph';
 import type { DataFlowResult } from '../semantic/dataFlow';
+import type {
+  HyDEResult, RollUpSummary, LabeledEdge, BlastRadiusResult,
+  ComponentHealthCard, DeadBranch,
+} from '../semantic/advancedFeatures';
 
 export interface DeepAnalysisResult {
   recommendations: DeepRecommendation[];
@@ -34,6 +38,13 @@ export interface DeepAnalysisResult {
   callGraph?: CallGraphResult;
   dataFlow?: DataFlowResult;
   deadExports?: { path: string; exportName: string; lines: number; role: string }[];
+  // Advanced semantic features
+  hydeQueries?: HyDEResult[];
+  rollUpSummaries?: RollUpSummary[];
+  labeledEdges?: LabeledEdge[];
+  blastRadius?: BlastRadiusResult[];
+  healthCards?: ComponentHealthCard[];
+  deadBranches?: DeadBranch[];
 }
 
 /**
@@ -207,9 +218,123 @@ export async function runDeepAnalysis(
     logger.debug('Deep: dead code detection skipped', { error: String(err) });
   }
 
+  // ── Advanced Semantic Features (Phases 10-15) ──
+  let hydeQueries: HyDEResult[] = [];
+  let rollUpSummaries: RollUpSummary[] = [];
+  let labeledEdges: LabeledEdge[] = [];
+  let blastRadiusResults: BlastRadiusResult[] = [];
+  let healthCards: ComponentHealthCard[] = [];
+  let deadBranches: DeadBranch[] = [];
+
+  try {
+    const {
+      generateHyDEQueries, generateRollUpSummaries, labelEdges,
+      analyzeBlastRadius, auditComponent, detectDeadBranches,
+    } = await import('../semantic/advancedFeatures');
+
+    const moduleSummaries = new Map<string, string>();
+    for (const mod of codebase.modules) {
+      moduleSummaries.set(mod.path, `${mod.role} module (${mod.lines} lines, ${mod.exportCount} exports)`);
+    }
+
+    // Phase 10: HyDE — hypothetical search queries
+    progress?.report({ message: '🔍 Generating search intent embeddings...', increment: 3 });
+    try {
+      hydeQueries = await generateHyDEQueries(copilotClient, codebase.modules as any);
+      logger.info(`Deep: HyDE generated ${hydeQueries.length} query sets`);
+    } catch (err) { logger.debug('Deep: HyDE skipped', { error: String(err) }); }
+
+    // Phase 11: Hierarchical roll-up summaries
+    progress?.report({ message: '📚 Building hierarchical summaries...', increment: 3 });
+    try {
+      const fileSummaries = codebase.modules.map(m => ({
+        path: m.path,
+        summary: moduleSummaries.get(m.path) || '',
+      }));
+      rollUpSummaries = await generateRollUpSummaries(copilotClient, fileSummaries);
+      logger.info(`Deep: Roll-up generated ${rollUpSummaries.length} summaries`);
+    } catch (err) { logger.debug('Deep: Roll-up skipped', { error: String(err) }); }
+
+    // Phase 12: Semantic edge labeling
+    progress?.report({ message: '🏷️ Labeling call graph edges...', increment: 3 });
+    try {
+      if (callGraph.edges.length > 0) {
+        labeledEdges = await labelEdges(copilotClient, callGraph.edges, moduleSummaries);
+        logger.info(`Deep: Labeled ${labeledEdges.length} edges with intent`);
+      }
+    } catch (err) { logger.debug('Deep: Edge labeling skipped', { error: String(err) }); }
+
+    // Phase 13: Blast radius for entry points
+    progress?.report({ message: '💥 Analyzing blast radius...', increment: 3 });
+    try {
+      const entryPoints = codebase.modules
+        .filter(m => m.role === 'entry-point')
+        .slice(0, 3);
+      for (const ep of entryPoints) {
+        const result = await analyzeBlastRadius(copilotClient, ep.path, callGraph.edges, moduleSummaries);
+        if (result.affectedModules.length > 0) {
+          blastRadiusResults.push(result);
+        }
+      }
+      logger.info(`Deep: Blast radius analyzed ${blastRadiusResults.length} entry points`);
+    } catch (err) { logger.debug('Deep: Blast radius skipped', { error: String(err) }); }
+
+    // Phase 14: Multi-agent health cards for top 3 critical components
+    progress?.report({ message: '🏥 Auditing critical components...', increment: 3 });
+    try {
+      const criticalModules = codebase.modules
+        .filter(m => m.role === 'core-logic' && m.lines > 200)
+        .sort((a, b) => b.lines - a.lines)
+        .slice(0, 3);
+      for (const mod of criticalModules) {
+        const card = await auditComponent(
+          copilotClient, mod.path, mod.path.split('/').pop() || mod.path,
+          moduleSummaries.get(mod.path) || '',
+          '' // code snippet not available at this stage
+        );
+        healthCards.push(card);
+      }
+      logger.info(`Deep: Audited ${healthCards.length} components`);
+    } catch (err) { logger.debug('Deep: Component audit skipped', { error: String(err) }); }
+
+    // Phase 15: Semantic dead branches (feature-flagged code)
+    progress?.report({ message: '🔇 Detecting feature-flagged dead code...', increment: 2 });
+    try {
+      // Find config files
+      const configPatterns = ['**/config.{json,yaml,yml,toml}', '**/.env', '**/settings.json', '**/appsettings*.json'];
+      const configFiles: { path: string; content: string }[] = [];
+      for (const pat of configPatterns) {
+        const found = await vscode.workspace.findFiles(
+          new vscode.RelativePattern(workspaceUri, pat),
+          '**/node_modules/**,**/.git/**,**/.venv/**', 5
+        );
+        for (const f of found) {
+          try {
+            const raw = await vscode.workspace.fs.readFile(f);
+            configFiles.push({
+              path: vscode.workspace.asRelativePath(f, false),
+              content: Buffer.from(raw).toString('utf-8').slice(0, 2000),
+            });
+          } catch { /* skip */ }
+        }
+      }
+      if (configFiles.length > 0) {
+        deadBranches = await detectDeadBranches(copilotClient, codebase.modules as any, configFiles);
+        logger.info(`Deep: Found ${deadBranches.length} potentially dead branches`);
+      }
+    } catch (err) { logger.debug('Deep: Dead branch detection skipped', { error: String(err) }); }
+
+  } catch (err) {
+    logger.warn('Deep: Advanced semantic features failed, continuing', { error: String(err) });
+  }
+
   // Re-sort all recommendations by impact
   recommendations.sort((a, b) => b.impactScore - a.impactScore);
 
   timer?.end?.();
-  return { recommendations, crossRef: crossRefResult, skillEvaluations, complexity, callGraph, dataFlow, deadExports };
+  return {
+    recommendations, crossRef: crossRefResult, skillEvaluations, complexity, callGraph, dataFlow,
+    deadExports, hydeQueries, rollUpSummaries, labeledEdges,
+    blastRadius: blastRadiusResults, healthCards, deadBranches,
+  };
 }

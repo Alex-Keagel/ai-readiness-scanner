@@ -11,6 +11,8 @@ export interface SemanticEntry {
   exports: string[];       // exported symbols
   complexity: 'low' | 'medium' | 'high';
   lastIndexed: string;     // ISO timestamp
+  hypotheticalQueries?: string[];  // HyDE: 10 search queries developers might type
+  rollUpSummary?: string;          // directory-level aggregated summary
 }
 
 export class SemanticCache {
