@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.2] — 2026-03-30
+
+- feat: recursive sub-grouping for large parent directories
+- feat: improved grouping — tests consolidated, scripts under infra, noise filtered
+
 ## [1.1.1] — 2026-03-30
 
 - feat: intelligent component grouping — merge configs, infra, remove noise
