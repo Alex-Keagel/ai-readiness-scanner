@@ -332,10 +332,13 @@ Respond as JSON array:
     const bulletLines = files.reduce((s, f) => s + (f.content.match(/^[-*]\s/gm) || []).length, 0);
     const actionability = Math.min(100, Math.round((bulletLines / totalLines) * 300));
 
-    // Efficiency: tokens per meaningful claim
+    // Efficiency: tokens per meaningful claim (scoped files count as claims)
     const totalTokens = instructions.totalTokens || 1;
     const meaningfulClaims = claims.filter(c => c.confidence >= 0.7).length;
-    const tokensPerClaim = meaningfulClaims > 0 ? totalTokens / meaningfulClaims : totalTokens;
+    // Scoped instruction files (with applyTo) are inherently efficient — count each as 5 claims
+    const scopedFileCount = files.filter(f => /(?:applyTo|paths|glob):\s*['"]?[^\s'"]+/i.test(f.content)).length;
+    const adjustedClaims = meaningfulClaims + scopedFileCount * 5;
+    const tokensPerClaim = adjustedClaims > 0 ? totalTokens / adjustedClaims : totalTokens;
     const efficiency = Math.min(100, Math.max(0, Math.round(100 - (tokensPerClaim - 50) * 0.5)));
 
     const overall = Math.round(

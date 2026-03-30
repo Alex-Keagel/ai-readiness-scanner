@@ -743,9 +743,22 @@ export class VibeReportGenerator {
     const toolName = AI_TOOLS[tool]?.name || tool;
     return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Vibe Report</title>
     <style>body{font-family:system-ui;background:#1a1a2e;color:#eee;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}
-    .empty{text-align:center;padding:40px}.empty h1{font-size:2em;margin-bottom:10px}.empty p{color:#888;font-size:1.1em}</style>
+    .empty{text-align:center;padding:40px;max-width:600px}.empty h1{font-size:2em;margin-bottom:10px}.empty p{color:#888;font-size:1.1em;line-height:1.6}
+    .platforms{margin-top:20px;text-align:left;background:rgba(255,255,255,0.05);border-radius:12px;padding:16px 24px}
+    .platforms h3{color:#aaa;font-size:0.9em;margin-bottom:8px}.platforms li{color:#888;font-size:0.9em;margin:4px 0}</style>
     </head><body><div class="empty"><h1>No ${this.escapeHtml(toolName)} sessions found</h1>
-    <p>Start coding with ${this.escapeHtml(toolName)} and your sessions will appear here.</p></div></body></html>`;
+    <p>The Vibe Report analyzes your AI coding session history. It reads local session files from your computer — no data is collected or shared.</p>
+    <div class="platforms">
+      <h3>Supported session sources:</h3>
+      <ul>
+        <li><strong>Copilot CLI</strong> — <code>~/.copilot/session-state/</code> (requires terminal <code>copilot</code> command)</li>
+        <li><strong>Claude Code</strong> — <code>~/.claude/projects/</code> (requires terminal <code>claude</code> command)</li>
+        <li><strong>Cline</strong> — VS Code extension globalStorage</li>
+        <li><strong>Roo Code</strong> — VS Code extension globalStorage</li>
+      </ul>
+      <p style="color:#666;font-size:0.85em;margin-top:12px">⚠️ VS Code Copilot Chat (GUI) does not write session files — Vibe Report requires one of the above tools.</p>
+    </div>
+    </div></body></html>`;
   }
   
   private renderHtml(metrics: VibeMetrics, tool: AITool, userName?: string): string {

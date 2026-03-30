@@ -532,6 +532,8 @@ export function activate(context: vscode.ExtensionContext) {
           overallScore: report.overallScore,
           primaryLevel: report.primaryLevel,
           componentCount: report.componentScores.length,
+          insights: report.insights || [],
+          narrativeSections: report.narrativeSections || null,
           knowledgeGraph: report.knowledgeGraph,
           deepAnalysis: (report as any).deepAnalysis,
           componentScores: report.componentScores.map(c => ({

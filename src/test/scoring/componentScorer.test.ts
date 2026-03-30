@@ -64,11 +64,11 @@ describe('ComponentScorer', () => {
       expect(signalNames).not.toContain('Tests');
     });
 
-    it('does NOT include "Tests" signal for TypeScript (removed from component scoring)', async () => {
-      const ctx = makeContext({ languages: ['TypeScript'], components: [makeComponent({ language: 'TypeScript' })] });
+    it('DOES include "Tests" signal for TypeScript app/library components', async () => {
+      const ctx = makeContext({ languages: ['TypeScript'], components: [makeComponent({ language: 'TypeScript', type: 'library' })] });
       const scores = await scorer.scoreComponents(workspaceUri as any, ctx, 'copilot');
       const signalNames = scores[0].signals.map(s => s.signal);
-      expect(signalNames).not.toContain('Tests');
+      expect(signalNames).toContain('Tests');
     });
 
     it('DOES include "Build Config" signal for TypeScript', async () => {

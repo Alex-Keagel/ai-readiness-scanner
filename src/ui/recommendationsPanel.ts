@@ -434,6 +434,30 @@ export class RecommendationsPanel {
           });
         }
       }
+
+      // Check for missing tests (app/service/library components)
+      const hasTests = compSignals.some(s => s.signal === 'Tests' && s.present);
+      const isTestable = comp.type === 'app' || comp.type === 'service' || comp.type === 'library';
+      if (!hasTests && isTestable && !comp.isGenerated) {
+        const id = `comp_tests_${comp.path.replace(/[^a-zA-Z0-9]/g, '_')}`;
+        if (!existingIds.has(id)) {
+          existingIds.add(id);
+          recs.push({
+            signalId: id,
+            level: 3,
+            name: `Add tests for ${comp.name}`,
+            finding: `Component "${comp.name}" (${comp.path}) has no test directory or test files. AI agents cannot verify that generated code changes don't break existing functionality.`,
+            severity: comp.type === 'app' || comp.type === 'service' ? 'important' : 'suggestion',
+            tier: 'guided',
+            filePath: `${comp.path}/tests/`,
+            impact: 'Agents can verify code changes',
+            detected: false,
+            score: 0,
+            confidenceScore: 1.0,
+            confidenceReason: 'Deterministic: test directory check',
+          });
+        }
+      }
     }
 
     // Sort: critical first, then by level, then by tier

@@ -314,6 +314,12 @@ export class ComponentScorer {
       signals.push({ signal: 'Deployment Documented', present: hasDeploy, detail: hasDeploy ? 'Deployment docs found' : 'No deployment documentation' });
     }
 
+    // ── 10. Tests (app/service/library components) ──
+    if (isProgramming && (compType === 'app' || compType === 'service' || compType === 'library')) {
+      const hasTests = await this.hasFile(rel('{tests/**,test/**,**/test_*,**/*_test.*,**/*.test.*,**/*.spec.*,**/*Tests*}'));
+      signals.push({ signal: 'Tests', present: hasTests, detail: hasTests ? 'Test files found' : 'No test directory or test files' });
+    }
+
     return signals;
   }
 
