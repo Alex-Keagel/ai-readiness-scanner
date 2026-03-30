@@ -970,9 +970,8 @@ export class ComponentMapper {
     return 'unknown';
   }
 
-  // ── LLM deep component mapping ──────────────────────────────────────
 
-  // ── Multi-Agent Component Mapping Pipeline ──────────────────────
+  // ── Deterministic Component Discovery + LLM Business Domain Naming ──
 
   private async deepMapComponents(
     workspaceUri: vscode.Uri,
@@ -980,364 +979,192 @@ export class ComponentMapper {
     token?: vscode.CancellationToken,
     semanticData?: { path: string; summary: string; dependencies: string[]; exports: string[]; complexity: string }[],
   ): Promise<ComponentInfo[]> {
-    const tree = context.directoryTree || '';
-    
-    // Find component descriptors
-    const descTimer = logger.time('Deep map: descriptor discovery');
-    const exclude = '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/.venv/**,**/target/**,**/obj/**,**/bin/**}';
 
-    // Dynamic: find ALL manifest files at any depth — no hardcoded patterns
-    const manifestGlobs = [
-      '**/README.md',
-      '**/pyproject.toml',
-      '**/package.json',
-      '**/*.csproj',
-      '**/Cargo.toml',
-      '**/go.mod',
-    ];
-    const allDescUris = await Promise.all(
-      manifestGlobs.map(g => vscode.workspace.findFiles(new vscode.RelativePattern(workspaceUri, g), exclude, 50))
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 1: Deterministic discovery — find ALL manifest dirs
+    // ═══════════════════════════════════════════════════════════
+    logger.info('Deep map [deterministic]: scanning all manifest directories...');
+    const discoveryTimer = logger.time('Deep map: deterministic discovery');
+
+    const MANIFEST_NAMES = new Set(['pyproject.toml', 'package.json', 'Cargo.toml', 'go.mod']);
+    const CSPROJ_RE = /\.(csproj|tproj)$/;
+    const CONFIG_DIRS = new Set(['.vscode', 'vscode', '.devcontainer', '.dev-setup', '.clinerules',
+      '.github', 'memory-bank', '.roo', '.config', '.azuredevops', '.idea']);
+    const INFRA_DIRS = new Set(['deploy', 'infrastructure', '.release', '.release-fpa',
+      '.release-manifestRollout', 'ci', '.pipelines', '.build', 'ev2']);
+    const EXCLUDE = new Set([...ComponentMapper.EXCLUDED_DIRS, 'obj', 'bin']);
+
+    // Walk workspace and find all dirs with manifests
+    const manifestDirs = new Map<string, { manifests: string[]; hasReadme: boolean }>();
+    const allFiles = await vscode.workspace.findFiles(
+      new vscode.RelativePattern(workspaceUri, '**/*'),
+      '{**/node_modules/**,**/.git/**,**/obj/**,**/bin/**,**/.venv/**,**/venv/**,**/__pycache__/**,**/target/**,**/dist/**}',
+      10000
     );
-    // Dedupe and sort by depth (shallowest first)
-    const allUris = [...new Map(allDescUris.flat().map(u => [u.fsPath, u])).values()]
-      .sort((a, b) => {
-        const depthA = vscode.workspace.asRelativePath(a, false).split('/').length;
-        const depthB = vscode.workspace.asRelativePath(b, false).split('/').length;
-        return depthA - depthB;
-      });
-    const descriptorFiles = (await Promise.all(
-      allUris.slice(0, 40).map(async uri => {
-        try {
-          const raw = await vscode.workspace.fs.readFile(uri);
-          return { content: Buffer.from(raw).toString('utf-8').split('\n').slice(0, 30).join('\n'), relativePath: vscode.workspace.asRelativePath(uri) };
-        } catch { return null; }
-      })
-    )).filter((f): f is NonNullable<typeof f> => f !== null);
-    descTimer?.end?.();
-    logger.info(`Deep map: found ${descriptorFiles.length} manifest files (from ${allUris.length} total)`);
 
-    const descriptorContext = descriptorFiles.slice(0, 15).map(f => `### ${f.relativePath}\n\`\`\`\n${f.content.slice(0, 500)}\n\`\`\``).join('\n\n');
+    for (const file of allFiles) {
+      const rel = vscode.workspace.asRelativePath(file, false);
+      const fileName = rel.split('/').pop() || '';
+      const dirPath = rel.includes('/') ? rel.substring(0, rel.lastIndexOf('/')) : '.';
+      if (dirPath === '.') continue;
 
-    // Build known paths from manifests — every dir with a manifest is a component
-    const originalPaths = new Set(context.components.map(c => c.path));
-    for (const u of allUris) {
-      const dir = vscode.workspace.asRelativePath(u, false).replace(/\/[^/]+$/, '');
-      if (dir && dir !== '.') originalPaths.add(dir);
+      // Check if any part of path is excluded
+      if (dirPath.split('/').some(p => EXCLUDE.has(p))) continue;
+
+      const existing = manifestDirs.get(dirPath) || { manifests: [], hasReadme: false };
+
+      if (MANIFEST_NAMES.has(fileName)) {
+        existing.manifests.push(fileName);
+        manifestDirs.set(dirPath, existing);
+      } else if (CSPROJ_RE.test(fileName)) {
+        existing.manifests.push('csproj');
+        manifestDirs.set(dirPath, existing);
+      } else if (fileName === 'README.md') {
+        existing.hasReadme = true;
+        manifestDirs.set(dirPath, existing);
+      }
     }
-    logger.info(`Deep map: ${originalPaths.size} known component paths (from manifests + deterministic scan)`);
 
-    const knownPathsList = [...originalPaths].slice(0, 60).join('\n');
-
-    // ═══════════════════════════════════════════════════════════════
-    // AGENT 1: Structure Analyst — flat list of all micro-components
-    // ═══════════════════════════════════════════════════════════════
-    logger.info('Deep map [Agent 1/3]: Structure Analyst — mapping all directories...');
-    const agent1Prompt = `You are a **Structure Analyst** expert agent. Map EVERY directory to a typed component. Output a FLAT list — no grouping.
-
-DIRECTORY STRUCTURE:
-${tree}
-
-DESCRIPTORS:
-${descriptorContext}
-
-LANGUAGES: ${context.languages.join(', ')}
-
-RULES:
-- ONE component per meaningful directory or standalone config file.
-- EVERY path from the KNOWN PATHS list MUST appear in your output.
-- Include CI/CD pipelines, release definitions, dev containers, dashboards, security configs, AI rules.
-- Do NOT group or nest — output a flat array.
-- Do NOT skip operational infrastructure.
-
-KNOWN PATHS (ALL must appear):
-${knownPathsList}
-
-Respond as JSON: {"components":[{"name":"...","path":"...","language":"...","type":"app|library|service|script|config|infra|data","description":"one sentence"}]}`;
-
-    let microComponents: ComponentInfo[] = [];
+    // Also ensure important top-level dirs are included even without manifests
     try {
-      const r = await this.copilotClient!.analyze(agent1Prompt, token, 90_000);
-      const m = r.match(/\{[\s\S]*\}/);
-      if (m) {
-        const parsed = JSON.parse(m[0]);
-        if (Array.isArray(parsed.components)) microComponents = this.flattenComponents(parsed.components);
-      }
-    } catch (err) { logger.warn('Deep map [Agent 1] failed', { error: String(err) }); }
-
-    // Programmatic orphan injection — never trust the LLM to cover 100%
-    const agent1Paths = new Set(microComponents.map(c => c.path));
-    const orphans1 = context.components.filter(c =>
-      !agent1Paths.has(c.path) && !microComponents.some(mc => c.path.startsWith(mc.path + '/') || mc.path.startsWith(c.path + '/'))
-    );
-    if (orphans1.length > 0) {
-      logger.info(`Deep map [Agent 1]: injecting ${orphans1.length} missed paths`);
-      microComponents.push(...orphans1);
-    }
-    logger.info(`Deep map [Agent 1]: ${microComponents.length} micro-components`);
-
-    if (microComponents.length === 0) return context.components;
-
-    // ═══════════════════════════════════════════════════════════════
-    // AGENT 2: Domain Architect — groups into business + technical domains
-    // ═══════════════════════════════════════════════════════════════
-    logger.info('Deep map [Agent 2/3]: Domain Architect — grouping into domains...');
-
-    // Enrich micro-components with semantic understanding (imports, summaries)
-    const semanticIndex = new Map((semanticData || []).map(s => [s.path, s]));
-    const enrichComponent = (c: ComponentInfo): string => {
-      // Find semantic data for files under this component's path
-      const matching = (semanticData || []).filter(s => s.path.startsWith(c.path + '/'));
-      if (matching.length > 0) {
-        const summaries = matching.filter(m => m.summary).map(m => m.summary).slice(0, 2);
-        const allDeps = [...new Set(matching.flatMap(m => m.dependencies))].slice(0, 5);
-        const allExports = [...new Set(matching.flatMap(m => m.exports))].slice(0, 5);
-        return `- ${c.path} | ${c.name} | ${c.language} | ${c.type}${summaries.length ? `\n  Summary: ${summaries[0]}` : ''}${allDeps.length ? `\n  Imports: ${allDeps.join(', ')}` : ''}${allExports.length ? `\n  Exports: ${allExports.join(', ')}` : ''}`;
-      }
-      return `- ${c.path} | ${c.name} | ${c.language} | ${c.type}${c.description ? `\n  Description: ${c.description}` : ''}`;
-    };
-
-    // Build import graph from semantic data for community detection
-    const importGraph = new Map<string, Set<string>>();
-    for (const c of microComponents) {
-      importGraph.set(c.path, new Set());
-    }
-    if (semanticData) {
-      const compPaths = new Set(microComponents.map(c => c.path));
-      for (const entry of semanticData) {
-        // Find which component this file belongs to
-        const ownerComp = microComponents.find(c => entry.path.startsWith(c.path + '/') || entry.path === c.path);
-        if (!ownerComp) continue;
-        for (const dep of entry.dependencies) {
-          // Find which component this dependency belongs to
-          const depNorm = dep.replace(/-/g, '_');
-          const targetComp = microComponents.find(c => {
-            const cName = c.path.split('/').pop()?.replace(/-/g, '_') || '';
-            return depNorm.includes(cName) || cName.includes(depNorm);
-          });
-          if (targetComp && targetComp.path !== ownerComp.path) {
-            if (!importGraph.has(ownerComp.path)) importGraph.set(ownerComp.path, new Set());
-            importGraph.get(ownerComp.path)!.add(targetComp.path);
-            // Bidirectional for community detection
-            if (!importGraph.has(targetComp.path)) importGraph.set(targetComp.path, new Set());
-            importGraph.get(targetComp.path)!.add(ownerComp.path);
+      const topDirs = await vscode.workspace.fs.readDirectory(workspaceUri);
+      for (const [name, type] of topDirs) {
+        if (type !== vscode.FileType.Directory) continue;
+        if (EXCLUDE.has(name) || name === '.') continue;
+        if (!manifestDirs.has(name)) {
+          // Check if it has any source files
+          const sourceFiles = await vscode.workspace.findFiles(
+            new vscode.RelativePattern(workspaceUri, `${name}/**/*.{py,cs,ts,js,kql,bicep,ps1}`),
+            '{**/node_modules/**,**/.git/**,**/obj/**,**/bin/**,**/.venv/**}', 1
+          );
+          if (sourceFiles.length > 0 || CONFIG_DIRS.has(name) || INFRA_DIRS.has(name)) {
+            manifestDirs.set(name, { manifests: [], hasReadme: false });
           }
         }
       }
+    } catch { /* skip */ }
+
+    // Build components from manifest dirs
+    const components: ComponentInfo[] = [];
+    const sortedDirs = [...manifestDirs.keys()].sort();
+
+    for (const dirPath of sortedDirs) {
+      const info = manifestDirs.get(dirPath)!;
+      const name = dirPath.split('/').pop() || dirPath;
+      const parts = dirPath.split('/');
+
+      // Detect language from semantic data or file extension
+      let language = 'Multi';
+      const matchingSemantic = (semanticData || []).filter(s => s.path.startsWith(dirPath + '/'));
+      if (matchingSemantic.length > 0) {
+        language = matchingSemantic[0].path.endsWith('.py') ? 'Python' :
+                   matchingSemantic[0].path.endsWith('.cs') ? 'C#' :
+                   matchingSemantic[0].path.endsWith('.ts') ? 'TypeScript' : 'Multi';
+      } else if (info.manifests.includes('pyproject.toml')) {
+        language = 'Python';
+      } else if (info.manifests.includes('csproj')) {
+        language = 'C#';
+      } else if (info.manifests.includes('package.json')) {
+        language = 'TypeScript';
+      }
+
+      // Classify type
+      let type: ComponentInfo['type'] = 'unknown';
+      const pathLower = dirPath.toLowerCase();
+      if (CONFIG_DIRS.has(parts[0]) || CONFIG_DIRS.has(name)) type = 'config';
+      else if (parts.some(p => INFRA_DIRS.has(p))) type = 'infra';
+      else if (parts.includes('apps') || parts.includes('app')) type = 'app';
+      else if (parts.includes('test') || parts.includes('tests') || name.endsWith('.Tests') || name.endsWith('Tests')) type = 'app';
+      else if (parts.includes('components') || parts.includes('common') || parts.includes('lib')) type = 'library';
+      else if (pathLower.includes('script')) type = 'script';
+      else if (info.manifests.includes('csproj') || info.manifests.includes('pyproject.toml')) type = 'library';
+      else type = 'unknown';
+
+      // Find parent
+      let parentPath: string | undefined;
+      for (let i = parts.length - 1; i > 0; i--) {
+        const candidate = parts.slice(0, i).join('/');
+        if (manifestDirs.has(candidate)) {
+          parentPath = candidate;
+          break;
+        }
+      }
+
+      // Check generated
+      const isGenerated = this.detectGenerated(dirPath, name, language, '');
+
+      // Get description from semantic data
+      let description = '';
+      if (matchingSemantic.length > 0) {
+        const summaries = matchingSemantic.filter(s => s.summary).map(s => s.summary);
+        if (summaries.length > 0) description = summaries[0];
+      }
+
+      components.push({
+        name,
+        path: dirPath,
+        language,
+        type,
+        description,
+        parentPath,
+        children: [],
+        isGenerated,
+      });
     }
 
-    // Community detection: find connected components in import graph
-    const findCommunities = (nodes: ComponentInfo[], edges: Map<string, Set<string>>): ComponentInfo[][] => {
-      const visited = new Set<string>();
-      const communities: ComponentInfo[][] = [];
+    // Fill children arrays
+    for (const comp of components) {
+      comp.children = components.filter(c => c.parentPath === comp.path).map(c => c.path);
+    }
 
-      for (const node of nodes) {
-        if (visited.has(node.path)) continue;
-        // BFS from this node
-        const community: ComponentInfo[] = [];
-        const queue = [node.path];
-        while (queue.length > 0) {
-          const current = queue.shift()!;
-          if (visited.has(current)) continue;
-          visited.add(current);
-          const comp = nodes.find(n => n.path === current);
-          if (comp) community.push(comp);
-          const neighbors = edges.get(current) || new Set();
-          for (const neighbor of neighbors) {
-            if (!visited.has(neighbor)) queue.push(neighbor);
-          }
-        }
-        if (community.length > 0) communities.push(community);
-      }
+    discoveryTimer?.end?.();
+    logger.info(`Deep map [deterministic]: ${components.length} components discovered (${manifestDirs.size} manifest dirs)`);
 
-      // Split large communities into sub-batches of max 25
-      // Split large communities, merge small ones into batches of 10-25
-      const result: ComponentInfo[][] = [];
-      const smalls: ComponentInfo[] = []; // accumulate orphans/small communities
-      for (const comm of communities) {
-        if (comm.length > 25) {
-          // Split large community
-          for (let i = 0; i < comm.length; i += 25) {
-            result.push(comm.slice(i, i + 25));
-          }
-        } else if (comm.length >= 5) {
-          // Medium community — keep as own batch
-          result.push(comm);
-        } else {
-          // Small community (1-4 nodes) — accumulate into merged batch
-          smalls.push(...comm);
-          if (smalls.length >= 15) {
-            result.push(smalls.splice(0, 15));
-          }
-        }
-      }
-      if (smalls.length > 0) result.push(smalls); // remaining orphans
-      return result;
-    };
+    // ═══════════════════════════════════════════════════════════
+    // PHASE 2: LLM naming — add business domain descriptions
+    // ═══════════════════════════════════════════════════════════
+    if (this.copilotClient?.isAvailable() && components.length > 0) {
+      logger.info('Deep map [LLM]: adding business descriptions...');
+      const namingTimer = logger.time('Deep map: LLM naming');
 
-    let domainComponents: ComponentInfo[] = [];
+      // Only name top-level and second-level components (max 30)
+      const toName = components
+        .filter(c => !c.parentPath || components.filter(x => x.parentPath === c.parentPath).length <= 10)
+        .filter(c => !c.description)
+        .slice(0, 30);
 
-    if (microComponents.length > 40) {
-      // ── GRAPH-BASED COMMUNITY BATCHING for large repos ──
-      const communities = findCommunities(microComponents, importGraph);
-      const edgeCount = [...importGraph.values()].reduce((s, v) => s + v.size, 0) / 2;
-      logger.info(`Deep map [Agent 2]: ${communities.length} batches (from graph communities, ${Math.round(edgeCount)} edges, ${microComponents.length} components)`);
+      if (toName.length > 0) {
+        const compList = toName.map(c => {
+          const sem = (semanticData || []).filter(s => s.path.startsWith(c.path + '/'));
+          const imports = [...new Set(sem.flatMap(s => s.dependencies))].slice(0, 5);
+          return `- ${c.path} [${c.language}, ${c.type}]${imports.length ? ` imports: ${imports.join(', ')}` : ''}`;
+        }).join('\n');
 
-      // Process with concurrency limit (max 5 parallel) + retry on rate limit
-      const MAX_CONCURRENT = 5;
-      const batchResults: ComponentInfo[][] = [];
+        try {
+          const prompt = `Give each component a concise business-level description (one sentence).
 
-      for (let start = 0; start < communities.length; start += MAX_CONCURRENT) {
-        const chunk = communities.slice(start, start + MAX_CONCURRENT);
-        const chunkPromises = chunk.map(async (batch, chunkIdx) => {
-          const idx = start + chunkIdx;
-          const batchList = batch.map(c => enrichComponent(c)).join('\n');
-          const batchPrompt = `You are a **Domain Architect**. Group these ${batch.length} components into 2-5 business or technical domains.
+Components:
+${compList}
 
-COMPONENTS (batch ${idx + 1}/${communities.length}):
-${batchList}
+Respond as JSON array: [{"path":"...","description":"one sentence"}]`;
 
-Create domains like: "Data Processing", "Resource Provider", "Shared Libraries", "Infrastructure", "Testing", "Developer Experience", "Security", "Monitoring".
-
-RULES:
-- EVERY component MUST appear as a subComponent of exactly ONE domain.
-- Do NOT merge components that serve different functions.
-- subComponents can have their own subComponents (2 levels max).
-
-Respond as JSON: {"components":[{"name":"Domain","path":"primary-path","language":"Multi","type":"service","description":"...","subComponents":[...]}]}`;
-
-          // Retry with exponential backoff (max 2 retries)
-          for (let attempt = 0; attempt < 3; attempt++) {
-            try {
-              const r = await this.copilotClient!.analyzeFast(batchPrompt);
-              const m = r.match(/\{[\s\S]*\}/);
-              if (m) {
-                const parsed = JSON.parse(m[0]);
-                if (Array.isArray(parsed.components)) return this.flattenComponents(parsed.components);
-              }
-              return batch; // LLM returned invalid JSON — use flat
-            } catch (err) {
-              const errStr = String(err);
-              if (errStr.includes('RateLimited') && attempt < 2) {
-                const delay = (attempt + 1) * 3000; // 3s, 6s
-                logger.debug(`Deep map [Agent 2] batch ${idx} rate limited, retrying in ${delay}ms...`);
-                await new Promise(resolve => setTimeout(resolve, delay));
-                continue;
-              }
-              if (attempt === 2 || !errStr.includes('RateLimited')) {
-                logger.debug(`Deep map [Agent 2] batch ${idx} failed`, { error: errStr });
-                return batch; // fallback: return flat
-              }
+          const response = await this.copilotClient!.analyzeFast(prompt);
+          const match = response.match(/\[[\s\S]*\]/);
+          if (match) {
+            const descriptions = JSON.parse(match[0]) as { path: string; description: string }[];
+            for (const d of descriptions) {
+              const comp = components.find(c => c.path === d.path);
+              if (comp && d.description) comp.description = d.description;
             }
           }
-          return batch;
-        });
-
-        const chunkResults = await Promise.all(chunkPromises);
-        batchResults.push(...chunkResults);
-      }
-
-      domainComponents = batchResults.flat();
-      logger.info(`Deep map [Agent 2]: ${domainComponents.length} components from ${communities.length} batches (max ${MAX_CONCURRENT} concurrent)`);
-
-    } else {
-      // ── SINGLE CALL for smaller repos ──
-      const microList = microComponents.map(c => enrichComponent(c)).join('\n');
-      const minDomains = Math.max(5, Math.min(10, Math.ceil(microComponents.length / 8)));
-
-      const agent2Prompt = `You are a **Domain Architect** expert agent. Organize these ${microComponents.length} micro-components into a hierarchical domain structure.
-
-MICRO-COMPONENTS:
-${microList}
-
-MANDATORY TOP-LEVEL DOMAINS — create AT LEAST ${minDomains} groups:
-1. **[Business Domains]** — 2-4 based on business purpose
-2. **Core Infrastructure** — CI/CD, deployment, releases, IaC
-3. **Developer Experience** — dev containers, IDE settings, AI rules
-4. **Shared Libraries** — common modules, utility packages
-5. **Security & Compliance** — credential scan, policy checks
-6. **Monitoring & Observability** — dashboards, alerts (if present)
-
-RULES:
-- EVERY micro-component MUST appear as a subComponent of exactly ONE domain.
-- Do NOT merge components that serve different functions.
-- subComponents can have their own subComponents (3 levels max).
-- Cross-directory grouping allowed.
-
-Respond as JSON:
-{"components":[{"name":"Domain Name","path":"primary-path","language":"Multi","type":"service","description":"...","subComponents":[...]}]}`;
-
-      try {
-        const r = await this.copilotClient!.analyze(agent2Prompt, token, 90_000);
-        const m = r.match(/\{[\s\S]*\}/);
-        if (m) {
-          const parsed = JSON.parse(m[0]);
-          if (Array.isArray(parsed.components)) domainComponents = this.flattenComponents(parsed.components);
+        } catch (err) {
+          logger.debug('Deep map [LLM]: naming failed, using defaults', { error: String(err) });
         }
-      } catch (err) {
-        logger.warn('Deep map [Agent 2] failed, using flat structure', { error: String(err) });
-        return microComponents;
       }
+      namingTimer?.end?.();
     }
 
-    // ═══════════════════════════════════════════════════════════════
-    // AGENT 3: Completeness Validator — checks, corrects, self-heals
-    // ═══════════════════════════════════════════════════════════════
-    logger.info('Deep map [Agent 3/3]: Completeness Validator — checking for gaps...');
-    const domainPaths = new Set(domainComponents.map(c => c.path));
-    const microPaths = new Set(microComponents.map(c => c.path));
-    const droppedPaths = [...microPaths].filter(p =>
-      !domainPaths.has(p) && !domainComponents.some(dc => p.startsWith(dc.path + '/') || dc.path.startsWith(p + '/'))
-    );
-
-    if (droppedPaths.length > 0) {
-      logger.info(`Deep map [Agent 3]: ${droppedPaths.length} paths dropped, running validator...`);
-
-      const agent3Prompt = `You are a **Completeness Validator** agent. The Domain Architect dropped ${droppedPaths.length} components. Classify each into the best existing domain.
-
-DROPPED:
-${droppedPaths.map(p => {
-  const mc = microComponents.find(c => c.path === p);
-  return `- ${p} | ${mc?.name || p} | ${mc?.type || '?'}`;
-}).join('\n')}
-
-EXISTING DOMAINS:
-${domainComponents.filter(c => !c.parentPath).map(c => `- ${c.name}`).join('\n')}
-
-Respond as JSON: [{"path":"...","assignTo":"Domain Name","name":"descriptive name"}]`;
-
-      try {
-        const r = await this.copilotClient!.analyzeFast(agent3Prompt);
-        const m = r.match(/\[[\s\S]*\]/);
-        if (m) {
-          const assignments = JSON.parse(m[0]) as { path: string; assignTo?: string; name?: string }[];
-          for (const a of assignments) {
-            const original = microComponents.find(c => c.path === a.path);
-            if (original) {
-              const parent = domainComponents.find(dc => dc.name === a.assignTo);
-              domainComponents.push({
-                ...original,
-                name: a.name || original.name,
-                parentPath: parent?.path,
-              });
-              if (parent) { if (!parent.children) parent.children = []; parent.children.push(a.path); }
-            }
-          }
-        }
-      } catch (err) { logger.debug('Deep map [Agent 3] LLM failed', { error: String(err) }); }
-
-      // Final deterministic safety net
-      const finalPaths = new Set(domainComponents.map(c => c.path));
-      for (const p of droppedPaths) {
-        if (!finalPaths.has(p)) {
-          const mc = microComponents.find(c => c.path === p);
-          if (mc) domainComponents.push(mc);
-        }
-      }
-    }
-
-    const coverage = Math.round((domainComponents.length / Math.max(1, microComponents.length)) * 100);
-    logger.info(`Deep map: DONE — ${domainComponents.length} components, ${coverage}% coverage, ${droppedPaths.length} recovered`);
-    return domainComponents;
+    return components;
   }
 
   private flattenComponents(components: unknown[], parentPath?: string): ComponentInfo[] {
