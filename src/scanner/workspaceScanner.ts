@@ -88,7 +88,26 @@ export class WorkspaceScanner {
     // Phase 2: Map workspace components
     const endPhase2 = logger.time('Phase 2: Map workspace components');
     progress.report({ message: '📦 Discovering components & sub-projects...', increment: 10 });
-    const projectContext = await this.componentMapper.mapWorkspace(workspaceUri, !quickMode, token);
+
+    // Collect semantic data from index (if available) for graph-first grouping
+    let semanticData: { path: string; summary: string; dependencies: string[]; exports: string[]; complexity: string }[] | undefined;
+    if (this.workspaceIndexer) {
+      try {
+        const cached = this.workspaceIndexer.getSemanticCache().getAll();
+        if (cached.length > 0) {
+          semanticData = cached.map(c => ({
+            path: c.path,
+            summary: c.summary || '',
+            dependencies: c.dependencies || [],
+            exports: c.exports || [],
+            complexity: c.complexity || 'unknown',
+          }));
+          logger.info(`Phase 2: passing ${semanticData.length} semantic entries to component mapper`);
+        }
+      } catch { /* non-critical */ }
+    }
+
+    const projectContext = await this.componentMapper.mapWorkspace(workspaceUri, !quickMode, token, semanticData);
 
     const langList = projectContext.languages.slice(0, 4).join(', ');
     progress.report({ message: `📦 Found ${projectContext.components.length} components (${langList}) — enriching...`, increment: 2 });

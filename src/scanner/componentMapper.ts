@@ -59,13 +59,18 @@ export class ComponentMapper {
 
   constructor(private copilotClient?: CopilotClient) {}
 
-  async mapWorkspace(workspaceUri: vscode.Uri, deep: boolean = false, token?: vscode.CancellationToken): Promise<ProjectContext> {
+  async mapWorkspace(
+    workspaceUri: vscode.Uri,
+    deep: boolean = false,
+    token?: vscode.CancellationToken,
+    semanticData?: { path: string; summary: string; dependencies: string[]; exports: string[]; complexity: string }[],
+  ): Promise<ProjectContext> {
     const context = await this.detectBasics(workspaceUri);
 
     if (deep && this.copilotClient?.isAvailable()) {
       logger.info(`Deep mapping ${context.components.length} components via LLM...`);
       const deepTimer = logger.time('Phase 2c: LLM deep component mapping');
-      context.components = await this.deepMapComponents(workspaceUri, context, token);
+      context.components = await this.deepMapComponents(workspaceUri, context, token, semanticData);
       deepTimer?.end?.();
     }
 
@@ -972,7 +977,8 @@ export class ComponentMapper {
   private async deepMapComponents(
     workspaceUri: vscode.Uri,
     context: ProjectContext,
-    token?: vscode.CancellationToken
+    token?: vscode.CancellationToken,
+    semanticData?: { path: string; summary: string; dependencies: string[]; exports: string[]; complexity: string }[],
   ): Promise<ComponentInfo[]> {
     const tree = context.directoryTree || '';
     
@@ -1076,6 +1082,20 @@ Respond as JSON: {"components":[{"name":"...","path":"...","language":"...","typ
     // ═══════════════════════════════════════════════════════════════
     logger.info('Deep map [Agent 2/3]: Domain Architect — grouping into domains...');
 
+    // Enrich micro-components with semantic understanding (imports, summaries)
+    const semanticIndex = new Map((semanticData || []).map(s => [s.path, s]));
+    const enrichComponent = (c: ComponentInfo): string => {
+      // Find semantic data for files under this component's path
+      const matching = (semanticData || []).filter(s => s.path.startsWith(c.path + '/'));
+      if (matching.length > 0) {
+        const summaries = matching.filter(m => m.summary).map(m => m.summary).slice(0, 2);
+        const allDeps = [...new Set(matching.flatMap(m => m.dependencies))].slice(0, 5);
+        const allExports = [...new Set(matching.flatMap(m => m.exports))].slice(0, 5);
+        return `- ${c.path} | ${c.name} | ${c.language} | ${c.type}${summaries.length ? `\n  Summary: ${summaries[0]}` : ''}${allDeps.length ? `\n  Imports: ${allDeps.join(', ')}` : ''}${allExports.length ? `\n  Exports: ${allExports.join(', ')}` : ''}`;
+      }
+      return `- ${c.path} | ${c.name} | ${c.language} | ${c.type}${c.description ? `\n  Description: ${c.description}` : ''}`;
+    };
+
     // Group micro-components by top-level directory for batching
     const dirGroups = new Map<string, ComponentInfo[]>();
     for (const c of microComponents) {
@@ -1103,7 +1123,7 @@ Respond as JSON: {"components":[{"name":"...","path":"...","language":"...","typ
       logger.info(`Deep map [Agent 2]: splitting ${microComponents.length} components into ${batches.length} parallel batches`);
 
       const batchPromises = batches.map(async (batch, idx) => {
-        const batchList = batch.map(c => `- ${c.path} | ${c.name} | ${c.language} | ${c.type}`).join('\n');
+        const batchList = batch.map(c => enrichComponent(c)).join('\n');
         const batchPrompt = `You are a **Domain Architect**. Group these ${batch.length} components into 2-5 business or technical domains.
 
 COMPONENTS (batch ${idx + 1}/${batches.length}):
@@ -1135,7 +1155,7 @@ Respond as JSON: {"components":[{"name":"Domain","path":"primary-path","language
 
     } else {
       // ── SINGLE CALL for smaller repos ──
-      const microList = microComponents.map(c => `- ${c.path} | ${c.name} | ${c.language} | ${c.type}`).join('\n');
+      const microList = microComponents.map(c => enrichComponent(c)).join('\n');
       const minDomains = Math.max(5, Math.min(10, Math.ceil(microComponents.length / 8)));
 
       const agent2Prompt = `You are a **Domain Architect** expert agent. Organize these ${microComponents.length} micro-components into a hierarchical domain structure.
