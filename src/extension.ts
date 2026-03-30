@@ -265,6 +265,14 @@ export function activate(context: vscode.ExtensionContext) {
               callGraph: deepResult.callGraph,
               dataFlow: deepResult.dataFlow,
             };
+            // Enrich knowledge graph with call graph, data flow, and semantic edges
+            if (report!.knowledgeGraph) {
+              try {
+                const { GraphBuilder } = await import('./graph/graphBuilder');
+                new GraphBuilder().enrichWithDeepAnalysis(report!.knowledgeGraph as any, deepResult as any);
+                logger.info(`Action Center: knowledge graph enriched — ${(report!.knowledgeGraph as any).edges.length} edges`);
+              } catch (enrichErr) { logger.debug('Knowledge graph enrichment failed', { error: String(enrichErr) }); }
+            }
             logger.info(`Action Center: deep analysis added ${deepResult.recommendations.length} evidence-backed recommendations`);
           }
         } catch (err) {
@@ -1776,6 +1784,14 @@ async function runScan(
               callGraph: deepResult.callGraph,
               dataFlow: deepResult.dataFlow,
             };
+            // Enrich knowledge graph with deep analysis data
+            if (currentReport.knowledgeGraph) {
+              try {
+                const { GraphBuilder } = await import('./graph/graphBuilder');
+                new GraphBuilder().enrichWithDeepAnalysis(currentReport.knowledgeGraph as any, deepResult as any);
+                logger.info(`Full scan: knowledge graph enriched — ${(currentReport.knowledgeGraph as any).edges.length} edges`);
+              } catch (enrichErr) { logger.debug('Knowledge graph enrichment failed', { error: String(enrichErr) }); }
+            }
             logger.info(`Full scan: deep analysis added ${deepResult.recommendations.length} recommendations`);
           }
         } catch (err) {

@@ -330,4 +330,166 @@ export class GraphBuilder {
       }
     }
   }
+
+  /**
+   * Enrich the knowledge graph with deep analysis data:
+   * call graph edges, data flow paths, labeled edges, complexity, health cards.
+   */
+  enrichWithDeepAnalysis(
+    graph: KnowledgeGraph,
+    deepAnalysis: {
+      callGraph?: { nodes: { path: string; name: string; type: string; exported: boolean }[]; edges: { from: { path: string; name: string }; to: { path: string; name: string }; callType: string }[]; typeEdges?: { from: { path: string; name: string }; to: { path: string; name: string }; relation: string }[] };
+      dataFlow?: { pipelines: { name: string; sources: { path: string; type: string }[]; transformations: { path: string; name: string }[]; sinks: { path: string; type: string }[] }[] };
+      labeledEdges?: { from: string; to: string; intent: string; confidence: number }[];
+      complexity?: { complexities: { path: string; factor: number; isProduct: boolean }[] };
+      healthCards?: { componentPath: string; componentName: string; purpose: string; risks: string[]; overallHealth: string }[];
+      rollUpSummaries?: { directory: string; summary: string; depth: number }[];
+    }
+  ): void {
+    const existingNodeIds = new Set(graph.nodes.map(n => n.id));
+    const existingEdgeKeys = new Set(graph.edges.map(e => `${e.source}→${e.target}→${e.relation}`));
+
+    const addEdge = (edge: GraphEdge) => {
+      const key = `${edge.source}→${edge.target}→${edge.relation}`;
+      if (!existingEdgeKeys.has(key)) {
+        existingEdgeKeys.add(key);
+        graph.edges.push(edge);
+      }
+    };
+
+    // ── Call graph: add CALLS edges between modules ──
+    if (deepAnalysis.callGraph?.edges) {
+      for (const e of deepAnalysis.callGraph.edges) {
+        // Map to component-level nodes
+        const sourceComp = this.findComponentNode(graph, e.from.path);
+        const targetComp = this.findComponentNode(graph, e.to.path);
+        if (sourceComp && targetComp && sourceComp !== targetComp) {
+          const labeledEdge = deepAnalysis.labeledEdges?.find(le =>
+            le.from.includes(e.from.path) && le.to.includes(e.to.path)
+          );
+          addEdge({
+            source: sourceComp, target: targetComp,
+            relation: 'CALLS',
+            label: labeledEdge?.intent || `${e.from.name} → ${e.to.name}`,
+            properties: { callType: e.callType, confidence: labeledEdge?.confidence },
+          });
+        }
+      }
+    }
+
+    // ── Type hierarchy: add EXTENDS/IMPLEMENTS edges ──
+    if (deepAnalysis.callGraph?.typeEdges) {
+      for (const e of deepAnalysis.callGraph.typeEdges) {
+        const sourceComp = this.findComponentNode(graph, e.from.path);
+        const targetComp = this.findComponentNode(graph, e.to.path);
+        if (sourceComp && targetComp && sourceComp !== targetComp) {
+          addEdge({
+            source: sourceComp, target: targetComp,
+            relation: e.relation === 'extends' ? 'EXTENDS' : 'IMPLEMENTS',
+            label: `${e.from.name} ${e.relation} ${e.to.name}`,
+          });
+        }
+      }
+    }
+
+    // ── Data flow: add DATA_FLOWS_TO edges + source/sink nodes ──
+    if (deepAnalysis.dataFlow?.pipelines) {
+      for (const pipeline of deepAnalysis.dataFlow.pipelines) {
+        // Add pipeline as a virtual node
+        const pipelineId = `pipeline-${pipeline.name.replace(/[^a-z0-9]/gi, '_')}`;
+        if (!existingNodeIds.has(pipelineId)) {
+          existingNodeIds.add(pipelineId);
+          graph.nodes.push({
+            id: pipelineId, type: 'data-source', label: pipeline.name,
+            description: `Data pipeline: ${pipeline.sources.length} sources → ${pipeline.transformations.length} transforms → ${pipeline.sinks.length} sinks`,
+            properties: { sourceCount: pipeline.sources.length, sinkCount: pipeline.sinks.length },
+            icon: '🔄', status: 'neutral',
+          });
+        }
+
+        // Connect sources → transformations → sinks
+        for (const src of pipeline.sources) {
+          const srcComp = this.findComponentNode(graph, src.path);
+          if (srcComp) addEdge({ source: srcComp, target: pipelineId, relation: 'DATA_FLOWS_TO', label: `source: ${src.type}` });
+        }
+        for (const sink of pipeline.sinks) {
+          const sinkComp = this.findComponentNode(graph, sink.path);
+          if (sinkComp) addEdge({ source: pipelineId, target: sinkComp, relation: 'DATA_FLOWS_TO', label: `sink: ${sink.type}` });
+        }
+      }
+    }
+
+    // ── Complexity: enrich existing component nodes with factor ──
+    if (deepAnalysis.complexity?.complexities) {
+      for (const comp of deepAnalysis.complexity.complexities) {
+        const nodeId = this.findComponentNode(graph, comp.path);
+        if (nodeId) {
+          const node = graph.nodes.find(n => n.id === nodeId);
+          if (node) {
+            node.properties.complexityFactor = comp.factor;
+            node.properties.isProduct = comp.isProduct;
+            if (comp.isProduct) node.icon = '🏭';
+          }
+        }
+      }
+    }
+
+    // ── Health cards: enrich component nodes ──
+    if (deepAnalysis.healthCards) {
+      for (const card of deepAnalysis.healthCards) {
+        const nodeId = this.findComponentNode(graph, card.componentPath);
+        if (nodeId) {
+          const node = graph.nodes.find(n => n.id === nodeId);
+          if (node) {
+            node.properties.healthCard = {
+              purpose: card.purpose,
+              risks: card.risks,
+              overallHealth: card.overallHealth,
+            };
+            if (card.overallHealth === 'at-risk') node.status = 'error';
+            else if (card.overallHealth === 'needs-attention') node.status = 'warning';
+          }
+        }
+      }
+    }
+
+    // ── Roll-up summaries: enrich component/domain nodes ──
+    if (deepAnalysis.rollUpSummaries) {
+      for (const summary of deepAnalysis.rollUpSummaries) {
+        if (summary.directory === '.') {
+          // Architecture-level summary goes on the root node
+          const root = graph.nodes.find(n => n.id === graph.rootId);
+          if (root) root.properties.architectureSummary = summary.summary;
+        } else {
+          const nodeId = this.findComponentNode(graph, summary.directory);
+          if (nodeId) {
+            const node = graph.nodes.find(n => n.id === nodeId);
+            if (node) node.properties.rollUpSummary = summary.summary;
+          }
+        }
+      }
+    }
+
+    // Update metadata
+    graph.metadata.nodeCount = graph.nodes.length;
+    graph.metadata.edgeCount = graph.edges.length;
+  }
+
+  /** Find the component node ID that best matches a file path */
+  private findComponentNode(graph: KnowledgeGraph, filePath: string): string | undefined {
+    // Exact match on component path
+    const exact = graph.nodes.find(n =>
+      (n.type === 'component' || n.type === 'subcomponent') && n.id === `comp-${filePath}`
+    );
+    if (exact) return exact.id;
+
+    // Partial match — find component whose path is a prefix of the file path
+    const partial = graph.nodes
+      .filter(n => n.type === 'component' || n.type === 'subcomponent')
+      .find(n => {
+        const compPath = n.id.replace('comp-', '');
+        return filePath.startsWith(compPath + '/') || filePath === compPath;
+      });
+    return partial?.id;
+  }
 }

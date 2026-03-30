@@ -941,6 +941,8 @@ export class ComponentMapper {
 
   // ── LLM deep component mapping ──────────────────────────────────────
 
+  // ── Multi-Agent Component Mapping Pipeline ──────────────────────
+
   private async deepMapComponents(
     workspaceUri: vscode.Uri,
     context: ProjectContext,
@@ -948,121 +950,176 @@ export class ComponentMapper {
   ): Promise<ComponentInfo[]> {
     const tree = context.directoryTree || '';
     
-    // Find component descriptors — all patterns in parallel
-    logger.info('Deep map: finding component descriptors...');
+    // Find component descriptors
     const descTimer = logger.time('Deep map: descriptor discovery');
     const exclude = '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/.venv/**,**/target/**}';
-    const patterns = [
-      '*/README.md', '*/*/README.md',
-      '*/pyproject.toml', '*/*/pyproject.toml',
-      '*/package.json', '*/*/package.json',
-      '*/Cargo.toml', '*/go.mod',
-    ];
-    const allDescUris = await Promise.all(
-      patterns.map(p => vscode.workspace.findFiles(new vscode.RelativePattern(workspaceUri, p), exclude, 10))
-    );
-    const descriptorUris = allDescUris.flat().slice(0, 20);
-    const descriptorFiles = await Promise.all(
-      descriptorUris.map(async uri => {
+    const descPatterns = ['*/README.md', '*/*/README.md', '*/pyproject.toml', '*/*/pyproject.toml', '*/package.json', '*/*/package.json', '*/Cargo.toml', '*/go.mod'];
+    const allDescUris = await Promise.all(descPatterns.map(p => vscode.workspace.findFiles(new vscode.RelativePattern(workspaceUri, p), exclude, 10)));
+    const descriptorFiles = (await Promise.all(
+      allDescUris.flat().slice(0, 20).map(async uri => {
         try {
           const raw = await vscode.workspace.fs.readFile(uri);
-          const content = Buffer.from(raw).toString('utf-8');
-          return { path: uri.fsPath, content: content.split('\n').slice(0, 30).join('\n'), relativePath: vscode.workspace.asRelativePath(uri) };
+          return { content: Buffer.from(raw).toString('utf-8').split('\n').slice(0, 30).join('\n'), relativePath: vscode.workspace.asRelativePath(uri) };
         } catch { return null; }
       })
-    );
-    const componentDescriptors = descriptorFiles.filter((f): f is NonNullable<typeof f> => f !== null);
+    )).filter((f): f is NonNullable<typeof f> => f !== null);
     descTimer?.end?.();
-    logger.info(`Deep map: found ${componentDescriptors.length} descriptors, sending to LLM...`);
 
-    // Truncate tree to top levels only (avoid sending 5000-line trees)
     const treeLines = tree.split('\n');
-    const truncatedTree = treeLines.length > 200
-      ? treeLines.slice(0, 200).join('\n') + `\n... (${treeLines.length - 200} more lines truncated)`
-      : tree;
+    const truncatedTree = treeLines.length > 200 ? treeLines.slice(0, 200).join('\n') + '\n...' : tree;
+    const descriptorContext = descriptorFiles.slice(0, 10).map(f => `### ${f.relativePath}\n\`\`\`\n${f.content.slice(0, 600)}\n\`\`\``).join('\n\n');
+    const originalPaths = new Set(context.components.map(c => c.path));
+    const knownPathsList = [...originalPaths].slice(0, 50).join('\n');
 
-    // Limit descriptors to top 10
-    const topDescriptors = componentDescriptors.slice(0, 10);
-
-    const prompt = `Analyze this repository and create a DOMAIN-ORIENTED component hierarchy. Group components by their BUSINESS CAPABILITY, not by directory layout.
+    // ═══════════════════════════════════════════════════════════════
+    // AGENT 1: Structure Analyst — flat list of all micro-components
+    // ═══════════════════════════════════════════════════════════════
+    logger.info('Deep map [Agent 1/3]: Structure Analyst — mapping all directories...');
+    const agent1Prompt = `You are a **Structure Analyst** expert agent. Map EVERY directory to a typed component. Output a FLAT list — no grouping.
 
 DIRECTORY STRUCTURE:
 ${truncatedTree}
 
-COMPONENT DESCRIPTOR FILES FOUND:
-${topDescriptors.map(f => `### ${f.relativePath}\n\`\`\`\n${f.content.slice(0, 800)}\n\`\`\``).join('\n\n')}
+DESCRIPTORS:
+${descriptorContext}
 
-DETECTED LANGUAGES: ${context.languages.join(', ')}
-PROJECT TYPE: ${context.projectType}
+LANGUAGES: ${context.languages.join(', ')}
 
-CRITICAL RULES:
-1. Create TOP-LEVEL DOMAIN GROUPS based on business capabilities — NOT directories.
-   Example: "Bot Detection & Classification" should contain the bot_classification app, bot_detection library, AND related KQL functions — even though they live in different directories.
-2. Components from different directories CAN and SHOULD be grouped under the same domain parent if they serve the same purpose.
-3. Each domain group's "path" should be the primary directory, but its subComponents can reference paths from anywhere in the repo.
-4. Go 2-3 levels deep. subComponents can have their own subComponents.
-5. Every leaf directory with code should appear somewhere in the tree.
-6. Don't create a component for every single file — group related files under meaningful components.
-7. Infrastructure (CI/CD, deployment, dev setup) should be its own domain, not scattered across other domains.
-8. Configuration files (IDE settings, linting, AI rules) should be grouped under a "Developer Configuration" domain.
+RULES:
+- ONE component per meaningful directory or standalone config file.
+- EVERY path from the KNOWN PATHS list MUST appear in your output.
+- Include CI/CD pipelines, release definitions, dev containers, dashboards, security configs, AI rules.
+- Do NOT group or nest — output a flat array.
+- Do NOT skip operational infrastructure.
 
-For each node:
-- name: descriptive business-capability name (e.g., "Bot Detection & Classification", NOT "python-workspace/components/bot_detection")
-- path: primary relative path from repo root
-- language: primary language (or "Multi" if mixed)
-- type: app | library | service | script | config | infra | data
-- description: one sentence explaining the business purpose
-- subComponents: nested components (can reference paths from different directories)
+KNOWN PATHS (ALL must appear):
+${knownPathsList}
 
-Respond with ONLY valid JSON:
-{
-  "components": [
-    {
-      "name": "Bot Detection & Classification",
-      "path": "python-workspace/components/bot_detection",
-      "language": "Multi",
-      "type": "service",
-      "description": "End-to-end bot detection, classification, and alerting capability",
-      "subComponents": [
-        { "name": "Bot Detection Library", "path": "python-workspace/components/bot_detection", "language": "Python", "type": "library", "description": "Core bot detection heuristics and ML models" },
-        { "name": "Bot Classification App", "path": "python-workspace/apps/bot_classification", "language": "Python", "type": "app", "description": "Application for classifying bot traffic patterns" },
-        { "name": "Bot Detection KQL Functions", "path": "KustoFunctions/BotDetection", "language": "KQL", "type": "data", "description": "Kusto query functions for bot signal extraction" }
-      ]
-    },
-    {
-      "name": "Infrastructure & Deployment",
-      "path": "detection/infra",
-      "language": "Multi",
-      "type": "infra",
-      "description": "Cloud infrastructure provisioning and CI/CD pipelines",
-      "subComponents": [
-        { "name": "EV2 Deployment", "path": "detection/infra", "language": "Bicep", "type": "infra", "description": "ARM/Bicep templates for Azure resource deployment" },
-        { "name": "CI/CD Pipeline", "path": "ci", "language": "YAML", "type": "config", "description": "Azure DevOps build pipeline definition" }
-      ]
-    }
-  ]
-}`;
+Respond as JSON: {"components":[{"name":"...","path":"...","language":"...","type":"app|library|service|script|config|infra|data","description":"one sentence"}]}`;
 
-    const promptKb = Math.round(prompt.length / 1024);
-    logger.info(`Deep map: prompt size ${promptKb}KB, calling LLM (timeout 120s)...`);
-    const llmTimer = logger.time('Deep map: LLM call');
-
+    let microComponents: ComponentInfo[] = [];
     try {
-      const response = await this.copilotClient!.analyze(prompt, token, 120_000);
-      llmTimer?.end?.();
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        if (Array.isArray(parsed.components)) {
-          return this.flattenComponents(parsed.components);
-        }
+      const r = await this.copilotClient!.analyze(agent1Prompt, token, 90_000);
+      const m = r.match(/\{[\s\S]*\}/);
+      if (m) {
+        const parsed = JSON.parse(m[0]);
+        if (Array.isArray(parsed.components)) microComponents = this.flattenComponents(parsed.components);
+      }
+    } catch (err) { logger.warn('Deep map [Agent 1] failed', { error: String(err) }); }
+
+    // Programmatic orphan injection — never trust the LLM to cover 100%
+    const agent1Paths = new Set(microComponents.map(c => c.path));
+    const orphans1 = context.components.filter(c =>
+      !agent1Paths.has(c.path) && !microComponents.some(mc => c.path.startsWith(mc.path + '/') || mc.path.startsWith(c.path + '/'))
+    );
+    if (orphans1.length > 0) {
+      logger.info(`Deep map [Agent 1]: injecting ${orphans1.length} missed paths`);
+      microComponents.push(...orphans1);
+    }
+    logger.info(`Deep map [Agent 1]: ${microComponents.length} micro-components`);
+
+    if (microComponents.length === 0) return context.components;
+
+    // ═══════════════════════════════════════════════════════════════
+    // AGENT 2: Domain Architect — groups into business + technical domains
+    // ═══════════════════════════════════════════════════════════════
+    logger.info('Deep map [Agent 2/3]: Domain Architect — grouping into domains...');
+    const microList = microComponents.map(c => `- ${c.path} | ${c.name} | ${c.language} | ${c.type}`).join('\n');
+
+    const agent2Prompt = `You are a **Domain Architect** expert agent. Organize these ${microComponents.length} micro-components into a hierarchical domain structure.
+
+MICRO-COMPONENTS:
+${microList}
+
+MANDATORY TOP-LEVEL DOMAINS (include all that apply):
+1. **[Business Domains]** — create based on the code's business purpose (e.g., "Bot Detection & Classification", "Auto Segmentation", "Data Pipeline Processing"). Components from DIFFERENT directories CAN be in the same business domain.
+2. **Core Infrastructure** — CI/CD, deployment, releases, IaC templates
+3. **Developer Experience** — dev containers, IDE settings, bootstrap scripts, AI assistant rules
+4. **Shared Libraries** — common modules, utility packages used by multiple apps
+5. **Security & Compliance** — credential scan, policy checks, compliance metadata
+6. **Monitoring & Observability** — dashboards, alerts, metrics (if present)
+
+RULES:
+- EVERY micro-component MUST appear as a subComponent of exactly ONE domain. Zero drops.
+- Do NOT merge components that serve different functions — anti-collapse.
+- subComponents can have their own subComponents (3 levels max).
+- Cross-directory grouping: a business domain CAN contain components from apps/, components/, and KQL directories.
+
+Respond as JSON:
+{"components":[{"name":"Domain Name","path":"primary-path","language":"Multi","type":"service","description":"...","subComponents":[...]}]}`;
+
+    let domainComponents: ComponentInfo[] = [];
+    try {
+      const r = await this.copilotClient!.analyze(agent2Prompt, token, 90_000);
+      const m = r.match(/\{[\s\S]*\}/);
+      if (m) {
+        const parsed = JSON.parse(m[0]);
+        if (Array.isArray(parsed.components)) domainComponents = this.flattenComponents(parsed.components);
       }
     } catch (err) {
-      llmTimer?.end?.();
-      logger.warn('LLM component mapping failed, falling back to deterministic', { error: err instanceof Error ? err.message : String(err) });
+      logger.warn('Deep map [Agent 2] failed, using flat structure', { error: String(err) });
+      return microComponents;
     }
 
-    return context.components;
+    // ═══════════════════════════════════════════════════════════════
+    // AGENT 3: Completeness Validator — checks, corrects, self-heals
+    // ═══════════════════════════════════════════════════════════════
+    logger.info('Deep map [Agent 3/3]: Completeness Validator — checking for gaps...');
+    const domainPaths = new Set(domainComponents.map(c => c.path));
+    const microPaths = new Set(microComponents.map(c => c.path));
+    const droppedPaths = [...microPaths].filter(p =>
+      !domainPaths.has(p) && !domainComponents.some(dc => p.startsWith(dc.path + '/') || dc.path.startsWith(p + '/'))
+    );
+
+    if (droppedPaths.length > 0) {
+      logger.info(`Deep map [Agent 3]: ${droppedPaths.length} paths dropped, running validator...`);
+
+      const agent3Prompt = `You are a **Completeness Validator** agent. The Domain Architect dropped ${droppedPaths.length} components. Classify each into the best existing domain.
+
+DROPPED:
+${droppedPaths.map(p => {
+  const mc = microComponents.find(c => c.path === p);
+  return `- ${p} | ${mc?.name || p} | ${mc?.type || '?'}`;
+}).join('\n')}
+
+EXISTING DOMAINS:
+${domainComponents.filter(c => !c.parentPath).map(c => `- ${c.name}`).join('\n')}
+
+Respond as JSON: [{"path":"...","assignTo":"Domain Name","name":"descriptive name"}]`;
+
+      try {
+        const r = await this.copilotClient!.analyzeFast(agent3Prompt);
+        const m = r.match(/\[[\s\S]*\]/);
+        if (m) {
+          const assignments = JSON.parse(m[0]) as { path: string; assignTo?: string; name?: string }[];
+          for (const a of assignments) {
+            const original = microComponents.find(c => c.path === a.path);
+            if (original) {
+              const parent = domainComponents.find(dc => dc.name === a.assignTo);
+              domainComponents.push({
+                ...original,
+                name: a.name || original.name,
+                parentPath: parent?.path,
+              });
+              if (parent) { if (!parent.children) parent.children = []; parent.children.push(a.path); }
+            }
+          }
+        }
+      } catch (err) { logger.debug('Deep map [Agent 3] LLM failed', { error: String(err) }); }
+
+      // Final deterministic safety net
+      const finalPaths = new Set(domainComponents.map(c => c.path));
+      for (const p of droppedPaths) {
+        if (!finalPaths.has(p)) {
+          const mc = microComponents.find(c => c.path === p);
+          if (mc) domainComponents.push(mc);
+        }
+      }
+    }
+
+    const coverage = Math.round((domainComponents.length / Math.max(1, microComponents.length)) * 100);
+    logger.info(`Deep map: DONE — ${domainComponents.length} components, ${coverage}% coverage, ${droppedPaths.length} recovered`);
+    return domainComponents;
   }
 
   private flattenComponents(components: unknown[], parentPath?: string): ComponentInfo[] {
