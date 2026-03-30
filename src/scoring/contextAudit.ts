@@ -415,12 +415,21 @@ export async function auditContextEfficiency(
       .filter(([p]) => p !== selectedTool)
       .flatMap(([, pats]) => pats);
     let crossPlatformFiles = 0;
+    let instructionFiles = 0; // files with actual instruction content (higher credit)
     for (const pat of otherPlatformPatterns.slice(0, 10)) {
       const found = await findFiles(workspaceUri, pat);
       crossPlatformFiles += found.length;
+      // Count files named *.instructions.md or containing coding conventions
+      for (const f of found) {
+        const name = f.fsPath.split('/').pop() || '';
+        if (name.includes('instructions') || name.includes('rules') || name.includes('conventions')) {
+          instructionFiles++;
+        }
+      }
     }
     if (crossPlatformFiles > 0) {
-      const crossCredit = Math.min(20, crossPlatformFiles * 4);
+      // Higher credit for actual instruction files (4 pts each) vs generic files (2 pts each)
+      const crossCredit = Math.min(25, instructionFiles * 6 + (crossPlatformFiles - instructionFiles) * 2);
       efficiencyScore = Math.min(65, efficiencyScore + crossCredit);
     }
   }

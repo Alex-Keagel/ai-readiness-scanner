@@ -367,10 +367,18 @@ export class RecommendationsPanel {
     );
     const components = report.componentScores || [];
     for (const comp of components.filter(c => c.overallScore < 50)) {
-      // Skip if insight already covers this component (by path or name)
-      if (insightPaths.has(comp.path) || insightPaths.has(comp.name) ||
-          insightNames.has(comp.name.toLowerCase()) ||
-          [...insightPaths].some(p => comp.path.includes(p) || p.includes(comp.path))) continue;
+      // Skip if ANY existing rec already covers this component (by path, name, or filePath)
+      const compPathNorm = comp.path.toLowerCase();
+      const compNameNorm = comp.name.toLowerCase();
+      const alreadyCovered = recs.some(r => {
+        const recPath = r.filePath.replace(/\/README\.md$/, '').replace(/\/$/, '').toLowerCase();
+        const recName = r.name.toLowerCase();
+        return recPath === compPathNorm || recPath.includes(compPathNorm) || compPathNorm.includes(recPath) ||
+               recName.includes(compNameNorm) || compNameNorm.includes(recName) ||
+               insightPaths.has(comp.path) || insightPaths.has(comp.name) ||
+               insightNames.has(compNameNorm);
+      });
+      if (alreadyCovered) continue;
       // Skip test projects — they don't need READMEs
       const nameLower = comp.name.toLowerCase();
       const pathLower = comp.path.toLowerCase();

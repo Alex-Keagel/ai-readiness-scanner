@@ -160,6 +160,31 @@ export class SkillEvaluator {
       } catch { /* skip bad glob */ }
     }
 
+    // Also find empty skill dirs (scaffolded but not implemented)
+    try {
+      const skillDirs = await vscode.workspace.findFiles(
+        new vscode.RelativePattern(workspaceUri, '.github/skills/*/'),
+        '**/node_modules/**', 20
+      );
+      // Check dirs that have NO SKILL.md
+      const coveredDirs = new Set(skills.map(s => {
+        const parts = s.path.split('/');
+        return parts.slice(0, -1).join('/');
+      }));
+      for (const uri of skillDirs) {
+        const dirPath = vscode.workspace.asRelativePath(uri, false).replace(/\/[^/]*$/, '');
+        if (!coveredDirs.has(dirPath) && !skills.some(s => s.path.startsWith(dirPath))) {
+          const dirName = dirPath.split('/').pop() || dirPath;
+          skills.push({
+            path: `${dirPath}/SKILL.md`,
+            content: '', // empty — skill not yet created
+            name: dirName,
+          });
+          logger.info(`SkillEvaluator: found empty skill dir '${dirName}' (scaffolded but not implemented)`);
+        }
+      }
+    } catch { /* non-critical */ }
+
     return skills;
   }
 
@@ -169,6 +194,15 @@ export class SkillEvaluator {
     const issues: string[] = [];
     const suggestions: string[] = [];
     let score = 100;
+
+    // Empty skill (scaffolded dir but no SKILL.md content)
+    if (!skill.content || skill.content.trim().length === 0) {
+      return {
+        score: 0,
+        issues: [`Skill "${skill.name}" is scaffolded (directory exists) but SKILL.md is missing or empty — create the skill definition`],
+        suggestions: [],
+      };
+    }
 
     // Required sections (accept alternative names)
     for (const section of REQUIRED_SECTIONS) {
