@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.1.3] — 2026-03-30
+
+- feat: LLM enrichment renames containers + adds business descriptions
+- fix: virtual parents for orphan children + standalone dir discovery
+
 ## [1.1.2] — 2026-03-30
 
 - feat: recursive sub-grouping for large parent directories
