@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.1.4] — 2026-03-30
+
+- fix: 2 recommendation accuracy bugs from audit
+
 ## [1.1.3] — 2026-03-30
 
 - feat: LLM enrichment renames containers + adds business descriptions
