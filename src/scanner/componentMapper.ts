@@ -408,40 +408,64 @@ export class ComponentMapper {
 
   private buildDirectoryTree(files: vscode.Uri[], workspaceUri: vscode.Uri): string {
     const basePath = workspaceUri.path;
-    const relativePaths = files
-      .map(f => f.path.slice(basePath.length + 1))
-      .filter(p => {
-        const depth = p.split('/').length;
-        return depth <= 4;  // Show 4 levels deep for complete picture
-      })
-      .sort();
 
-    const tree = this.formatAsTree(relativePaths);
-    if (tree.length > MAX_TREE_LINES) {
-      return tree.slice(0, MAX_TREE_LINES).join('\n') + '\n... (truncated)';
+    // Build directory set from ALL files — no depth limit
+    const dirs = new Set<string>();
+    for (const f of files) {
+      const rel = f.path.slice(basePath.length + 1);
+      const parts = rel.split('/');
+      // Add every directory level
+      for (let i = 1; i < parts.length; i++) {
+        dirs.add(parts.slice(0, i).join('/'));
+      }
     }
-    return tree.join('\n');
-  }
 
-  private formatAsTree(paths: string[]): string[] {
+    // Sort and format as indented tree
+    const sortedDirs = [...dirs].sort();
     const lines: string[] = [];
-    const seen = new Set<string>();
+    for (const dir of sortedDirs) {
+      const depth = dir.split('/').length - 1;
+      const name = dir.split('/').pop() || dir;
+      lines.push(`${'  '.repeat(depth)}${name}/`);
+    }
 
-    for (const p of paths) {
-      const parts = p.split('/');
-      // Show directory hierarchy with proper indentation
-      for (let i = 0; i < parts.length - 1; i++) {
-        const dirPath = parts.slice(0, i + 1).join('/');
-        if (!seen.has(dirPath)) {
-          seen.add(dirPath);
-          lines.push(`${'  '.repeat(i)}${parts[i]}/`);
+    // Smart truncation: if tree is too large, show directories that contain
+    // manifest files (pyproject.toml, .csproj, package.json, README.md) fully,
+    // collapse deep non-manifest directories
+    if (lines.length > 600) {
+      const manifestDirs = new Set<string>();
+      for (const f of files) {
+        const rel = f.path.slice(basePath.length + 1);
+        const fileName = rel.split('/').pop() || '';
+        if (/^(pyproject\.toml|package\.json|.*\.csproj|README\.md|Cargo\.toml|go\.mod)$/i.test(fileName)) {
+          // Keep this dir and all its parents
+          const parts = rel.split('/');
+          for (let i = 1; i < parts.length; i++) {
+            manifestDirs.add(parts.slice(0, i).join('/'));
+          }
         }
       }
-      // Show the file at proper depth
-      const indent = '  '.repeat(Math.max(0, parts.length - 1));
-      lines.push(`${indent}${parts[parts.length - 1]}`);
+
+      const filtered = sortedDirs.filter(d => {
+        // Always show top 2 levels
+        if (d.split('/').length <= 2) return true;
+        // Always show dirs containing manifests
+        if (manifestDirs.has(d)) return true;
+        // Show dirs that are parents of manifest dirs
+        if ([...manifestDirs].some(m => m.startsWith(d + '/'))) return true;
+        return false;
+      });
+
+      const smartLines: string[] = [];
+      for (const dir of filtered) {
+        const depth = dir.split('/').length - 1;
+        const name = dir.split('/').pop() || dir;
+        smartLines.push(`${'  '.repeat(depth)}${name}/`);
+      }
+      return smartLines.join('\n');
     }
-    return lines;
+
+    return lines.join('\n');
   }
 
   // ── Component detection ──────────────────────────────────────────────
@@ -954,17 +978,29 @@ export class ComponentMapper {
     
     // Find component descriptors
     const descTimer = logger.time('Deep map: descriptor discovery');
-    const exclude = '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/.venv/**,**/target/**}';
-    const descPatterns = [
-      '*/README.md', '*/*/README.md', '*/*/*/README.md',
-      '*/pyproject.toml', '*/*/pyproject.toml', '*/*/*/pyproject.toml',
-      '*/package.json', '*/*/package.json',
-      '*/*.csproj', '*/*/*.csproj',
-      '*/Cargo.toml', '*/go.mod',
+    const exclude = '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/.venv/**,**/target/**,**/obj/**,**/bin/**}';
+
+    // Dynamic: find ALL manifest files at any depth — no hardcoded patterns
+    const manifestGlobs = [
+      '**/README.md',
+      '**/pyproject.toml',
+      '**/package.json',
+      '**/*.csproj',
+      '**/Cargo.toml',
+      '**/go.mod',
     ];
-    const allDescUris = await Promise.all(descPatterns.map(p => vscode.workspace.findFiles(new vscode.RelativePattern(workspaceUri, p), exclude, 20)));
+    const allDescUris = await Promise.all(
+      manifestGlobs.map(g => vscode.workspace.findFiles(new vscode.RelativePattern(workspaceUri, g), exclude, 50))
+    );
+    // Dedupe and sort by depth (shallowest first)
+    const allUris = [...new Map(allDescUris.flat().map(u => [u.fsPath, u])).values()]
+      .sort((a, b) => {
+        const depthA = vscode.workspace.asRelativePath(a, false).split('/').length;
+        const depthB = vscode.workspace.asRelativePath(b, false).split('/').length;
+        return depthA - depthB;
+      });
     const descriptorFiles = (await Promise.all(
-      allDescUris.flat().slice(0, 30).map(async uri => {
+      allUris.slice(0, 40).map(async uri => {
         try {
           const raw = await vscode.workspace.fs.readFile(uri);
           return { content: Buffer.from(raw).toString('utf-8').split('\n').slice(0, 30).join('\n'), relativePath: vscode.workspace.asRelativePath(uri) };
@@ -972,24 +1008,17 @@ export class ComponentMapper {
       })
     )).filter((f): f is NonNullable<typeof f> => f !== null);
     descTimer?.end?.();
+    logger.info(`Deep map: found ${descriptorFiles.length} manifest files (from ${allUris.length} total)`);
 
-    const treeLines = tree.split('\n');
-    const truncatedTree = treeLines.length > 400 ? treeLines.slice(0, 400).join('\n') + '\n...' : tree;
     const descriptorContext = descriptorFiles.slice(0, 15).map(f => `### ${f.relativePath}\n\`\`\`\n${f.content.slice(0, 500)}\n\`\`\``).join('\n\n');
-    const originalPaths = new Set(context.components.map(c => c.path));
 
-    // Discover deeper project paths (C# .csproj, Python pyproject.toml at 3+ levels)
-    try {
-      const deepProjects = await Promise.all([
-        vscode.workspace.findFiles(new vscode.RelativePattern(workspaceUri, '{*/*/*.csproj,*/*/*/*.csproj}'), exclude, 40),
-        vscode.workspace.findFiles(new vscode.RelativePattern(workspaceUri, '{*/*/*/pyproject.toml,*/*/*/*/pyproject.toml}'), exclude, 15),
-      ]);
-      for (const f of deepProjects.flat()) {
-        const dir = vscode.workspace.asRelativePath(f, false).replace(/\/[^/]+\.(csproj|toml)$/, '');
-        if (dir && !originalPaths.has(dir)) originalPaths.add(dir);
-      }
-      logger.info(`Deep map: ${originalPaths.size} known paths (including deep .csproj/.toml discovery)`);
-    } catch { /* non-critical */ }
+    // Build known paths from manifests — every dir with a manifest is a component
+    const originalPaths = new Set(context.components.map(c => c.path));
+    for (const u of allUris) {
+      const dir = vscode.workspace.asRelativePath(u, false).replace(/\/[^/]+$/, '');
+      if (dir && dir !== '.') originalPaths.add(dir);
+    }
+    logger.info(`Deep map: ${originalPaths.size} known component paths (from manifests + deterministic scan)`);
 
     const knownPathsList = [...originalPaths].slice(0, 60).join('\n');
 
@@ -1000,7 +1029,7 @@ export class ComponentMapper {
     const agent1Prompt = `You are a **Structure Analyst** expert agent. Map EVERY directory to a typed component. Output a FLAT list — no grouping.
 
 DIRECTORY STRUCTURE:
-${truncatedTree}
+${tree}
 
 DESCRIPTORS:
 ${descriptorContext}
@@ -1321,7 +1350,18 @@ Respond as JSON: [{"path":"...","assignTo":"Domain Name","name":"descriptive nam
       })
       .sort();
 
-    const tree = this.formatAsTree(relativePaths);
+    const tree: string[] = [];
+    const seen = new Set<string>();
+    for (const p of relativePaths) {
+      const parts = p.split('/');
+      for (let i = 0; i < parts.length - 1; i++) {
+        const dirPath = parts.slice(0, i + 1).join('/');
+        if (!seen.has(dirPath)) {
+          seen.add(dirPath);
+          tree.push(`${'  '.repeat(i)}${parts[i]}/`);
+        }
+      }
+    }
     if (tree.length > MAX_DEEP_TREE_LINES) {
       return tree.slice(0, MAX_DEEP_TREE_LINES).join('\n') + '\n... (truncated)';
     }

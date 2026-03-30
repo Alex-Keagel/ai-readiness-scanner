@@ -197,10 +197,12 @@ export class GraphBuilder {
           path: comp.path, language: comp.language, type: comp.type,
           level: comp.primaryLevel, depth: comp.depth, score: comp.overallScore,
           signals: comp.signals,
+          isGenerated: comp.isGenerated || false,
+          children: comp.children || [],
         },
-        icon: iconMap[comp.type] || '📁',
+        icon: comp.isGenerated ? '🔄' : (iconMap[comp.type] || '📁'),
         badge: `L${comp.primaryLevel} ${comp.depth}%`,
-        status: comp.primaryLevel >= 3 ? 'good' : comp.primaryLevel >= 2 ? 'warning' : 'error',
+        status: comp.isGenerated ? 'neutral' : comp.primaryLevel >= 3 ? 'good' : comp.primaryLevel >= 2 ? 'warning' : 'error',
       });
     }
 
