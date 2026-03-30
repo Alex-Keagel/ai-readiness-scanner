@@ -1,7 +1,7 @@
 # AI Readiness Scanner for VS Code
 
 [![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-Install-007ACC?logo=visual-studio-code&logoColor=white)](https://marketplace.visualstudio.com/)
-[![Version](https://img.shields.io/badge/version-1.0.4-blue)](https://marketplace.visualstudio.com/)
+[![Version](https://img.shields.io/badge/version-1.0.5-blue)](https://marketplace.visualstudio.com/)
 [![Powered by](https://img.shields.io/badge/Powered%20by-GitHub%20Copilot%20LM%20API-8957e5?logo=github)](https://github.com/features/copilot)
 [![Tests](https://img.shields.io/badge/tests-638%20passing-brightgreen)](https://github.com/)
 

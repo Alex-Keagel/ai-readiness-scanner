@@ -1,5 +1,10 @@
 # Changelog
 
+## [1.0.5] — 2026-03-30
+
+- feat: fully dynamic scan — no hardcoded depth/pattern limits
+- fix: root cause of missing components — tree depth was 2, now 4
+
 ## [1.0.4] — 2026-03-30
 
 - fix: deep analysis stored regardless of recommendation count
