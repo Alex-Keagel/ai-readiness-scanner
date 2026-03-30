@@ -1,5 +1,9 @@
 # Changelog
 
+## [1.1.7] — 2026-03-30
+
+- fix: virtual group scoring + config component weighting
+
 ## [1.1.6] — 2026-03-30
 
 - fix: 3 remaining recommendation bugs from audit
