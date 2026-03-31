@@ -163,6 +163,72 @@ describe('InstructionAnalyzer', () => {
       const pathClaims = claims.filter((c: any) => c.category === 'path-reference');
       expect(pathClaims.length).toBe(0);
     });
+
+    // ─── isLikelyPath filter tests ─────────────────────────────────
+
+    it('rejects ARM/Ev2 as a prose reference, not a filesystem path', () => {
+      const claims = extract('Never commit secrets in ARM/Ev2 artifacts');
+      const pathClaims = claims.filter((c: any) => c.category === 'path-reference');
+      expect(pathClaims).not.toContainEqual(
+        expect.objectContaining({ claim: 'ARM/Ev2' })
+      );
+    });
+
+    it('rejects OneBranch/ZTS as Azure DevOps folder, not filesystem path', () => {
+      const claims = extract('Pipeline runs in the `OneBranch/ZTS` folder');
+      const pathClaims = claims.filter((c: any) => c.category === 'path-reference');
+      expect(pathClaims).not.toContainEqual(
+        expect.objectContaining({ claim: 'OneBranch/ZTS' })
+      );
+    });
+
+    it('rejects CI/CD as prose concept', () => {
+      const claims = extract('Set up CI/CD pipelines');
+      const pathClaims = claims.filter((c: any) => c.category === 'path-reference');
+      expect(pathClaims).not.toContainEqual(
+        expect.objectContaining({ claim: 'CI/CD' })
+      );
+    });
+
+    it('accepts real paths with file extensions', () => {
+      const claims = extract('Edit `references/operation-types.md` for details');
+      const pathClaims = claims.filter((c: any) => c.category === 'path-reference');
+      expect(pathClaims).toContainEqual(
+        expect.objectContaining({ claim: 'references/operation-types.md' })
+      );
+    });
+
+    it('accepts paths with known directory prefixes like src/', () => {
+      const claims = extract('See `src/common` for shared code');
+      const pathClaims = claims.filter((c: any) => c.category === 'path-reference');
+      expect(pathClaims).toContainEqual(
+        expect.objectContaining({ claim: 'src/common' })
+      );
+    });
+
+    it('accepts paths starting with .github/', () => {
+      const claims = extract('Look at `.github/workflows`');
+      const pathClaims = claims.filter((c: any) => c.category === 'path-reference');
+      expect(pathClaims).toContainEqual(
+        expect.objectContaining({ claim: '.github/workflows' })
+      );
+    });
+
+    it('accepts deep paths with 3+ segments', () => {
+      const claims = extract('The file at `deploy/ev2/biceps/main.bicep`');
+      const pathClaims = claims.filter((c: any) => c.category === 'path-reference');
+      expect(pathClaims).toContainEqual(
+        expect.objectContaining({ claim: 'deploy/ev2/biceps/main.bicep' })
+      );
+    });
+
+    it('accepts paths with dots/dashes/underscores in segments', () => {
+      const claims = extract('Edit `python-workspace/components/bot_detection`');
+      const pathClaims = claims.filter((c: any) => c.category === 'path-reference');
+      expect(pathClaims).toContainEqual(
+        expect.objectContaining({ claim: 'python-workspace/components/bot_detection' })
+      );
+    });
   });
 
   // ─── Pure: extractScope ────────────────────────────────────────────

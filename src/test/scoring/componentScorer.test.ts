@@ -146,4 +146,105 @@ describe('ComponentScorer', () => {
       expect(signalNames).toContain('Automation');
     });
   });
+
+  // ── Companion .Tests project detection ──────────────────────────
+
+  describe('companion test project detection', () => {
+    it('detects companion .Tests project for C# component', async () => {
+      // No test files in component dir, but Storage.Tests exists as sibling
+      const statSpy = vi.spyOn(workspace.fs, 'stat');
+      statSpy.mockImplementation(async (uri: any) => {
+        const path = uri.toString?.() || uri.fsPath || String(uri);
+        if (path.includes('Storage.Tests')) {
+          return { type: 2, ctime: 0, mtime: 0, size: 0 };
+        }
+        throw new Error('not found');
+      });
+
+      const ctx = makeContext({
+        components: [makeComponent({ name: 'Storage', path: 'src/common/Storage', language: 'C#', type: 'library' })],
+      });
+      const scores = await scorer.scoreComponents(workspaceUri as any, ctx, 'copilot');
+      const testSignal = scores[0].signals.find(s => s.signal === 'Tests');
+      expect(testSignal).toBeDefined();
+      expect(testSignal!.present).toBe(true);
+    });
+
+    it('detects companion .Integration.Tests project', async () => {
+      const statSpy = vi.spyOn(workspace.fs, 'stat');
+      statSpy.mockImplementation(async (uri: any) => {
+        const path = uri.toString?.() || uri.fsPath || String(uri);
+        if (path.includes('LogAnalytics.Query.Integration.Tests')) {
+          return { type: 2, ctime: 0, mtime: 0, size: 0 };
+        }
+        throw new Error('not found');
+      });
+
+      const ctx = makeContext({
+        components: [makeComponent({ name: 'LogAnalytics.Query', path: 'src/DataAcquisition/LogAnalytics.Query', language: 'C#', type: 'library' })],
+      });
+      const scores = await scorer.scoreComponents(workspaceUri as any, ctx, 'copilot');
+      const testSignal = scores[0].signals.find(s => s.signal === 'Tests');
+      expect(testSignal).toBeDefined();
+      expect(testSignal!.present).toBe(true);
+    });
+
+    it('marks Tests absent when no companion project exists either', async () => {
+      const statSpy = vi.spyOn(workspace.fs, 'stat');
+      statSpy.mockRejectedValue(new Error('not found'));
+
+      const ctx = makeContext({
+        components: [makeComponent({ name: 'Orphan', path: 'src/common/Orphan', language: 'C#', type: 'library' })],
+      });
+      const scores = await scorer.scoreComponents(workspaceUri as any, ctx, 'copilot');
+      const testSignal = scores[0].signals.find(s => s.signal === 'Tests');
+      expect(testSignal).toBeDefined();
+      expect(testSignal!.present).toBe(false);
+    });
+  });
+
+  // ── Phantom component filtering ────────────────────────────────
+
+  describe('phantom component filtering', () => {
+    it('filters out .group-* virtual components from output', async () => {
+      const ctx = makeContext({
+        components: [
+          makeComponent({ name: 'RealComp', path: 'src/RealComp' }),
+          makeComponent({ name: 'Hosting', path: 'src/common/.group-Hosting', children: ['src/common/Hosting', 'src/common/Hosting.Web'] }),
+          makeComponent({ name: 'Storage', path: 'src/common/.group-Storage', children: ['src/common/Storage'] }),
+        ],
+      });
+      const scores = await scorer.scoreComponents(workspaceUri as any, ctx, 'copilot');
+      const paths = scores.map(s => s.path);
+      expect(paths).toContain('src/RealComp');
+      expect(paths).not.toContain('src/common/.group-Hosting');
+      expect(paths).not.toContain('src/common/.group-Storage');
+    });
+
+    it('keeps .github and .vscode components (they are real dirs)', async () => {
+      const ctx = makeContext({
+        components: [
+          makeComponent({ name: 'GitHub', path: '.github', language: 'Multi', type: 'config' }),
+          makeComponent({ name: 'VSCode', path: '.vscode', language: 'JSON', type: 'config' }),
+        ],
+      });
+      const scores = await scorer.scoreComponents(workspaceUri as any, ctx, 'copilot');
+      const paths = scores.map(s => s.path);
+      expect(paths).toContain('.github');
+      expect(paths).toContain('.vscode');
+    });
+
+    it('filters phantom aggregators like .devconfig without children', async () => {
+      const ctx = makeContext({
+        components: [
+          makeComponent({ name: 'Dev Config', path: '.devconfig', language: 'Multi', type: 'config' }),
+          makeComponent({ name: 'Real', path: 'src/real' }),
+        ],
+      });
+      const scores = await scorer.scoreComponents(workspaceUri as any, ctx, 'copilot');
+      const paths = scores.map(s => s.path);
+      expect(paths).not.toContain('.devconfig');
+      expect(paths).toContain('src/real');
+    });
+  });
 });

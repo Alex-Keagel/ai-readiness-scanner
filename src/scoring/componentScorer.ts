@@ -103,7 +103,15 @@ export class ComponentScorer {
       }
     }
 
-    return scores;
+    // Filter out virtual/phantom components from output
+    // They served their purpose for score inheritance but shouldn't appear in reports
+    return scores.filter(comp => {
+      // Remove .group-* virtual aggregation groups
+      if (comp.path.includes('.group-')) return false;
+      // Remove phantom aggregators like .devconfig, .infrastructure that don't exist on disk
+      if (/^\.(?!github|vscode)[\w-]+$/.test(comp.path) && !comp.children?.length) return false;
+      return true;
+    });
   }
 
   async scoreLanguages(
@@ -316,7 +324,24 @@ export class ComponentScorer {
 
     // ── 10. Tests (app/service/library components) ──
     if (isProgramming && (compType === 'app' || compType === 'service' || compType === 'library')) {
-      const hasTests = await this.hasFile(rel('{tests/**,test/**,**/test_*,**/*_test.*,**/*.test.*,**/*.spec.*,**/*Tests*}'));
+      let hasTests = await this.hasFile(rel('{tests/**,test/**,**/test_*,**/*_test.*,**/*.test.*,**/*.spec.*,**/*Tests*}'));
+      // Check for companion test projects (e.g., Storage → Storage.Tests, X → X.Tests)
+      if (!hasTests) {
+        const compName = comp.name;
+        const parentDir = comp.path.includes('/') ? comp.path.substring(0, comp.path.lastIndexOf('/')) : '';
+        const companionPatterns = [
+          `${parentDir ? parentDir + '/' : ''}${compName}.Tests`,
+          `${parentDir ? parentDir + '/' : ''}${compName}.Test`,
+          `${parentDir ? parentDir + '/' : ''}${compName}.Integration.Tests`,
+        ];
+        for (const pattern of companionPatterns) {
+          try {
+            await vscode.workspace.fs.stat(vscode.Uri.joinPath(workspaceUri, pattern));
+            hasTests = true;
+            break;
+          } catch { /* companion doesn't exist */ }
+        }
+      }
       signals.push({ signal: 'Tests', present: hasTests, detail: hasTests ? 'Test files found' : 'No test directory or test files' });
     }
 

@@ -234,7 +234,10 @@ Languages: ${report.projectContext.languages.join(', ')}
 Components: ${report.componentScores.slice(0, 6).map(c => c.name).join(', ')}
 
 EXISTING FILES (DO NOT suggest creating these — they already exist):
-${report.structureComparison?.expected?.filter((f) => f.exists).map((f) => `✅ ${f.path}`).join('\n') || '(none detected)'}
+${[
+  ...(report.structureComparison?.expected?.filter((f) => f.exists).map((f) => `✅ ${f.path}`) || []),
+  ...(report.levels.flatMap(l => l.signals).filter(s => s.detected).flatMap(s => s.files).filter(Boolean).map(f => `✅ ${f}`)),
+].filter((v, i, a) => a.indexOf(v) === i).join('\n') || '(none detected)'}
 
 Missing signals: ${missingSignals.map(s => `${s.signalId}: ${s.finding}`).join('\n')}
 

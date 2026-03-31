@@ -108,6 +108,103 @@ describe('SkillEvaluator', () => {
       expect(result.score).toBeGreaterThanOrEqual(0);
       expect(result.score).toBeLessThanOrEqual(100);
     });
+
+    it('scores ev2-style skill with When to Use + Instructions + Output format reasonably', () => {
+      const skill = makeSkill({
+        content: `---
+name: ev2
+description: Helps with ZTS deployments
+---
+# EV2 Skill
+
+## When to Use
+- Deploy Ev2 modules
+- Check rollout status
+
+## Global configuration and settings
+1. We use OneBranch as the project
+2. ZTS-NonOfficial-Release for dev
+
+## Instructions
+* Read references/ev2_mcp.md for MCP usage
+* Read references/ev2compiler.md for compilation
+
+## How should the output be
+* Always use structured tables
+* Use green/red icons for status`,
+      });
+      const result = evaluator.evaluateCompleteness(skill);
+      // Should score at least 50 — has structured content, config, instructions, output format
+      expect(result.score).toBeGreaterThanOrEqual(50);
+    });
+
+    it('scores durabletasks-style skill with tables, code blocks, and references highly', () => {
+      const skill = makeSkill({
+        content: `---
+name: durabletasks
+description: Investigates Durable Tasks state
+---
+# Durable Tasks
+
+## When to Use
+- Build execution graphs
+- Query orchestration state
+
+## Task Hubs
+| Task Hub | Service |
+|----------|---------|
+| sampleconsole | Sample.Console |
+| dataprocessing | DataProcessing |
+
+## Tips
+- Run PowerShell with -NoProfile
+
+## CRITICAL: Follow steps in Order
+1. Query the task hub
+2. Parse the JSON response
+3. Build the graph
+
+\`\`\`powershell
+Get-DurableTaskHistory -TaskHub "dataprocessing"
+\`\`\`
+
+See [reference](./references/durable-tasks-schema.md) for schema details.`,
+      });
+      const result = evaluator.evaluateCompleteness(skill);
+      // Should score 65+ — has table, code block, reference link, numbered steps, When to Use
+      expect(result.score).toBeGreaterThanOrEqual(65);
+    });
+
+    it('gives richness bonus for tables, code blocks, and reference links', () => {
+      const plain = makeSkill({
+        content: '## Steps\n1. Do thing\n2. Do other thing\n## Inputs\n- x\n## Outputs\n- y\n## Validation\n- check',
+      });
+      const rich = makeSkill({
+        content: `## Steps
+1. Do thing
+2. Do other thing
+
+| Col1 | Col2 |
+|------|------|
+| a | b |
+
+\`\`\`bash
+npm run build
+\`\`\`
+
+See [docs](./README.md) for details.
+
+## Inputs
+- x
+## Outputs
+- y
+## Validation
+- check`,
+      });
+      const plainScore = evaluator.evaluateCompleteness(plain).score;
+      const richScore = evaluator.evaluateCompleteness(rich).score;
+      expect(richScore).toBeGreaterThan(plainScore);
+    });
   });
 
   // ─── Dimension weight calculation ──────────────────────────────

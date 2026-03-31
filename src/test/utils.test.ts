@@ -213,4 +213,44 @@ describe('deduplicateInsights', () => {
     expect(result.length).toBe(50); // 500 items with 50 unique keys
     expect(elapsed).toBeLessThan(100); // should be fast
   });
+
+  // ─── Skill name dedup (cross-pass) ────────────────────────────
+
+  it('deduplicates "Create test skill" from gap analysis and "Create .github/skills/test/SKILL.md" from deep analysis', () => {
+    const items = [
+      makeInsight({ title: 'Create "test" skill', category: 'missing-skill', confidenceScore: 0.75 }),
+      makeInsight({ title: 'Create .github/skills/test/SKILL.md with test runner configuration', category: 'missing-skill', confidenceScore: 0.85 }),
+    ];
+    const result = deduplicateInsights(items);
+    expect(result).toHaveLength(1);
+  });
+
+  it('deduplicates "Create lint skill" appearing from both passes', () => {
+    const items = [
+      makeInsight({ title: 'Create "lint" skill', category: 'missing-skill', confidenceScore: 0.75 }),
+      makeInsight({ title: 'Create lint skill for C#, Python and Bicep validation', category: 'missing-skill', confidenceScore: 0.85 }),
+    ];
+    const result = deduplicateInsights(items);
+    expect(result).toHaveLength(1);
+    expect(result[0].confidenceScore).toBe(0.85); // keeps the more detailed one
+  });
+
+  it('deduplicates "Improve skill ev2" appearing from both engines', () => {
+    const items = [
+      makeInsight({ title: 'Improve skill "ev2" — Completeness weak (5/100)', category: 'weak-description', confidenceScore: 0.75 }),
+      makeInsight({ title: 'Improve skill ev2 with better structure', category: 'weak-description', confidenceScore: 0.85 }),
+    ];
+    const result = deduplicateInsights(items);
+    expect(result).toHaveLength(1);
+  });
+
+  it('does NOT dedup different skill names', () => {
+    const items = [
+      makeInsight({ title: 'Create "test" skill', category: 'missing-skill' }),
+      makeInsight({ title: 'Create "deploy" skill', category: 'missing-skill' }),
+      makeInsight({ title: 'Create "lint" skill', category: 'missing-skill' }),
+    ];
+    const result = deduplicateInsights(items);
+    expect(result).toHaveLength(3);
+  });
 });

@@ -45,15 +45,15 @@ const DIMENSION_WEIGHTS = {
 // ─── Required SKILL.md sections ─────────────────────────────────────
 // Each required section can be satisfied by any of its alternative names
 const REQUIRED_SECTIONS: { name: string; alternatives: string[] }[] = [
-  { name: '## Steps', alternatives: ['## Steps', '## Procedure', '## Instructions', '## How to', '## Workflow', '### Step', '### 1.', '### 1)'] },
-  { name: '## Inputs', alternatives: ['## Inputs', '## Parameters', '## Arguments', '## Configuration', '## Prerequisites', '## Context'] },
-  { name: '## Outputs', alternatives: ['## Outputs', '## Results', '## Expected Output', '## Important Notes', '## Notes'] },
-  { name: '## Validation', alternatives: ['## Validation', '## Verify', '## Review', '## Check', '## Testing'] },
+  { name: '## Steps', alternatives: ['## Steps', '## Procedure', '## Instructions', '## How to', '## Workflow', '## When to Use', '## Usage', '### Step', '### 1.', '### 1)', '## CRITICAL'] },
+  { name: '## Inputs', alternatives: ['## Inputs', '## Parameters', '## Arguments', '## Configuration', '## Prerequisites', '## Context', '## Global configuration', '## Settings', '## Task Hubs', '## When to Use'] },
+  { name: '## Outputs', alternatives: ['## Outputs', '## Results', '## Expected Output', '## Important Notes', '## Notes', '## How should the output', '## Output Format', '## Tips'] },
+  { name: '## Validation', alternatives: ['## Validation', '## Verify', '## Review', '## Check', '## Testing', '## CRITICAL', '## Important', '## Tips'] },
 ];
 const RECOMMENDED_SECTIONS: { name: string; alternatives: string[] }[] = [
-  { name: '## Prerequisites', alternatives: ['## Prerequisites', '## Requirements', '## Before', '## Setup', '## Context'] },
-  { name: '## Error Handling', alternatives: ['## Error Handling', '## Errors', '## Troubleshooting', '## Edge Cases', '## Important Notes'] },
-  { name: '## Examples', alternatives: ['## Examples', '## Example', '## Usage', '## Demo'] },
+  { name: '## Prerequisites', alternatives: ['## Prerequisites', '## Requirements', '## Before', '## Setup', '## Context', '## Global configuration'] },
+  { name: '## Error Handling', alternatives: ['## Error Handling', '## Errors', '## Troubleshooting', '## Edge Cases', '## Important Notes', '## Tips'] },
+  { name: '## Examples', alternatives: ['## Examples', '## Example', '## Usage', '## Demo', '## When to Use'] },
 ];
 
 // ─── Skill Evaluator Pipeline ───────────────────────────────────────
@@ -274,16 +274,20 @@ export class SkillEvaluator {
     }
 
     // Steps should be numbered (check both ## Steps and ## Procedure and numbered ### headers)
-    const stepsSection = skill.content.match(/## (?:Steps|Procedure|Instructions|Workflow)[\s\S]*?(?=##[^#]|$)/i);
+    const stepsSection = skill.content.match(/##?\s*(?:Steps|Procedure|Instructions|Workflow|How to|When to Use|CRITICAL)[\s\S]*?(?=##[^#]|$)/i);
     const numberedHeaders = skill.content.match(/### \d+[\.\)]/g);
     const numberedLines = skill.content.split('\n').filter(l => /^\s*\d+[\.\)]\s/.test(l));
+    // Also count bullet points as structured content
+    const bulletLines = skill.content.split('\n').filter(l => /^\s*[-*]\s/.test(l));
     
     if (stepsSection || numberedHeaders || numberedLines.length > 0) {
       const stepCount = numberedHeaders?.length || numberedLines.length;
-      if (stepCount < 2) {
+      if (stepCount < 2 && bulletLines.length < 3) {
         suggestions.push(`Only ${stepCount} steps — consider adding more detail`);
         score -= 5;
       }
+    } else if (bulletLines.length >= 3) {
+      // No formal steps section but has structured bullet content — acceptable
     } else if (!stepsSection && !numberedHeaders && numberedLines.length === 0) {
       // No steps found at all — but don't double-penalize if already penalized for missing section
       if (!issues.some(i => i.includes('Steps'))) {
@@ -313,11 +317,18 @@ export class SkillEvaluator {
       }
     }
 
-    // Content length check
+    // Content length check — only penalize truly short skills
     if (skill.content.length < 200) {
       issues.push('Skill file is very short (<200 chars) — likely too vague for agents');
       score -= 15;
     }
+
+    // Content richness bonus — detailed skills with tables, code blocks, references
+    const tables = (skill.content.match(/\|.*\|/g) || []).length;
+    const codeBlocks = (skill.content.match(/```/g) || []).length / 2;
+    const references = (skill.content.match(/\[.*\]\(.*\)/g) || []).length;
+    const richness = Math.min(15, Math.round((tables + codeBlocks * 2 + references) * 2));
+    score += richness;
 
     return { score: Math.max(0, Math.min(100, score)), issues, suggestions };
   }

@@ -143,6 +143,8 @@ export class InstructionAnalyzer {
         while ((m = pat.exec(line)) !== null) {
           const p = m[1].replace(/^\.\//, '');
           if (p.includes('/') && p.length > 3 && !FALSE_PATHS.has(p.toLowerCase()) && !p.match(/^[a-z]+\.[a-z]+\./i)) {
+            // Filter out non-path text that happens to contain slashes
+            if (!this.isLikelyPath(p)) continue;
             claims.push({ category: 'path-reference', claim: p, sourceFile: file.path, sourceLine: i + 1, confidence: 0.9 });
           }
         }
@@ -233,5 +235,43 @@ Respond as JSON:
   private extractScope(content: string): string | undefined {
     const match = content.match(/(?:applyTo|paths|glob):\s*['"]?([^'"\n]+)/i);
     return match?.[1]?.trim();
+  }
+
+  /**
+   * Filters out prose text that happens to contain slashes but isn't a filesystem path.
+   * Real paths have file extensions, start with dot-prefixed dirs, or contain known
+   * directory patterns. Prose like "ARM/Ev2", "OneBranch/ZTS" are rejected.
+   */
+  private isLikelyPath(candidate: string): boolean {
+    // Has a file extension → very likely a path
+    if (/\.\w{1,10}$/.test(candidate)) return true;
+
+    // Starts with ./ or ../ or a dotfile dir → path
+    if (/^\.\.?\//.test(candidate)) return true;
+    if (/^\.[\w-]+\//.test(candidate)) return true;
+
+    // Contains well-known directory segments → path
+    const knownDirs = /(?:^|\/)(?:src|lib|dist|docs|test|tests|scripts|deploy|infra|infrastructure|common|apps|components|packages|modules|config|build|ci|detection|plugins|agents|skills|workflows|pipelines|memory-bank|\.github|\.vscode)(?:\/|$)/i;
+    if (knownDirs.test(candidate)) return true;
+
+    // Multiple path segments (3+ parts like a/b/c) → likely a path
+    if (candidate.split('/').length >= 3) return true;
+
+    // Two segments where BOTH are all-uppercase or title-case proper nouns → likely prose
+    // e.g., "ARM/Ev2", "OneBranch/ZTS", "CI/CD"
+    const segments = candidate.split('/');
+    if (segments.length === 2) {
+      const allProperCase = segments.every(s => /^[A-Z]/.test(s));
+      const anyAllCaps = segments.some(s => s === s.toUpperCase() && s.length > 1);
+      if (allProperCase && anyAllCaps) return false;
+      // Both segments are short title-case words → likely concept pair, not path
+      if (allProperCase && segments.every(s => s.length <= 12 && !/[._\-]/.test(s))) return false;
+    }
+
+    // Has path-like characters (dots, dashes, underscores in segments) → likely path
+    if (/[._\-]/.test(candidate.split('/').slice(-1)[0])) return true;
+
+    // Fallback: 2-segment without known patterns — allow it (conservative)
+    return true;
   }
 }

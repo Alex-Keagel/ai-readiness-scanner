@@ -152,12 +152,11 @@ export class RecommendationsPanel {
       } else if (msg.command === 'set-threshold') {
         this.qualityThreshold = msg.value as number;
         logger.info(`Action Center: quality threshold set to ${this.qualityThreshold}`);
-        if (this.currentReport && this.currentTool) {
-          this.updateContent(this.currentReport, this.currentTool);
-        }
+        // Don't re-render — live filtering is handled client-side via input events
       } else if (msg.command === 'set-confidence-threshold') {
         this.confidenceThreshold = msg.value as number;
         logger.info(`Action Center: confidence threshold set to ${this.confidenceThreshold}`);
+        // Don't re-render — live filtering is handled client-side via input events
       }
     }, null, this.disposables);
   }
@@ -596,7 +595,7 @@ export class RecommendationsPanel {
     .rec-tag.confidence-high { background: rgba(46,213,115,0.15); color: #2ed573; font-weight: 600; }
     .rec-tag.confidence-med { background: rgba(255,165,2,0.15); color: #ffa502; font-weight: 600; }
     .rec-tag.confidence-low { background: rgba(255,71,87,0.15); color: #ff4757; font-weight: 600; }
-    .rec-card.low-confidence { opacity: 0.55; }
+    .rec-card.low-confidence { opacity: 0.35; max-height: 40px; overflow: hidden; }
     .rec-finding { font-size: 0.85em; color: var(--text-secondary); margin: 6px 0; }
     .rec-deps { font-size: 0.8em; color: var(--color-amber); margin: 4px 0; padding: 4px 8px; background: rgba(255,165,2,0.08); border-radius: 4px; }
     .rec-meta { display: flex; gap: 12px; font-size: 0.8em; color: var(--text-secondary); flex-wrap: wrap; }
@@ -785,14 +784,10 @@ export class RecommendationsPanel {
       }
       if (e.target.id === 'confSlider') {
         document.getElementById('confVal').textContent = e.target.value;
-        // Dim low-confidence cards in real-time
         var threshold = parseInt(e.target.value) / 100;
         document.querySelectorAll('.rec-card').forEach(function(card) {
-          var confTag = card.querySelector('.rec-tag[class*="confidence-"]');
-          if (confTag) {
-            var pct = parseInt(confTag.textContent) / 100;
-            card.classList.toggle('low-confidence', pct < threshold);
-          }
+          var conf = parseFloat(card.dataset.confidence) || 1;
+          card.classList.toggle('low-confidence', conf < threshold);
         });
       }
     });
@@ -1054,7 +1049,7 @@ export class RecommendationsPanel {
       </div>`;
     }
 
-    return `<div class="rec-card glass-card ${r.severity} ${getSeverityGlowClass(r.severity)} ${cardClass}" data-card="${esc(r.signalId)}" data-signal-id="${esc(r.signalId)}" data-score="${r.score}">
+    return `<div class="rec-card glass-card ${r.severity} ${getSeverityGlowClass(r.severity)} ${cardClass}" data-card="${esc(r.signalId)}" data-signal-id="${esc(r.signalId)}" data-score="${r.score}" data-confidence="${r.confidenceScore !== undefined ? r.confidenceScore : 1}">
       <input type="checkbox" class="rec-check" data-signal="${esc(r.signalId)}" data-tier="${r.tier}"  ${checkboxDisabled ? 'disabled' : ''}>
       <div class="rec-body">
         <div class="rec-header">

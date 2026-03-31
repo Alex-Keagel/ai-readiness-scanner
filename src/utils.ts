@@ -87,6 +87,26 @@ function normalizeTitle(title: string): string {
     .replace(/\s+/g, ' ');                  // normalize whitespace
 }
 
+/**
+ * Extracts skill name from insight titles for cross-pass dedup.
+ * "Create test skill" → "test"
+ * "Create .github/skills/test/SKILL.md..." → "test"
+ * "Improve skill ev2 — ..." → "ev2"
+ */
+function extractSkillName(title: string): string | null {
+  const lower = title.toLowerCase();
+  // "Create "test" skill" or "Create 'deploy' skill"
+  const quoted = lower.match(/(?:create|improve|add)\s+[`'"]*(\w[\w-]*)[`'"]*\s+skill/);
+  if (quoted) return quoted[1];
+  // "Create .github/skills/test/SKILL.md"
+  const pathMatch = lower.match(/skills\/([^/]+)\/skill\.md/);
+  if (pathMatch) return pathMatch[1];
+  // "Improve skill "ev2""
+  const improveMatch = lower.match(/(?:improve|update)\s+skill\s+[`'"]*(\w[\w-]*)/);
+  if (improveMatch) return improveMatch[1];
+  return null;
+}
+
 const SEV_ORDER: Record<string, number> = { critical: 0, important: 1, suggestion: 2 };
 
 /**
@@ -125,6 +145,12 @@ export function deduplicateInsights<T extends DeduplicableInsight>(insights: T[]
       for (const c of comp.split(',').map(s => s.trim()).filter(Boolean)) {
         result.push(`comp-stem:${c}::${stem}`);
       }
+    }
+
+    // Key 4: skill name dedup — "Create test skill" and "Create .github/skills/test/SKILL.md" are the same
+    const skillName = extractSkillName(insight.title);
+    if (skillName) {
+      result.push(`skill:${skillName}`);
     }
 
     return result;
