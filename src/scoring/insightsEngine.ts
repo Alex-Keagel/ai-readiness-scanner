@@ -3,6 +3,7 @@ import { ReadinessReport, MaturityLevel, MATURITY_LEVELS, AI_TOOLS, AITool } fro
 import { CopilotClient } from '../llm/copilotClient';
 import { logger } from '../logging';
 import { PlatformSignalFilter } from './signalFilter';
+import { deduplicateInsights } from '../utils';
 
 // Insight type defined locally (removed from core types.ts)
 export interface Insight {
@@ -335,30 +336,8 @@ export class InsightsEngine {
 
     timer?.end?.();
 
-    // Dedup insights: same title or same component+category = keep only the most severe
-    const seen = new Map<string, number>();
-    const deduped = insights.filter((insight, idx) => {
-      const titleKey = insight.title.toLowerCase().trim();
-      const compKey = insight.affectedComponent
-        ? `${insight.affectedComponent}::${insight.category}`.toLowerCase()
-        : null;
-
-      for (const key of [titleKey, compKey].filter(Boolean) as string[]) {
-        if (seen.has(key)) {
-          const existingIdx = seen.get(key)!;
-          const existing = insights[existingIdx];
-          const sevOrder: Record<string, number> = { critical: 0, important: 1, 'nice-to-have': 2 };
-          if (sevOrder[insight.severity] < sevOrder[existing.severity]) {
-            // New one is more severe — replace
-            seen.set(key, idx);
-            return true;
-          }
-          return false;
-        }
-        seen.set(key, idx);
-      }
-      return true;
-    });
+    // Dedup using centralized utility
+    const deduped = deduplicateInsights(insights);
 
     const critical = deduped.filter(i => i.severity === 'critical').length;
     const important = deduped.filter(i => i.severity === 'important').length;
@@ -469,6 +448,31 @@ export class InsightsEngine {
     const repoLevel = report.primaryLevel;
 
     for (const comp of report.componentScores) {
+      // ── Skip noise categories that don't benefit from AI-readiness insights ──
+
+      const nameLower = comp.name.toLowerCase();
+      const pathLower = comp.path.toLowerCase();
+
+      // Virtual groups are scanner-internal aggregations, not real directories
+      if (pathLower.includes('.group-')) continue;
+
+      // Test projects don't need READMEs or "add tests" recommendations
+      const isTestProject = nameLower.endsWith('.tests') || nameLower.endsWith('.test') ||
+        nameLower.startsWith('test_') || nameLower === 'tests' ||
+        pathLower.endsWith('.tests') || /\.tests[/\\]/.test(pathLower) ||
+        /\/tests?$/.test(pathLower);
+      if (isTestProject) continue;
+
+      // Config/dotfile directories (.azuredevops, .config, .vscode, .pipelines, etc.)
+      // These are infrastructure, not code that agents edit
+      const pathSegments = comp.path.split('/');
+      const topSegment = pathSegments[0];
+      const isConfigDir = topSegment.startsWith('.') && !topSegment.startsWith('.github');
+      if (isConfigDir && !comp.children?.length) continue;
+
+      // Generated code doesn't need AI-readiness treatment
+      if (comp.isGenerated) continue;
+
       const issues: string[] = [];
       const recs: string[] = [];
       let worstSeverity: Insight['severity'] = 'nice-to-have';

@@ -97,9 +97,15 @@ export class InsightsPanel {
     const isRemoved = (name: string, desc?: string) => {
       return /(removed|deprecated|obsolete|archived)/i.test(name) || /(removed|deprecated|obsolete|archived)/i.test(desc || '');
     };
+    const isVirtualGroup = (path: string) => path.includes('.group-');
+    const isConfigDir = (path: string) => {
+      const top = path.split('/')[0];
+      return top.startsWith('.') && !top.startsWith('.github');
+    };
     // Add component-quality recs
     const lowComponents = (report.componentScores || []).filter(c =>
-      c.overallScore < 50 && !isTestComponent(c.name, c.path) && !c.isGenerated && !isRemoved(c.name, c.description)
+      c.overallScore < 50 && !isTestComponent(c.name, c.path) && !c.isGenerated &&
+      !isRemoved(c.name, c.description) && !isVirtualGroup(c.path) && !isConfigDir(c.path)
     );
     for (const comp of lowComponents) {
       const compSignals = comp.signals || [];

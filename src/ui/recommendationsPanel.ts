@@ -388,6 +388,11 @@ export class RecommendationsPanel {
       if (comp.isGenerated) continue;
       // Skip removed/deprecated components
       if (/(removed|deprecated|obsolete|archived)/i.test(nameLower) || /(removed|deprecated|obsolete|archived)/i.test(comp.description || '')) continue;
+      // Skip virtual groups (scanner-internal aggregations, not real dirs)
+      if (pathLower.includes('.group-')) continue;
+      // Skip config/dotfile directories (infrastructure, not code agents edit)
+      const topSeg = comp.path.split('/')[0];
+      if (topSeg.startsWith('.') && !topSeg.startsWith('.github')) continue;
       const compSignals = comp.signals || [];
       const hasReadme = compSignals.some(s => s.signal?.includes('readme') && s.present);
       const hasDocs = compSignals.some(s => s.signal?.includes('doc') && s.present);

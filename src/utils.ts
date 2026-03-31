@@ -62,3 +62,108 @@ export function humanizeSignalId(id: string): string {
 
   return sharedNames[id] || id.replace(/_/g, ' ');
 }
+
+// ─── Insight Deduplication ──────────────────────────────────────────
+
+interface DeduplicableInsight {
+  title: string;
+  severity: 'critical' | 'important' | 'suggestion';
+  category?: string;
+  affectedComponent?: string;
+  confidenceScore?: number;
+}
+
+/**
+ * Normalizes a title for dedup matching.
+ * Strips quotes, backticks, paths, scores, and issue counts to find semantic equivalents.
+ */
+function normalizeTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .trim()
+    .replace(/[`'"]/g, '')                  // strip quotes/backticks
+    .replace(/\s*\(\d+ issues?\)/g, '')     // strip "(3 issues)"
+    .replace(/\s*—\s*.+$/, '')              // strip "— completeness is weak (5/100)"
+    .replace(/\s+/g, ' ');                  // normalize whitespace
+}
+
+const SEV_ORDER: Record<string, number> = { critical: 0, important: 1, suggestion: 2 };
+
+/**
+ * Central dedup for all insights — call this ONCE after all sources are merged.
+ *
+ * Dedup keys (any match = duplicate):
+ *  1. Exact normalized title
+ *  2. Same component + same category
+ *  3. Same component + overlapping title stem (first 40 chars after normalize)
+ *
+ * When duplicates collide, keeps the most severe; on tie, keeps highest confidence.
+ */
+export function deduplicateInsights<T extends DeduplicableInsight>(insights: T[]): T[] {
+  if (insights.length <= 1) return insights;
+
+  // Build dedup keys for each insight
+  const keys: string[][] = insights.map(insight => {
+    const result: string[] = [];
+
+    // Key 1: normalized full title
+    result.push(`title:${normalizeTitle(insight.title)}`);
+
+    // Key 2: component + category (if both present)
+    if (insight.affectedComponent && insight.category) {
+      const comp = insight.affectedComponent.toLowerCase().trim();
+      // Split multi-component strings ("path1, path2") and use each
+      for (const c of comp.split(',').map(s => s.trim()).filter(Boolean)) {
+        result.push(`comp-cat:${c}::${insight.category}`);
+      }
+    }
+
+    // Key 3: component + title stem (first 40 normalized chars)
+    if (insight.affectedComponent) {
+      const comp = insight.affectedComponent.toLowerCase().trim();
+      const stem = normalizeTitle(insight.title).slice(0, 40);
+      for (const c of comp.split(',').map(s => s.trim()).filter(Boolean)) {
+        result.push(`comp-stem:${c}::${stem}`);
+      }
+    }
+
+    return result;
+  });
+
+  // For each key, track the "winner" index
+  const keyWinner = new Map<string, number>();
+  const kept = new Set<number>();
+
+  for (let i = 0; i < insights.length; i++) {
+    let dominated = false;
+
+    for (const key of keys[i]) {
+      if (keyWinner.has(key)) {
+        const existingIdx = keyWinner.get(key)!;
+        const existing = insights[existingIdx];
+        const current = insights[i];
+
+        const existSev = SEV_ORDER[existing.severity] ?? 2;
+        const currSev = SEV_ORDER[current.severity] ?? 2;
+
+        if (currSev < existSev || (currSev === existSev && (current.confidenceScore ?? 0) > (existing.confidenceScore ?? 0))) {
+          // Current is better — replace winner
+          kept.delete(existingIdx);
+          keyWinner.set(key, i);
+          kept.add(i);
+        } else {
+          // Existing wins — skip current
+          dominated = true;
+        }
+      } else {
+        keyWinner.set(key, i);
+      }
+    }
+
+    if (!dominated) {
+      kept.add(i);
+    }
+  }
+
+  return insights.filter((_, i) => kept.has(i));
+}

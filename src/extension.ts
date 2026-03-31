@@ -28,7 +28,7 @@ import { RecommendationsPanel } from './ui/recommendationsPanel';
 import { SemanticCache, WorkspaceIndexer, SemanticMCPProvider } from './semantic';
 import { initLogger, logger } from './logging';
 import { getPlatformExpertPrompt, formatProjectContext } from './remediation/fixPrompts';
-import { humanizeSignalId } from './utils';
+import { humanizeSignalId, deduplicateInsights } from './utils';
 import { DocsCache } from './llm/docsCache';
 
 let currentReport: ReadinessReport | undefined;
@@ -274,6 +274,14 @@ export function activate(context: vscode.ExtensionContext) {
               });
             }
             logger.info(`Action Center: deep analysis added ${deepResult.recommendations.length} recommendations`);
+          }
+          // Deduplicate all insights (regular + deep merged)
+          if (report!.insights && report!.insights.length > 0) {
+            const before = report!.insights.length;
+            report!.insights = deduplicateInsights(report!.insights);
+            if (report!.insights.length < before) {
+              logger.info(`Action Center: deduped insights ${before} → ${report!.insights.length}`);
+            }
           }
         } catch (err) {
           logger.warn('Action Center: deep analysis failed, using standard insights', err);
@@ -1840,6 +1848,14 @@ async function runScan(
               });
             }
             logger.info(`Full scan: deep analysis added ${deepResult.recommendations.length} recommendations`);
+          }
+          // Deduplicate all insights (regular + deep merged)
+          if (currentReport.insights && currentReport.insights.length > 0) {
+            const before = currentReport.insights.length;
+            currentReport.insights = deduplicateInsights(currentReport.insights);
+            if (currentReport.insights.length < before) {
+              logger.info(`Full scan: deduped insights ${before} → ${currentReport.insights.length}`);
+            }
           }
         } catch (err) {
           logger.warn('Full scan: deep analysis failed, continuing', err);

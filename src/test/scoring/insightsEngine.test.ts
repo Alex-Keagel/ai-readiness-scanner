@@ -249,3 +249,97 @@ describe('InsightsEngine — insight dedup', () => {
     }
   });
 });
+
+// ─── Noise filtering in getComponentInsights ────────────────────────
+
+describe('InsightsEngine — noise filtering', () => {
+  const client = mockCopilotClient();
+  const engine = new InsightsEngine(client);
+  const getComponentInsights = (report: ReadinessReport) =>
+    (engine as any).getComponentInsights(report);
+
+  it('skips test project components (*.Tests)', () => {
+    const report = makeReport({
+      primaryLevel: 3 as MaturityLevel,
+      componentScores: [
+        makeComponent({ name: 'DataProcessing.Tests', path: 'src/DataProcessing/DataProcessing.Tests', primaryLevel: 1 as MaturityLevel }),
+        makeComponent({ name: 'ServiceBus.Tests', path: 'src/common/ServiceBus.Tests', primaryLevel: 1 as MaturityLevel }),
+        makeComponent({ name: 'E2E.Tests', path: 'src/E2E/E2E.Tests', primaryLevel: 1 as MaturityLevel }),
+      ],
+    });
+    const insights: Insight[] = getComponentInsights(report);
+    expect(insights).toHaveLength(0);
+  });
+
+  it('skips virtual group components (.group-*)', () => {
+    const report = makeReport({
+      primaryLevel: 3 as MaturityLevel,
+      componentScores: [
+        makeComponent({ name: 'DataAcquisition', path: 'src/.group-DataAcquisition', primaryLevel: 1 as MaturityLevel }),
+        makeComponent({ name: 'Hosting', path: 'src/common/.group-Hosting', primaryLevel: 1 as MaturityLevel }),
+      ],
+    });
+    const insights: Insight[] = getComponentInsights(report);
+    expect(insights).toHaveLength(0);
+  });
+
+  it('skips config/dotfile directories (except .github)', () => {
+    const report = makeReport({
+      primaryLevel: 3 as MaturityLevel,
+      componentScores: [
+        makeComponent({ name: 'CI/CD Automation', path: '.azuredevops', primaryLevel: 1 as MaturityLevel }),
+        makeComponent({ name: 'Global Config', path: '.config', primaryLevel: 1 as MaturityLevel }),
+        makeComponent({ name: 'Pipeline Defs', path: '.pipelines', primaryLevel: 1 as MaturityLevel }),
+        makeComponent({ name: 'VS Code Settings', path: '.vscode', primaryLevel: 1 as MaturityLevel }),
+      ],
+    });
+    const insights: Insight[] = getComponentInsights(report);
+    expect(insights).toHaveLength(0);
+  });
+
+  it('does NOT skip .github components (they are AI-relevant)', () => {
+    const report = makeReport({
+      primaryLevel: 3 as MaturityLevel,
+      componentScores: [
+        makeComponent({ name: 'GitHub Workflows', path: '.github', primaryLevel: 1 as MaturityLevel }),
+      ],
+    });
+    const insights: Insight[] = getComponentInsights(report);
+    expect(insights).toHaveLength(1);
+  });
+
+  it('skips generated components', () => {
+    const report = makeReport({
+      primaryLevel: 3 as MaturityLevel,
+      componentScores: [
+        makeComponent({ name: 'AutoGen Stubs', path: 'src/generated', primaryLevel: 1 as MaturityLevel, isGenerated: true } as any),
+      ],
+    });
+    const insights: Insight[] = getComponentInsights(report);
+    expect(insights).toHaveLength(0);
+  });
+
+  it('keeps real code components that have issues', () => {
+    const report = makeReport({
+      primaryLevel: 3 as MaturityLevel,
+      componentScores: [
+        makeComponent({ name: 'DataProcessing.Application', path: 'src/DataProcessing/DataProcessing.Application', primaryLevel: 1 as MaturityLevel }),
+        makeComponent({ name: 'ResourceProvider.Service', path: 'src/ResourceProvider/ResourceProvider.Service', primaryLevel: 1 as MaturityLevel }),
+      ],
+    });
+    const insights: Insight[] = getComponentInsights(report);
+    expect(insights).toHaveLength(2);
+  });
+
+  it('reduces ZTS-like noise from 137 components to meaningful subset', () => {
+    const components = [
+      ...Array.from({ length: 30 }, (_, i) => makeComponent({ name: `Comp${i}.Tests`, path: `src/Comp${i}.Tests`, primaryLevel: 1 as MaturityLevel })),
+      ...Array.from({ length: 15 }, (_, i) => makeComponent({ name: `Group${i}`, path: `src/.group-${i}`, primaryLevel: 1 as MaturityLevel })),
+      ...Array.from({ length: 10 }, (_, i) => makeComponent({ name: `Config${i}`, path: `.config${i}`, primaryLevel: 1 as MaturityLevel })),
+      ...Array.from({ length: 20 }, (_, i) => makeComponent({ name: `RealComp${i}`, path: `src/real/RealComp${i}`, primaryLevel: 1 as MaturityLevel })),
+    ];
+    const report = makeReport({ primaryLevel: 3 as MaturityLevel, componentScores: components });
+    const insights: Insight[] = getComponentInsights(report);
+    expect(insights).toHaveLength(20);
+  });
+});
