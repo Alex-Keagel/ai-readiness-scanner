@@ -13,27 +13,12 @@ import { auditContextEfficiency } from '../scoring/contextAudit';
 import { PlatformSignalFilter } from '../scoring/signalFilter';
 import { isNestedConfig } from '../utils';
 import { isVirtualEnvPath } from './componentMapper';
+import { isPathInSubProject, normalizeSignalScopePath as normalizeRepoPath, validateSignalScope } from '../deep/validators/signalScopeValidator';
 
 const EXCLUDE_GLOB = '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/__pycache__/**,**/.venv/**,**/venv/**,**/target/**,**/coverage/**,**/ai-readiness-scanner*/**,**/site-packages/**,**/.tox/**,**/env/**';
 const SEMANTIC_DENSITY_SAMPLE_MAX = 100;
 const SEMANTIC_DENSITY_LLM_SAMPLE_MAX = 10;
 const SEMANTIC_DENSITY_SMALL_SAMPLE_MIN = 10;
-
-function normalizeRepoPath(filePath: string): string {
-  return filePath.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.?\//, '').replace(/\/$/, '');
-}
-
-function isInSubProject(filePath: string, subProjectPaths: string[]): boolean {
-  const normalizedFile = normalizeRepoPath(filePath);
-  return subProjectPaths.some(subProjectPath => {
-    const normalizedSubProject = normalizeRepoPath(subProjectPath);
-    if (!normalizedSubProject) { return false; }
-    return normalizedFile === normalizedSubProject ||
-      normalizedFile.startsWith(`${normalizedSubProject}/`) ||
-      normalizedFile.includes(`/${normalizedSubProject}/`) ||
-      normalizedFile.endsWith(`/${normalizedSubProject}`);
-  });
-}
 
 function buildMonorepoScopeBlock(context: ProjectContext, subProjectPaths: string[]): string {
   if (context.projectType !== 'monorepo') {
@@ -42,7 +27,7 @@ function buildMonorepoScopeBlock(context: ProjectContext, subProjectPaths: strin
 
   const boundaries = subProjectPaths.length > 0
     ? subProjectPaths.map(path => `  - ${path}/`).join('\n')
-    : '  - (no root-owned sub-project .github/ boundaries detected)';
+    : '  - (no sub-project boundaries detected via manifests or .github/)';
 
   return `MONOREPO ROOT-SCOPE RULES:
 - Evaluate ONLY repository-root files for root-level signals.
@@ -57,7 +42,7 @@ export function filterRootFiles(files: vscode.Uri[], subProjectPaths: string[]):
     return files;
   }
 
-  return files.filter(uri => !isInSubProject(uri.fsPath || uri.path, subProjectPaths) && !isInSubProject(uri.path, subProjectPaths));
+  return files.filter(uri => !isPathInSubProject(uri.fsPath || uri.path, subProjectPaths) && !isPathInSubProject(uri.path, subProjectPaths));
 }
 
 export interface SemanticDensitySampleCandidate {
@@ -113,10 +98,10 @@ export class MaturityScanner {
     const subProjectPaths = await this.collectMonorepoSubProjectPaths(workspaceUri, context);
 
     const [l2Files, l3Files, l4Files, l5Files] = await Promise.all([
-      toolConfig.level2Files.length > 0 ? this.findFiles(toolConfig.level2Files, workspaceUri, 20, subProjectPaths) : Promise.resolve([]),
-      toolConfig.level3Files.length > 0 ? this.findFiles(toolConfig.level3Files, workspaceUri, 20, subProjectPaths) : Promise.resolve([]),
-      toolConfig.level4Files.length > 0 ? this.findFiles(toolConfig.level4Files, workspaceUri, 20, subProjectPaths) : Promise.resolve([]),
-      toolConfig.level5Files.length > 0 ? this.findFiles(toolConfig.level5Files, workspaceUri, 20, subProjectPaths) : Promise.resolve([]),
+      toolConfig.level2Files.length > 0 ? this.findScopedSignalFiles(`${tool}_l2_instructions`, toolConfig.level2Files, workspaceUri, 20, subProjectPaths) : Promise.resolve([]),
+      toolConfig.level3Files.length > 0 ? this.findScopedSignalFiles(`${tool}_l3_skills_and_tools`, toolConfig.level3Files, workspaceUri, 20, subProjectPaths) : Promise.resolve([]),
+      toolConfig.level4Files.length > 0 ? this.findScopedSignalFiles(`${tool}_l4_workflows`, toolConfig.level4Files, workspaceUri, 20, subProjectPaths) : Promise.resolve([]),
+      toolConfig.level5Files.length > 0 ? this.findScopedSignalFiles(`${tool}_l5_memory_feedback`, toolConfig.level5Files, workspaceUri, 20, subProjectPaths) : Promise.resolve([]),
     ]);
 
     const totalFiles = l2Files.length + l3Files.length + l4Files.length + l5Files.length;
@@ -827,7 +812,7 @@ Only include levels that have files to evaluate.`;
     logger.info(`Phase 3c: Gathering files for ${signals.length} signals...`);
     const signalFiles = new Map<string, FileContent[]>();
     const filePromises = signals.map(async (signal) => {
-      const files = await this.findFiles(signal.filePatterns, workspaceUri, 10, subProjectPaths);
+      const files = await this.findScopedSignalFiles(signal.id, signal.filePatterns, workspaceUri, 10, subProjectPaths);
       signalFiles.set(signal.id, files);
     });
     await Promise.all(filePromises);
@@ -1097,7 +1082,7 @@ ${toolConfig?.reasoningContext?.antiPatterns ?? ''}`;
   ): Promise<SignalResult> {
     const subProjectPaths = await this.collectMonorepoSubProjectPaths(workspaceUri, context);
     // 1. Discover files matching the signal's patterns
-    const files = await this.findFiles(signal.filePatterns, workspaceUri, 10, subProjectPaths);
+    const files = await this.findScopedSignalFiles(signal.id, signal.filePatterns, workspaceUri, 10, subProjectPaths);
 
     // 2. If no files found, signal not detected
     if (files.length === 0) {
@@ -1302,6 +1287,14 @@ Respond with ONLY valid JSON:
       return [];
     }
 
+    // Manifest files/dirs that indicate a directory is an independent sub-project,
+    // not just a root-owned source directory like src/ or lib/.
+    const SUB_PROJECT_MARKERS = [
+      '.github', 'package.json', 'pyproject.toml', 'setup.py', 'setup.cfg',
+      'requirements.txt', 'go.mod', 'Cargo.toml', 'pom.xml', 'build.gradle',
+      'build.gradle.kts', 'Gemfile', 'composer.json',
+    ];
+
     const candidates = [...new Set(
       (context.components || [])
         .filter(component => (component.parentPath === '' || !component.parentPath) && component.path && !component.path.startsWith('.'))
@@ -1309,12 +1302,13 @@ Respond with ONLY valid JSON:
     )];
 
     const resolved = await Promise.all(candidates.map(async candidate => {
-      try {
-        await vscode.workspace.fs.stat(vscode.Uri.joinPath(workspaceUri, candidate, '.github'));
-        return candidate;
-      } catch {
-        return undefined;
+      for (const marker of SUB_PROJECT_MARKERS) {
+        try {
+          await vscode.workspace.fs.stat(vscode.Uri.joinPath(workspaceUri, candidate, marker));
+          return candidate;
+        } catch { /* marker not found, try next */ }
       }
+      return undefined;
     }));
 
     const subProjectPaths = resolved.filter((candidate): candidate is string => Boolean(candidate));
@@ -1324,13 +1318,33 @@ Respond with ONLY valid JSON:
     return subProjectPaths;
   }
 
-  private async findFiles(patterns: string[], workspaceUri: vscode.Uri, max: number = 10, subProjectPaths: string[] = []): Promise<FileContent[]> {
+  private async findScopedSignalFiles(
+    signalId: string,
+    patterns: string[],
+    workspaceUri: vscode.Uri,
+    max: number = 10,
+    subProjectPaths: string[] = []
+  ): Promise<FileContent[]> {
+    const files = await this.findFiles(patterns, workspaceUri, max);
+    const scope = validateSignalScope(signalId, files.map(file => file.relativePath), subProjectPaths);
+    const rootFiles = new Set(scope.rootFiles);
+
+    if (subProjectPaths.length > 0 && scope.subProjectFiles.length > 0) {
+      logger.info(
+        `Signal scope: ${signalId} found ${scope.rootFiles.length} root file(s), ${scope.subProjectFiles.length} sub-project file(s)`
+      );
+    }
+
+    return files.filter(file => rootFiles.has(file.relativePath));
+  }
+
+  private async findFiles(patterns: string[], workspaceUri: vscode.Uri, max: number = 10): Promise<FileContent[]> {
     const files: FileContent[] = [];
     for (const pattern of patterns) {
       if (files.length >= max) break;
-      const uris = filterRootFiles(await vscode.workspace.findFiles(
+      const uris = await vscode.workspace.findFiles(
         new vscode.RelativePattern(workspaceUri, pattern), EXCLUDE_GLOB, max - files.length
-      ), subProjectPaths);
+      );
       for (const uri of uris) {
         try {
           const relPath = vscode.workspace.asRelativePath(uri, false);

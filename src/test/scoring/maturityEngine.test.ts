@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { MaturityEngine } from '../../scoring/maturityEngine';
+import { MaturityEngine, resolveSignalClass } from '../../scoring/maturityEngine';
 import type { SignalResult, LevelScore, ProjectContext, ComponentScore, LanguageScore, MaturityLevel, AITool } from '../../scoring/types';
 
 // ── Helpers ──────────────────────────────────────────────────────
@@ -119,6 +119,22 @@ describe('MaturityEngine', () => {
       const a = engine.calculateLevelScore(2, withCritical, 'copilot');
       const b = engine.calculateLevelScore(2, missingCritical, 'copilot');
       expect(b.rawScore).toBeLessThan(a.rawScore);
+    });
+
+    it('normalizes synthetic tool-level IDs to canonical critical signals', () => {
+      const syntheticCritical = [
+        makeSignal({ signalId: 'copilot_l2_instructions', level: 2, detected: true, score: 20, confidence: 'high' }),
+        makeSignal({ signalId: 'project_structure_doc', level: 2, detected: true, score: 80, confidence: 'high' }),
+      ];
+      const onlyRequiredSignals = [
+        makeSignal({ signalId: 'project_structure_doc', level: 2, detected: true, score: 20, confidence: 'high' }),
+        makeSignal({ signalId: 'conventions_documented', level: 2, detected: true, score: 80, confidence: 'high' }),
+      ];
+
+      const syntheticResult = engine.calculateLevelScore(2, syntheticCritical, 'copilot');
+      const requiredResult = engine.calculateLevelScore(2, onlyRequiredSignals, 'copilot');
+
+      expect(syntheticResult.rawScore).toBeLessThan(requiredResult.rawScore);
     });
   });
 
@@ -600,5 +616,109 @@ describe('Monorepo gating', () => {
 
     // Non-monorepo — standard qualification applies, not monorepo gating
     expect(report.primaryLevel).toBeGreaterThanOrEqual(2);
+  });
+
+  it('does not treat non-critical synthetic signals as critical (L4 workflows)', () => {
+    // copilot_l4_workflows resolves to agent_workflows which is 'required', not 'critical'.
+    // The gate should NOT require these to have root files.
+    const l2Signals = [
+      makeSignal({ signalId: 'copilot_l2_instructions', level: 2, detected: true, score: 80, files: ['.github/copilot-instructions.md'] }),
+      makeSignal({ signalId: 'project_structure_doc', level: 2, detected: true, score: 70, files: ['README.md'] }),
+    ];
+    const l3Signals = [
+      makeSignal({ signalId: 'copilot_l3_skills_and_tools', level: 3, detected: true, score: 80, files: ['.github/agents/my-agent.agent.md'] }),
+      makeSignal({ signalId: 'instruction_accuracy', level: 3, detected: true, score: 70, files: ['README.md'] }),
+    ];
+    const l4Signals = [
+      // workflows is 'required' not 'critical' — should not block level advancement
+      makeSignal({ signalId: 'copilot_l4_workflows', level: 4, detected: true, score: 70, files: [] }),
+      makeSignal({ signalId: 'agent_workflows', level: 4, detected: true, score: 65, files: ['README.md'] }),
+    ];
+
+    const levels: LevelScore[] = [
+      makeLevelScore(1, [], 100),
+      makeLevelScore(2, l2Signals, 70),
+      makeLevelScore(3, l3Signals, 70),
+      makeLevelScore(4, l4Signals, 60),
+      makeLevelScore(5, [], 0),
+      makeLevelScore(6, [], 0),
+    ];
+
+    const report = engine.calculateReport(
+      'appsec-l4-noncritical', levels, monorepoContext,
+      [], defaultLanguages, 'test', 'full', 'copilot',
+    );
+
+    // L4 should NOT be blocked by the monorepo gate (no critical signals at L4)
+    expect(report.primaryLevel).toBeGreaterThanOrEqual(3);
+  });
+
+  it('blocks L2 when only non-critical signals are detected but critical synthetic is missing (ZTS scenario)', () => {
+    // Bug 3 scenario: non-critical signals (ignore_files, conventions) are detected
+    // but the critical copilot_l2_instructions is not detected at root.
+    const l2Signals = [
+      makeSignal({ signalId: 'copilot_l2_instructions', level: 2, detected: false, score: 0, files: [] }),
+      makeSignal({ signalId: 'ignore_files', level: 2, detected: true, score: 60, files: ['.gitignore'] }),
+      makeSignal({ signalId: 'conventions_documented', level: 2, detected: true, score: 55, files: ['.editorconfig'] }),
+      makeSignal({ signalId: 'project_structure_doc', level: 2, detected: true, score: 70, files: ['README.md'] }),
+    ];
+
+    const report = engine.calculateReport(
+      'zts-scenario', buildLevels(l2Signals, []), monorepoContext,
+      [], defaultLanguages, 'test', 'full', 'copilot',
+    );
+
+    // Non-critical signals alone should NOT qualify L2 when critical is missing
+    expect(report.primaryLevel).toBe(1);
+  });
+});
+
+// ── resolveSignalClass ────────────────────────────────────────────
+
+describe('resolveSignalClass', () => {
+  const copilotClasses: Record<string, 'critical' | 'required' | 'recommended'> = {
+    copilot_instructions: 'critical',
+    copilot_domain_instructions: 'required',
+    copilot_agents: 'critical',
+    copilot_skills: 'required',
+    ignore_files: 'recommended',
+    instruction_accuracy: 'critical',
+    agent_workflows: 'required',
+    memory_bank_update: 'recommended',
+  };
+
+  it('resolves canonical signal IDs directly', () => {
+    expect(resolveSignalClass('copilot_instructions', 'copilot', copilotClasses)).toBe('critical');
+    expect(resolveSignalClass('ignore_files', 'copilot', copilotClasses)).toBe('recommended');
+    expect(resolveSignalClass('agent_workflows', 'copilot', copilotClasses)).toBe('required');
+  });
+
+  it('resolves synthetic copilot_l2_instructions to critical via alias', () => {
+    expect(resolveSignalClass('copilot_l2_instructions', 'copilot', copilotClasses)).toBe('critical');
+  });
+
+  it('resolves synthetic copilot_l3_skills_and_tools to critical via alias', () => {
+    expect(resolveSignalClass('copilot_l3_skills_and_tools', 'copilot', copilotClasses)).toBe('critical');
+  });
+
+  it('resolves synthetic copilot_l4_workflows to required (not critical)', () => {
+    expect(resolveSignalClass('copilot_l4_workflows', 'copilot', copilotClasses)).toBe('required');
+  });
+
+  it('resolves synthetic copilot_l5_memory_feedback to recommended', () => {
+    expect(resolveSignalClass('copilot_l5_memory_feedback', 'copilot', copilotClasses)).toBe('recommended');
+  });
+
+  it('returns undefined for unknown signal IDs', () => {
+    expect(resolveSignalClass('unknown_signal', 'copilot', copilotClasses)).toBeUndefined();
+  });
+
+  it('resolves cline synthetic IDs correctly', () => {
+    const clineClasses: Record<string, 'critical' | 'required' | 'recommended'> = {
+      cline_rules: 'critical',
+      safe_commands: 'critical',
+    };
+    expect(resolveSignalClass('cline_l2_instructions', 'cline', clineClasses)).toBe('critical');
+    expect(resolveSignalClass('cline_l3_skills_and_tools', 'cline', clineClasses)).toBe('critical');
   });
 });

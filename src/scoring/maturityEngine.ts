@@ -1,4 +1,5 @@
 import { LevelScore, MaturityLevel, MATURITY_LEVELS, ReadinessReport, ProjectContext, ComponentScore, LanguageScore, SignalResult, AITool, AI_TOOLS, RealityCheckRef } from './types';
+import { normalizeSignalScopePath, validateSignalScope } from '../deep/validators/signalScopeValidator';
 
 // ─── Confidence Multipliers ─────────────────────────────────────
 const CONFIDENCE_MULTIPLIER: Record<string, number> = {
@@ -9,6 +10,34 @@ const CONFIDENCE_MULTIPLIER: Record<string, number> = {
 
 // ─── Signal Classification per Platform ─────────────────────────
 type SignalClass = 'critical' | 'required' | 'recommended';
+
+/**
+ * Resolve the signal classification for a signal ID, handling synthetic
+ * tool-level IDs like `copilot_l2_instructions` by normalizing to
+ * canonical form (e.g. `copilot_instructions`) via SYNTHETIC_SIGNAL_ALIASES
+ * before lookup.
+ */
+export function resolveSignalClass(
+  signalId: string,
+  toolKey: string,
+  signalClasses: Record<string, SignalClass>,
+): SignalClass | undefined {
+  if (signalClasses[signalId]) return signalClasses[signalId];
+
+  // Use the alias map for synthetic IDs: {tool}_l{N}_{category} → canonical
+  const canonical = SYNTHETIC_SIGNAL_ALIASES[toolKey]?.[signalId];
+  if (canonical && signalClasses[canonical]) return signalClasses[canonical];
+
+  // Fallback: strip _l{N}_ and try {tool}_{category}, then {category}
+  const syntheticMatch = signalId.match(new RegExp(`^${toolKey}_l\\d+_(.*)`));
+  if (syntheticMatch) {
+    const category = syntheticMatch[1];
+    if (signalClasses[`${toolKey}_${category}`]) return signalClasses[`${toolKey}_${category}`];
+    if (signalClasses[category]) return signalClasses[category];
+  }
+
+  return undefined;
+}
 
 const PLATFORM_SIGNAL_CLASS: Record<string, Record<string, SignalClass>> = {
   copilot: {
@@ -57,6 +86,39 @@ const PLATFORM_SIGNAL_CLASS: Record<string, Record<string, SignalClass>> = {
   aider: {
     aider_config: 'critical', ignore_files: 'required',
     project_structure_doc: 'recommended', instruction_accuracy: 'required',
+  },
+};
+
+const SYNTHETIC_SIGNAL_ALIASES: Record<string, Record<string, string>> = {
+  copilot: {
+    copilot_l2_instructions: 'copilot_instructions',
+    copilot_l3_skills_and_tools: 'copilot_agents',
+    copilot_l4_workflows: 'agent_workflows',
+    copilot_l5_memory_feedback: 'memory_bank_update',
+  },
+  cline: {
+    cline_l2_instructions: 'cline_rules',
+    cline_l3_skills_and_tools: 'safe_commands',
+    cline_l4_workflows: 'agent_workflows',
+    cline_l5_memory_feedback: 'memory_bank_update',
+  },
+  cursor: {
+    cursor_l2_instructions: 'cursor_rules',
+    cursor_l3_skills_and_tools: 'mcp_config',
+  },
+  claude: {
+    claude_l2_instructions: 'claude_instructions',
+  },
+  roo: {
+    roo_l2_instructions: 'roo_modes',
+    roo_l3_skills_and_tools: 'agent_personas',
+  },
+  windsurf: {
+    windsurf_l2_instructions: 'windsurf_rules',
+    windsurf_l3_skills_and_tools: 'agents_md',
+  },
+  aider: {
+    aider_l2_instructions: 'aider_config',
   },
 };
 
@@ -249,30 +311,22 @@ export class MaturityEngine {
       const subProjectPaths = this.collectMonorepoSubProjectPaths(projectContext, levels);
 
       let monorepoLevel: MaturityLevel = 1;
-      // Regex to match synthetic tool-level signal IDs: {tool}_l{N}_{category}
-      const syntheticIdPattern = new RegExp(`^${toolKey}_l\\d+_`);
       for (let i = 1; i < levels.length; i++) {
         if (!levels[i].qualified) break;
+        // Use resolved classification (handles synthetic→canonical normalization)
         const criticalSignals = levels[i].signals.filter(s =>
-          signalClasses[s.signalId] === 'critical' || syntheticIdPattern.test(s.signalId)
+          this.signalClassification(s.signalId, toolKey, signalClasses) === 'critical'
         );
         // Critical signals must be detected AND their files must be at root, not inside sub-projects
         if (criticalSignals.length > 0) {
           const rootDetected = criticalSignals.every(s => {
             if (!s.detected) return false;
-            // Synthetic tool-level signals are file-presence based — they MUST have
-            // root-level files to prove the capability exists at root. An empty files
-            // array means the scanner found nothing; treat as not root-detected even
-            // if the LLM hallucinated detected:true.
-            if (syntheticIdPattern.test(s.signalId)) {
-              return s.files && s.files.length > 0 &&
-                s.files.some(f => !([...subProjectPaths].some(sp => f.startsWith(sp + '/'))));
-            }
-            // Canonical signals with files: at least one must NOT be inside a sub-project
-            if (s.files && s.files.length > 0) {
-              return s.files.some(f => !([...subProjectPaths].some(sp => f.startsWith(sp + '/'))));
-            }
-            return true; // codebase signals (no files) pass through
+            // Codebase-quality signals (AST-derived, no file paths) pass through
+            if (s.signalId.startsWith('codebase_')) return true;
+            // All other signals (synthetic or canonical) must have root-level files;
+            // detected:true with empty files means the scanner found nothing at root.
+            const scope = validateSignalScope(s.signalId, s.files || [], [...subProjectPaths]);
+            return scope.isRootDetected;
           });
           if (!rootDetected) break;
         }
@@ -413,7 +467,7 @@ export class MaturityEngine {
       signal: s,
       effective: s.detected ? this.effectiveScore(s) : 0,
       dimension: this.signalDimension(s),
-      classification: signalClasses[s.signalId] || this.inferClassification(s),
+      classification: this.signalClassification(s.signalId, toolKey, signalClasses),
     }));
 
     // (Quality gates moved to Stage 5 — after anti-pattern detection, to avoid double-counting)
@@ -600,6 +654,19 @@ export class MaturityEngine {
     return 'recommended';
   }
 
+  private normalizePlatformSignalId(signalId: string, toolKey: string): string {
+    return SYNTHETIC_SIGNAL_ALIASES[toolKey]?.[signalId] || signalId;
+  }
+
+  private signalClassification(
+    signalId: string,
+    toolKey: string,
+    signalClasses: Record<string, SignalClass>
+  ): SignalClass {
+    const normalized = this.normalizePlatformSignalId(signalId, toolKey);
+    return signalClasses[normalized] || signalClasses[signalId] || this.inferClassification({ signalId } as SignalResult);
+  }
+
   private collectMonorepoSubProjectPaths(
     projectContext: ProjectContext,
     levels: LevelScore[],
@@ -621,7 +688,7 @@ export class MaturityEngine {
     for (const level of levels) {
       for (const signal of level.signals) {
         for (const file of signal.files || []) {
-          const normalized = file.replace(/^\.?\//, '');
+          const normalized = normalizeSignalScopePath(file);
           const parts = normalized.split('/').filter(Boolean);
           if (parts.length < 2) continue;
 
