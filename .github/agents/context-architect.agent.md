@@ -1,5 +1,8 @@
 ---
-description: "Evaluates and optimizes the tooling & context architecture of AI-ready codebases. Audits MCP servers, skill quality, agent tool permissions, hooks, and context efficiency."
+description: >
+  Evaluates and optimizes the tooling & context architecture of AI-ready
+  codebases. Audits MCP servers, skill quality, agent tool permissions,
+  hooks, and context efficiency.
 name: context-architect
 tools: ['read', 'search']
 ---

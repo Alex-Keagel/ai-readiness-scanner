@@ -9,7 +9,7 @@ export class GuideCache {
   private guides = new Map<string, PlatformGuide>();
 
   constructor(private context: vscode.ExtensionContext) {
-    const saved = context.globalState.get<Record<string, PlatformGuide>>(CACHE_KEY);
+    const saved = context.workspaceState.get<Record<string, PlatformGuide>>(CACHE_KEY);
     if (saved) {
       for (const [key, val] of Object.entries(saved)) {
         this.guides.set(key, val);
@@ -47,6 +47,6 @@ export class GuideCache {
   private async persist(): Promise<void> {
     const obj: Record<string, PlatformGuide> = {};
     for (const [k, v] of this.guides) { obj[k] = v; }
-    await this.context.globalState.update(CACHE_KEY, obj);
+    await this.context.workspaceState.update(CACHE_KEY, obj);
   }
 }

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { AITool, AI_TOOLS, ProjectContext } from '../scoring/types';
 import { CopilotClient } from '../llm/copilotClient';
 import { logger } from '../logging';
+import { isNestedConfig } from '../utils';
 
 export interface ExpectedFile {
   path: string;
@@ -49,11 +50,13 @@ export class StructureAnalyzer {
       const pattern = ef.path.endsWith('/') ? ef.path + '**' : ef.path;
       try {
         const found = await vscode.workspace.findFiles(
-          new vscode.RelativePattern(workspaceUri, pattern), exclude, 1
+          new vscode.RelativePattern(workspaceUri, pattern), exclude, 5
         );
-        ef.exists = found.length > 0;
-        if (found.length > 0) {
-          ef.actualPath = vscode.workspace.asRelativePath(found[0]);
+        // Filter out nested config from sub-projects
+        const validFound = found.filter(uri => !isNestedConfig(vscode.workspace.asRelativePath(uri, false)));
+        ef.exists = validFound.length > 0;
+        if (validFound.length > 0) {
+          ef.actualPath = vscode.workspace.asRelativePath(validFound[0]);
         }
       } catch (err) {
         logger.warn('Failed to check expected file existence', { error: err instanceof Error ? err.message : String(err) });

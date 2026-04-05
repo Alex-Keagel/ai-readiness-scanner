@@ -15,49 +15,44 @@ Scaffold and wire a new readiness dimension end-to-end in the AI Readiness Scann
 
 ## Steps
 
-1. **Update the assessment spec**
-   - Open `docs/AGENTIC_CODING_ASSESSMENT_SPEC.md`.
-   - Add a new section for `${dimensionName}` with:
-     - Definition and rationale.
-     - Scoring rubric row (0 = not detected, 1 = minimal, 2 = moderate, 3 = comprehensive).
-     - Suggested weight relative to existing dimensions.
-   - Keep formatting consistent with existing dimension entries.
+1. **Add signal definition**
+   - Open `src/scoring/levelSignals.ts`.
+   - Add a new `LevelSignal` entry for `${dimensionName}` with:
+     - Unique signal ID, maturity level, file patterns, content markers, weight, category.
+   - Keep formatting consistent with existing signal entries.
 
 2. **Add scanner logic in `src/`**
    - Create a new scanner function (or extend an existing module) that evaluates `${dimensionName}`.
    - Use helpers from `src/utils.ts` for file traversal and glob/pattern matching against `${filePatterns}`.
-   - The function must return a score (0–3) and an array of findings (file paths, matched evidence).
-   - Follow the same function signature pattern used by existing scanner functions in `src/`.
+   - The function must return a score (0–100) and findings (file paths, matched evidence).
+   - Follow the same function signature pattern used by existing scanner functions in `src/scanner/`.
 
 3. **Register in the scoring pipeline**
-   - In `src/extension.ts`, import the new scanner function.
-   - Add it to the dimension registry / scoring aggregation pipeline so it contributes to the overall readiness score.
-   - Apply the weight defined in step 1.
+   - In `src/scoring/maturityEngine.ts`, add the signal to `PLATFORM_SIGNAL_CLASS` for relevant platforms.
+   - Ensure the signal contributes to the correct dimension (presence/quality/operability/breadth).
 
 4. **Update the Markdown report template**
-   - In `src/extension.ts` (or wherever the report string is assembled), add a section for `${dimensionName}`.
-   - Include the dimension's score, weight, and itemized findings.
+   - In `src/report/markdownGenerator.ts`, add the dimension to the report output if applicable.
 
 5. **Add unit tests**
    - Create or extend test files under the Vitest suite.
    - Cover at minimum:
-     - Dimension fully present (score 3).
-     - Dimension completely absent (score 0).
-     - Partial detection (score 1 or 2).
+     - Signal fully detected (score 100).
+     - Signal absent (score 0).
+     - Partial detection.
      - Edge case: workspace with no files.
    - Mock file system inputs using patterns from existing tests.
 
 6. **Update documentation**
-   - In `docs/README.md`, add `${dimensionName}` to the list of assessed dimensions.
-   - Briefly describe what the dimension measures and which `${filePatterns}` trigger detection.
+   - In `README.md`, add `${dimensionName}` to the scoring section if user-facing.
 
 ## Outputs
 
-- `docs/AGENTIC_CODING_ASSESSMENT_SPEC.md` — new dimension definition and scoring rubric row
-- `src/` — new or modified scanner function for the dimension
-- `src/extension.ts` — dimension registered in scoring pipeline and report template
-- Test file(s) — Vitest unit tests covering score 0/1/2/3 and edge cases
-- `docs/README.md` — updated component documentation
+- `src/scoring/levelSignals.ts` — new signal definition
+- `src/scoring/maturityEngine.ts` — signal registered in platform classification
+- `src/scanner/` — new or modified scanner function
+- Test file(s) — Vitest unit tests
+- `README.md` — updated if user-facing dimension
 
 ## Validation
 

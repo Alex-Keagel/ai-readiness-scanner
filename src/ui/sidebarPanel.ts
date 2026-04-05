@@ -26,7 +26,6 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
         try {
           switch (msg.command) {
             case 'scan': vscode.commands.executeCommand('ai-readiness.fullScan'); break;
-            case 'quickScan': vscode.commands.executeCommand('ai-readiness.quickScan'); break;
             case 'guide': vscode.commands.executeCommand('ai-readiness.showGuide'); break;
             case 'vibe': vscode.commands.executeCommand('ai-readiness.vibeReport'); break;
             case 'live': vscode.commands.executeCommand('ai-readiness.liveStart'); break;
@@ -36,6 +35,8 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
             case 'recommendations': vscode.commands.executeCommand('ai-readiness.fixAll'); break;
             case 'insights': vscode.commands.executeCommand('ai-readiness.showInsights'); break;
             case 'graph': vscode.commands.executeCommand('ai-readiness.showGraph'); break;
+            case 'knowledgeGraph': vscode.commands.executeCommand('ai-readiness.showInteractiveGraph'); break;
+            case 'devNetwork': vscode.commands.executeCommand('ai-readiness.showDeveloperNetwork'); break;
             case 'compare': vscode.commands.executeCommand('ai-readiness.compareRuns'); break;
             case 'report': vscode.commands.executeCommand('ai-readiness.showReport'); break;
             case 'setDepth': {
@@ -51,9 +52,25 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
             case 'setSetting': {
               const config = vscode.workspace.getConfiguration('ai-readiness');
               try {
-                logger.info(`SidebarPanel: updating setting "${msg.key}"`, { value: typeof msg.value === 'object' ? JSON.stringify(msg.value).slice(0, 100) : msg.value });
-                await config.update(msg.key, msg.value, vscode.ConfigurationTarget.Global);
-                logger.info(`SidebarPanel: setting "${msg.key}" updated`);
+                const key = msg.key as string;
+                // Handle nested keys like "contextBudgets.copilot" or "componentTypeWeights.generated"
+                if (key.startsWith('contextBudgets.')) {
+                  const platform = key.split('.')[1];
+                  const budgets = config.get<Record<string, number>>('contextBudgets') ?? {};
+                  budgets[platform] = msg.value as number;
+                  logger.info(`SidebarPanel: updating contextBudgets.${platform}`, { value: msg.value });
+                  await config.update('contextBudgets', budgets, vscode.ConfigurationTarget.Global);
+                } else if (key.startsWith('componentTypeWeights.')) {
+                  const typeKey = key.split('.')[1];
+                  const weights = config.get<Record<string, number>>('componentTypeWeights') ?? {};
+                  weights[typeKey] = msg.value as number;
+                  logger.info(`SidebarPanel: updating componentTypeWeights.${typeKey}`, { value: msg.value });
+                  await config.update('componentTypeWeights', weights, vscode.ConfigurationTarget.Global);
+                } else {
+                  logger.info(`SidebarPanel: updating setting "${key}"`, { value: typeof msg.value === 'object' ? JSON.stringify(msg.value).slice(0, 100) : msg.value });
+                  await config.update(key, msg.value, vscode.ConfigurationTarget.Global);
+                }
+                logger.info(`SidebarPanel: setting "${key}" updated`);
               } catch (settingErr) {
                 logger.error(`SidebarPanel: failed to update setting "${msg.key}"`, settingErr);
                 vscode.window.showErrorMessage(`Failed to save setting "${msg.key}": ${settingErr instanceof Error ? settingErr.message : String(settingErr)}`);
@@ -65,7 +82,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
               try {
                 logger.info('SidebarPanel: resetting scoring weights to defaults');
                 await config.update('dimensionWeights', { presence: 0.20, quality: 0.40, operability: 0.15, breadth: 0.25 }, vscode.ConfigurationTarget.Global);
-                await config.update('componentTypeWeights', { service: 1.0, app: 1.0, library: 0.9, infra: 0.6, config: 0.4, script: 0.5, data: 0.3, unknown: 0.5 }, vscode.ConfigurationTarget.Global);
+                await config.update('componentTypeWeights', { service: 1.0, app: 1.0, library: 0.9, infra: 0.6, config: 0.4, script: 0.5, data: 0.3, generated: 0, unknown: 0.5 }, vscode.ConfigurationTarget.Global);
                 await config.update('scoringMode', 'balanced', vscode.ConfigurationTarget.Global);
                 await config.update('signalWeights', {}, vscode.ConfigurationTarget.Global);
                 logger.info('SidebarPanel: scoring weights reset');
@@ -96,7 +113,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
       this.view.webview.html = this.getHtml();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error('[Sidebar] Render failed:', msg);
+      logger.error('Sidebar render failed', err);
       this.view.webview.html = `<html><body><h3>Error loading sidebar</h3><pre>${msg}</pre><button onclick="location.reload()">Retry</button></body></html>`;
     }
   }
@@ -170,6 +187,10 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
           <span class="action-icon">📊</span>
           <span>Vibe Report</span>
         </button>
+        <button class="btn action-btn" onclick="send('devNetwork')">
+          <span class="action-icon">👥</span>
+          <span>Dev Network</span>
+        </button>
       </div>
     </div>`;
     } catch (err) {
@@ -202,6 +223,8 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
           <span class="meta-item">${run.toolIcon} ${run.toolName}</span>
           <span class="meta-sep">·</span>
           <span class="meta-item">📂 ${this.escapeHtml(run.projectName)}</span>
+          <span class="meta-sep">·</span>
+          <span class="meta-item">🕐 ${formatTimeAgo(run.timestamp)}</span>
         </div>
         <div class="summary-action">
           <span class="link-btn">View Report →</span>
@@ -234,6 +257,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
       <div class="links-row">
         <a class="qlink" onclick="send('insights')">💡 AI Strategy</a>
         <a class="qlink" onclick="send('graph')">🏗️ Structure</a>
+        <a class="qlink" onclick="send('knowledgeGraph')">🔗 Knowledge Graph</a>
         <a class="qlink" onclick="send('recommendations')">🔧 Action Center</a>
       </div>
       <div class="links-row">
@@ -320,7 +344,13 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
     const llmTimeout = config.get<number>('llmTimeout') ?? 45;
     const concurrency = config.get<number>('enrichmentConcurrency') ?? 5;
     const batchSize = config.get<number>('enrichmentBatchSize') ?? 10;
-    const cacheTTL = config.get<number>('cacheTTL') ?? 7;
+    const cacheTTL = config.get<number>('cacheTTL') ?? 1;
+    const confidenceThreshold = config.get<number>('confidenceThreshold') ?? 0.5;
+    const typeWeights = config.get<Record<string, number>>('componentTypeWeights') ?? {};
+    const generatedWeight = typeWeights.generated ?? 0;
+    const contextBudgets = config.get<Record<string, number>>('contextBudgets') ?? {};
+    const selectedBudget = contextBudgets[selectedPlatform] ?? (selectedPlatform === 'cursor' || selectedPlatform === 'windsurf' || selectedPlatform === 'aider' ? 128000 : 200000);
+    const selectedBudgetK = Math.round(selectedBudget / 1000);
 
     return /* html */ `
     <div class="section settings-section fade-in">
@@ -329,14 +359,32 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
         <span class="collapse-icon" id="settings-icon">▶</span>
       </div>
       <div class="settings-body" id="settings-body" style="display:none">
+
+        <div class="settings-group-label">🎯 Scan Target</div>
         <div class="setting-row">
-          <label class="setting-label">AI Platform <span class="tooltip">ℹ️<span class="tooltip-text">Default AI platform to evaluate readiness for. Each platform has different file expectations and scoring weights.</span></span></label>
+          <label class="setting-label">AI Platform</label>
           <select class="setting-select" onchange="send('setPlatform', undefined, this.value)">
             ${platformOptions}
           </select>
         </div>
+
+        <div class="settings-group-label">📊 Scoring & Filtering</div>
         <div class="setting-row">
-          <label class="setting-label">Enrichment Coverage <span class="tooltip">ℹ️<span class="tooltip-text">Percentage of source files that get LLM semantic analysis (summary + keywords). Higher = better code understanding, slower first scan. Files are ranked by importance — most critical files enriched first.</span></span></label>
+          <label class="setting-label">Context Budget <span class="tooltip">ℹ️<span class="tooltip-text">Token budget for the selected platform's context window (in thousands). Adjust to match your plan limits.</span></span></label>
+          <div class="setting-inline"><input type="number" class="setting-input" min="32" max="2000" step="10" value="${selectedBudgetK}" onchange="sendContextBudget('${selectedPlatform}', parseInt(this.value))"><span class="setting-unit">K tokens</span></div>
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">Confidence Filter <span class="tooltip">ℹ️<span class="tooltip-text">Minimum confidence for Action Center recommendations. Below this threshold, recommendations are dimmed.</span></span></label>
+          <div class="setting-inline"><input type="number" class="setting-input" min="0" max="100" step="5" value="${Math.round(confidenceThreshold * 100)}" onchange="sendSetting('confidenceThreshold', parseInt(this.value) / 100)"><span class="setting-unit">%</span></div>
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">Generated Code <span class="tooltip">ℹ️<span class="tooltip-text">Scoring weight for auto-generated code (KQL backups, protobuf stubs). 0 = excluded, 0.2 = low, 1.0 = full weight.</span></span></label>
+          <div class="setting-inline"><input type="number" class="setting-input" min="0" max="1" step="0.1" value="${generatedWeight}" onchange="sendGeneratedWeight(parseFloat(this.value))"><span class="setting-unit">weight</span></div>
+        </div>
+
+        <div class="settings-group-label">🔬 Scan Depth</div>
+        <div class="setting-row">
+          <label class="setting-label">Enrichment Coverage <span class="tooltip">ℹ️<span class="tooltip-text">Percentage of source files that get LLM semantic analysis. Higher = better understanding, slower first scan.</span></span></label>
           <input type="range" class="setting-slider" min="10" max="100" step="5" value="${depth}" 
             oninput="updateDepthPreview(this.value)" 
             onchange="send('setDepth', undefined, undefined, parseInt(this.value))">
@@ -345,22 +393,23 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
             <span class="depth-est">~${estEnrichedFiles} of ~${lastFileCount} files</span>
           </div>
         </div>
+
         <details class="advanced-settings">
-          <summary class="advanced-toggle">⚙️ Advanced</summary>
+          <summary class="advanced-toggle">⚙️ LLM Engine</summary>
           <div class="setting-row">
-            <label class="setting-label">LLM Timeout <span class="tooltip">ℹ️<span class="tooltip-text">Default timeout for each LLM API call in seconds. Increase if scans frequently timeout on slow connections.</span></span></label>
+            <label class="setting-label">Timeout</label>
             <div class="setting-inline"><input type="number" class="setting-input" min="15" max="300" value="${llmTimeout}" onchange="sendSetting('llmTimeout', parseInt(this.value))"><span class="setting-unit">sec</span></div>
           </div>
           <div class="setting-row">
-            <label class="setting-label">Parallel LLM Calls <span class="tooltip">ℹ️<span class="tooltip-text">Number of parallel LLM calls during semantic enrichment. Higher = faster indexing but uses more API quota. Reduce if you hit rate limits.</span></span></label>
+            <label class="setting-label">Parallel Calls</label>
             <div class="setting-inline"><input type="number" class="setting-input" min="1" max="10" value="${concurrency}" onchange="sendSetting('enrichmentConcurrency', parseInt(this.value))"><span class="setting-unit">calls</span></div>
           </div>
           <div class="setting-row">
-            <label class="setting-label">Files per Batch <span class="tooltip">ℹ️<span class="tooltip-text">Number of files grouped per LLM enrichment call. Higher = fewer API calls but larger prompts. Lower = more precise summaries.</span></span></label>
+            <label class="setting-label">Batch Size</label>
             <div class="setting-inline"><input type="number" class="setting-input" min="3" max="20" value="${batchSize}" onchange="sendSetting('enrichmentBatchSize', parseInt(this.value))"><span class="setting-unit">files</span></div>
           </div>
           <div class="setting-row">
-            <label class="setting-label">Cache Duration <span class="tooltip">ℹ️<span class="tooltip-text">How long LLM analysis results are cached before re-evaluation. Cached results speed up subsequent scans.</span></span></label>
+            <label class="setting-label">Cache</label>
             <div class="setting-inline"><input type="number" class="setting-input" min="1" max="30" value="${cacheTTL}" onchange="sendSetting('cacheTTL', parseInt(this.value))"><span class="setting-unit">days</span></div>
           </div>
         </details>
@@ -376,7 +425,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
     try {
       const config = vscode.workspace.getConfiguration('ai-readiness');
       const dimWeights = config.get<Record<string, number>>('dimensionWeights') ?? { presence: 0.20, quality: 0.40, operability: 0.15, breadth: 0.25 };
-      const typeWeights = config.get<Record<string, number>>('componentTypeWeights') ?? { service: 1.0, app: 1.0, library: 0.9, infra: 0.6, config: 0.4, script: 0.5, data: 0.3, unknown: 0.5 };
+      const typeWeights = config.get<Record<string, number>>('componentTypeWeights') ?? { service: 1.0, app: 1.0, library: 0.9, infra: 0.6, config: 0.4, script: 0.5, data: 0.3, generated: 0, unknown: 0.5 };
       const scoringMode = config.get<string>('scoringMode') ?? 'balanced';
 
       const dimTooltips: Record<string, string> = {
@@ -394,6 +443,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
         config: 'Configuration files (JSON, YAML settings). Lower weight — typically static and auto-generated.',
         script: 'Build, deploy, and utility scripts. Moderate weight — agents execute these but rarely modify them deeply.',
         data: 'Data files, migrations, fixtures. Low weight — often generated or managed by pipelines.',
+        generated: 'Auto-generated code (KQL backups, protobuf stubs, exported configs). Default 0% = fully excluded from scoring. Increase to include.',
         unknown: 'Unclassified components. Default moderate weight.',
       };
 
@@ -402,7 +452,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
       const effectivePlatform = selectedPlatform !== 'ask' ? selectedPlatform : report?.selectedTool;
       const signalMultipliers = config.get<Record<string, number>>('signalWeights') ?? {};
 
-      const signalsByDim: Record<string, { id: string; name: string; weight: number; category: string; level: number; multiplier: number }[]> = {
+      const signalsByDim: Record<string, { id: string; name: string; description: string; weight: number; category: string; level: number; multiplier: number }[]> = {
         presence: [], quality: [], operability: [], breadth: [],
       };
 
@@ -413,6 +463,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
             signalsByDim[dim].push({
               id: s.id,
               name: humanizeSignalId(s.id),
+              description: s.description || '',
               weight: s.weight,
               category: s.category,
               level: s.level,
@@ -429,6 +480,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
           signalsByDim[dim].push({
             id: s.id,
             name: humanizeSignalId(s.id),
+            description: s.description || '',
             weight: s.weight,
             category: s.category,
             level: s.level,
@@ -442,13 +494,13 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
         const tooltip = dimTooltips[key] || '';
         const dimSignals = signalsByDim[key] || [];
         const signalRows = dimSignals.map(s => {
-          const mult = Math.round(s.multiplier * 100);
+          const pct = Math.round(s.multiplier * 100);
           return `<div class="signal-weight-row">
-            <span class="signal-weight-name">L${s.level} ${this.escapeHtml(s.name)}</span>
-            <input type="range" class="signal-weight-slider" min="25" max="300" step="25" value="${mult}"
+            <span class="signal-weight-name" title="${this.escapeHtml(s.description)}">L${s.level} ${this.escapeHtml(s.name)}${s.description ? ` <span class="tooltip signal-info">ℹ️<span class="tooltip-text">${this.escapeHtml(s.description)}</span></span>` : ''}</span>
+            <input type="range" class="signal-weight-slider" min="0" max="100" step="5" value="${pct}"
               oninput="this.nextElementSibling.textContent=this.value+'%'"
               onchange="updateSignalWeight('${s.id}', parseInt(this.value)/100)">
-            <span class="signal-weight-val">${mult}%</span>
+            <span class="signal-weight-val">${pct}%</span>
           </div>`;
         }).join('');
 
@@ -462,7 +514,7 @@ export class SidebarPanel implements vscode.WebviewViewProvider {
           </div>
           ${dimSignals.length > 0 ? `
           <details class="dim-signals">
-            <summary class="dim-signals-toggle">${dimSignals.length} signals · click to adjust individually</summary>
+            <summary class="dim-signals-toggle">${dimSignals.length} signals · adjust relative weights <span style="font-size:0.85em;color:var(--text-secondary)">(auto-normalized)</span></summary>
             <div class="dim-signals-body">${signalRows}</div>
           </details>` : ''}
         </div>`;
@@ -931,6 +983,7 @@ body::before { display: none; }
 .advanced-toggle::-webkit-details-marker { display: none; }
 .advanced-toggle::before { content: '▸ '; font-size: 0.8em; }
 .advanced-settings[open] .advanced-toggle::before { content: '▾ '; }
+.settings-group-label { font-size: 0.72em; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); font-weight: 600; margin: 14px 0 4px 0; padding-bottom: 4px; border-bottom: 1px solid var(--border-subtle); }
 .setting-label { font-size: 0.78em; color: var(--text-secondary); display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
 
 /* CSS Tooltips */
@@ -1017,8 +1070,9 @@ body::before { display: none; }
 .dim-signals-toggle::before { content: '▸ '; }
 .dim-signals[open] .dim-signals-toggle::before { content: '▾ '; }
 .dim-signals-body { padding: 4px 0; }
-.signal-weight-row { display: grid; grid-template-columns: 110px 1fr 32px; align-items: center; gap: 6px; padding: 2px 0; }
-.signal-weight-name { font-size: 0.72em; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.signal-weight-row { display: grid; grid-template-columns: 1fr 80px 32px; align-items: center; gap: 6px; padding: 2px 0; }
+.signal-weight-name { font-size: 0.72em; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: default; }
+.signal-weight-name .signal-info { font-size: 1em; cursor: pointer; }
 .signal-weight-slider { width: 100%; height: 3px; -webkit-appearance: none; appearance: none; background: var(--bg-elevated); border-radius: 2px; outline: none; cursor: pointer; }
 .signal-weight-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 10px; height: 10px; border-radius: 50%; background: var(--color-cyan); cursor: pointer; }
 .signal-weight-val { font-size: 0.7em; color: var(--text-primary); text-align: right; font-variant-numeric: tabular-nums; }
@@ -1106,6 +1160,17 @@ function updateDepthPreview(val) {
 function sendSetting(key, value) {
   console.log('[Sidebar] sendSetting:', key, value);
   vscode.postMessage({ command: 'setSetting', key: key, value: value });
+}
+
+function sendContextBudget(platform, thousandsK) {
+  var tokens = thousandsK * 1000;
+  console.log('[Sidebar] sendContextBudget:', platform, thousandsK + 'K →', tokens, 'tokens');
+  vscode.postMessage({ command: 'setSetting', key: 'contextBudgets.' + platform, value: tokens });
+}
+
+function sendGeneratedWeight(weight) {
+  console.log('[Sidebar] sendGeneratedWeight:', weight);
+  vscode.postMessage({ command: 'setSetting', key: 'componentTypeWeights.generated', value: weight });
 }
 
 function toggleScoringWeights() {

@@ -12,6 +12,7 @@ import { StructureAnalyzer } from './structureAnalyzer';
 import { GraphBuilder, DependencyScanner } from '../graph';
 import { WorkspaceIndexer } from '../semantic';
 import { analyzeFileContent, calculateCodebaseMetrics, type FileAnalysis } from '../metrics';
+import { isVirtualEnvPath } from './componentMapper';
 import { logger } from '../logging';
 
 export class WorkspaceScanner {
@@ -70,7 +71,7 @@ export class WorkspaceScanner {
         quickMode = true;
       }
     }
-    endPhase1();
+    endPhase1.end();
 
     // Phase 0: Semantic indexing (after LLM init so enrichment can use fast model)
     if (this.workspaceIndexer) {
@@ -81,14 +82,33 @@ export class WorkspaceScanner {
       } catch (err) {
         logger.warn('Semantic indexing failed, continuing without it', err);
       } finally {
-        endPhase0();
+        endPhase0.end();
       }
     }
 
     // Phase 2: Map workspace components
     const endPhase2 = logger.time('Phase 2: Map workspace components');
     progress.report({ message: '📦 Discovering components & sub-projects...', increment: 10 });
-    const projectContext = await this.componentMapper.mapWorkspace(workspaceUri, !quickMode, token);
+
+    // Collect semantic data from index (if available) for graph-first grouping
+    let semanticData: { path: string; summary: string; dependencies: string[]; exports: string[]; complexity: string }[] | undefined;
+    if (this.workspaceIndexer) {
+      try {
+        const cached = this.workspaceIndexer.getSemanticCache().getAll();
+        if (cached.length > 0) {
+          semanticData = cached.map(c => ({
+            path: c.path,
+            summary: c.summary || '',
+            dependencies: c.dependencies || [],
+            exports: c.exports || [],
+            complexity: c.complexity || 'unknown',
+          }));
+          logger.info(`Phase 2: passing ${semanticData.length} semantic entries to component mapper`);
+        }
+      } catch { /* non-critical */ }
+    }
+
+    const projectContext = await this.componentMapper.mapWorkspace(workspaceUri, !quickMode, token, semanticData);
 
     const langList = projectContext.languages.slice(0, 4).join(', ');
     progress.report({ message: `📦 Found ${projectContext.components.length} components (${langList}) — enriching...`, increment: 2 });
@@ -107,7 +127,7 @@ export class WorkspaceScanner {
         logger.warn('Semantic cache enrichment failed', err);
       }
     }
-    endPhase2();
+    endPhase2.end();
 
     // Phase 3: Scan maturity levels (~50% of work, sub-progress reported by maturityScanner)
     const endPhase3 = logger.time('Phase 3: Scan maturity levels');
@@ -117,7 +137,7 @@ export class WorkspaceScanner {
       workspaceUri, projectContext, quickMode, progress, token, selectedTool
     );
     logger.info(`Phase 3: ${levelScores.length} levels scored`);
-    endPhase3();
+    endPhase3.end();
 
     // Phase 3d: Context architecture audit
     let contextAuditResult: ReadinessReport['contextAudit'];
@@ -130,7 +150,7 @@ export class WorkspaceScanner {
     } catch (err) {
       logger.warn('Context architecture audit failed', err);
     }
-    endPhase3d();
+    endPhase3d.end();
 
     // Phase 4: Score components and languages
     const endPhase4 = logger.time('Phase 4: Score components and languages');
@@ -139,7 +159,7 @@ export class WorkspaceScanner {
     const componentScores = await this.componentScorer.scoreComponents(workspaceUri, projectContext, selectedTool);
     const languageScores = await this.componentScorer.scoreLanguages(workspaceUri, projectContext, componentScores, selectedTool);
     logger.info(`Phase 4: ${componentScores.length} components scored, ${languageScores.length} languages`);
-    endPhase4();
+    endPhase4.end();
 
     // Phase 5: Build report
     const endPhase5 = logger.time('Phase 5: Build report');
@@ -152,7 +172,7 @@ export class WorkspaceScanner {
       quickMode ? 'quick' : 'full',
       selectedTool
     );
-    endPhase5();
+    endPhase5.end();
     logger.info(`Phase 5: Report built — L${report.primaryLevel} ${report.levelName}, score ${report.overallScore}/100, depth ${report.depth}%`);
 
     // Attach context audit result (collected in Phase 3d, before report existed)
@@ -175,11 +195,12 @@ export class WorkspaceScanner {
       for (const lang of projectContext.languages.slice(0, 5)) {
         const pattern = langExtMap[lang.toLowerCase()];
         if (!pattern) continue;
-        const files = await vscode.workspace.findFiles(
+        const rawFiles = await vscode.workspace.findFiles(
           new vscode.RelativePattern(workspaceUri, pattern),
-          '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**}',
+          '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/__pycache__/**,**/.venv/**,**/venv/**,**/target/**,**/site-packages/**,**/.tox/**,**/env/**}',
           200
         );
+        const files = rawFiles.filter(f => !isVirtualEnvPath(f.path));
         const batchSize = 20;
         for (let i = 0; i < files.length; i += batchSize) {
           const batch = files.slice(i, i + batchSize);
@@ -209,7 +230,7 @@ export class WorkspaceScanner {
     } catch (err) {
       logger.warn('Codebase readiness metrics calculation failed', err);
     } finally {
-      endPhase6();
+      endPhase6.end();
     }
 
     // Phase 7: Structure comparison
@@ -224,7 +245,7 @@ export class WorkspaceScanner {
     } catch (err) {
       logger.warn('Structure comparison failed', err);
     } finally {
-      endPhase7();
+      endPhase7.end();
     }
 
     // Phase 8: Build knowledge graph
@@ -237,14 +258,14 @@ export class WorkspaceScanner {
     } catch (err) {
       logger.warn('Knowledge graph construction failed', err);
     } finally {
-      endPhase8();
+      endPhase8.end();
     }
 
     // Store enrichment percentage used
     const enrichPct = vscode.workspace.getConfiguration('ai-readiness').get<number>('enrichmentDepth') ?? 70;
     (report as any).enrichmentPct = enrichPct;
 
-    await this.context.globalState.update('lastReport', report);
+    await this.context.workspaceState.update('lastReport', report);
     logger.info(`Scan result: L${report.primaryLevel} ${report.levelName} — ${report.overallScore}/100 — ${report.componentScores.length} components`);
     return report;
     } finally {

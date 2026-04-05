@@ -277,6 +277,85 @@ describe('MaturityEngine', () => {
       const report = engine.calculateReport('empty', levels, defaultContext, [], defaultLanguages, 'test', 'full', 'copilot');
       expect(report.overallScore).toBeGreaterThan(0);
     });
+
+    it('does not give monorepo roots L2 credit for nested instruction files', () => {
+      const monorepoContext: ProjectContext = {
+        ...defaultContext,
+        projectType: 'monorepo',
+        components: [],
+      };
+      const levels: LevelScore[] = [
+        makeLevelScore(1, [], 100),
+        makeLevelScore(2, [
+          makeSignal({
+            signalId: 'copilot_instructions',
+            level: 2,
+            score: 80,
+            files: ['risk-register/.github/copilot-instructions.md'],
+          }),
+        ], 60),
+        makeLevelScore(3, [], 0),
+        makeLevelScore(4, [], 0),
+        makeLevelScore(5, [], 0),
+        makeLevelScore(6, [], 0),
+      ];
+
+      const report = engine.calculateReport(
+        'monorepo',
+        levels,
+        monorepoContext,
+        defaultComponents,
+        defaultLanguages,
+        'test',
+        'full',
+        'copilot',
+      );
+
+      expect(report.primaryLevel).toBe(1);
+    });
+
+    it('does not give monorepo roots L3 credit for nested sub-project signals', () => {
+      const monorepoContext: ProjectContext = {
+        ...defaultContext,
+        projectType: 'monorepo',
+        components: [],
+      };
+      const levels: LevelScore[] = [
+        makeLevelScore(1, [], 100),
+        makeLevelScore(2, [
+          makeSignal({
+            signalId: 'copilot_instructions',
+            level: 2,
+            score: 80,
+            files: ['.github/copilot-instructions.md'],
+          }),
+        ], 60),
+        makeLevelScore(3, [
+          makeSignal({
+            signalId: 'copilot_agents',
+            level: 3,
+            score: 85,
+            files: ['ai-readiness-scanner-vs-code-extension/.github/agents/context-architect.agent.md'],
+          }),
+        ], 70),
+        makeLevelScore(4, [], 0),
+        makeLevelScore(5, [], 0),
+        makeLevelScore(6, [], 0),
+      ];
+
+      const report = engine.calculateReport(
+        'monorepo',
+        levels,
+        monorepoContext,
+        defaultComponents,
+        defaultLanguages,
+        'test',
+        'full',
+        'copilot',
+      );
+
+      expect(report.primaryLevel).toBe(2);
+    });
   });
 });
 
@@ -354,5 +433,122 @@ describe('Coherence check', () => {
   it('coherenceWarning field exists on ReadinessReport type', () => {
     const report: any = { coherenceWarning: 'test' };
     expect(report.coherenceWarning).toBe('test');
+  });
+});
+
+// ── Monorepo gating ──────────────────────────────────────────────
+
+describe('Monorepo gating', () => {
+  const engine = new MaturityEngine();
+
+  const monorepoContext: ProjectContext = {
+    languages: ['TypeScript'],
+    frameworks: [],
+    projectType: 'monorepo',
+    packageManager: 'npm',
+    directoryTree: '.',
+    components: [
+      { name: 'VS Code Extension', path: 'ai-readiness-scanner-vs-code-extension', language: 'TypeScript', type: 'app' },
+      { name: 'Risk Register', path: 'risk-register', language: 'TypeScript', type: 'app' },
+    ],
+  };
+
+  function buildLevels(l2Signals: SignalResult[], l3Signals: SignalResult[]): LevelScore[] {
+    return [
+      makeLevelScore(1, [], 100),
+      makeLevelScore(2, l2Signals, l2Signals.some(s => s.detected) ? 70 : 0),
+      makeLevelScore(3, l3Signals, l3Signals.some(s => s.detected) ? 70 : 0),
+      makeLevelScore(4, [], 0),
+      makeLevelScore(5, [], 0),
+      makeLevelScore(6, [], 0),
+    ];
+  }
+
+  it('caps level when critical signals are only in sub-projects', () => {
+    const l2Signals = [
+      makeSignal({ signalId: 'copilot_instructions', level: 2, detected: true, score: 80, files: ['.github/copilot-instructions.md'] }),
+      makeSignal({ signalId: 'project_structure_doc', level: 2, detected: true, score: 70, files: ['README.md'] }),
+    ];
+    const l3Signals = [
+      // copilot_agents NOT detected at root (agents only in sub-projects)
+      makeSignal({ signalId: 'copilot_agents', level: 3, detected: false, score: 0, files: [] }),
+      // instruction_accuracy detected via root README — but alone shouldn't pass gating
+      makeSignal({ signalId: 'instruction_accuracy', level: 3, detected: true, score: 70, files: ['README.md', '.github/copilot-instructions.md'] }),
+      makeSignal({ signalId: 'mcp_config', level: 3, detected: true, score: 60, files: ['.vscode/mcp.json'] }),
+    ];
+
+    const report = engine.calculateReport(
+      'appsec-monorepo', buildLevels(l2Signals, l3Signals), monorepoContext,
+      [], defaultLanguages, 'test', 'full', 'copilot',
+    );
+
+    // L3 should be capped because copilot_agents (critical) is not detected at root
+    expect(report.primaryLevel).toBeLessThanOrEqual(2);
+  });
+
+  it('does not cap level when critical signals are at root', () => {
+    const l2Signals = [
+      makeSignal({ signalId: 'copilot_instructions', level: 2, detected: true, score: 80, files: ['.github/copilot-instructions.md'] }),
+      makeSignal({ signalId: 'project_structure_doc', level: 2, detected: true, score: 70, files: ['README.md'] }),
+    ];
+    const l3Signals = [
+      // copilot_agents detected at root
+      makeSignal({ signalId: 'copilot_agents', level: 3, detected: true, score: 80, files: ['.github/agents/my-agent.agent.md'] }),
+      makeSignal({ signalId: 'instruction_accuracy', level: 3, detected: true, score: 70, files: ['README.md', '.github/copilot-instructions.md'] }),
+      makeSignal({ signalId: 'mcp_config', level: 3, detected: true, score: 60, files: ['.vscode/mcp.json'] }),
+    ];
+
+    const report = engine.calculateReport(
+      'appsec-monorepo-with-root-agents', buildLevels(l2Signals, l3Signals), monorepoContext,
+      [], defaultLanguages, 'test', 'full', 'copilot',
+    );
+
+    // L3 should NOT be capped — critical signals are present at root
+    expect(report.primaryLevel).toBeGreaterThanOrEqual(3);
+  });
+
+  it('caps level when critical signal files are inside sub-project paths', () => {
+    const l2Signals = [
+      makeSignal({ signalId: 'copilot_instructions', level: 2, detected: true, score: 80, files: ['.github/copilot-instructions.md'] }),
+    ];
+    const l3Signals = [
+      // copilot_agents detected but files are inside sub-project
+      makeSignal({
+        signalId: 'copilot_agents', level: 3, detected: true, score: 70,
+        files: ['ai-readiness-scanner-vs-code-extension/.github/agents/scanner.agent.md'],
+      }),
+      makeSignal({ signalId: 'instruction_accuracy', level: 3, detected: true, score: 70, files: ['README.md'] }),
+    ];
+
+    const report = engine.calculateReport(
+      'appsec-sub-only', buildLevels(l2Signals, l3Signals), monorepoContext,
+      [], defaultLanguages, 'test', 'full', 'copilot',
+    );
+
+    // L3 should be capped — copilot_agents files are all inside a sub-project
+    expect(report.primaryLevel).toBeLessThanOrEqual(2);
+  });
+
+  it('non-monorepo projects are not affected by monorepo gating', () => {
+    const appContext: ProjectContext = {
+      ...monorepoContext,
+      projectType: 'app',
+    };
+    const l2Signals = [
+      makeSignal({ signalId: 'copilot_instructions', level: 2, detected: true, score: 80, files: ['.github/copilot-instructions.md'] }),
+    ];
+    const l3Signals = [
+      makeSignal({ signalId: 'copilot_agents', level: 3, detected: false, score: 0, files: [] }),
+      makeSignal({ signalId: 'instruction_accuracy', level: 3, detected: true, score: 70, files: ['README.md'] }),
+      makeSignal({ signalId: 'mcp_config', level: 3, detected: true, score: 60, files: ['.vscode/mcp.json'] }),
+    ];
+
+    const report = engine.calculateReport(
+      'regular-app', buildLevels(l2Signals, l3Signals), appContext,
+      [], defaultLanguages, 'test', 'full', 'copilot',
+    );
+
+    // Non-monorepo — standard qualification applies, not monorepo gating
+    expect(report.primaryLevel).toBeGreaterThanOrEqual(2);
   });
 });

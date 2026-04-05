@@ -1,3 +1,4 @@
+import { logger } from '../../logging';
 import * as vscode from 'vscode';
 import {
   AITool,
@@ -25,7 +26,7 @@ export class AutoFixGenerator {
     try {
       response = await this.copilotClient.analyze(prompt, token);
     } catch (error) {
-      console.error(
+      logger.error(
         `[AutoFix] LLM call failed for ${signal.id}:`,
         error
       );
@@ -34,7 +35,7 @@ export class AutoFixGenerator {
 
     const parsed = parseFixResponse(response);
     if (!parsed?.files || parsed.files.length === 0) {
-      console.error(
+      logger.error(
         `[AutoFix] Failed to parse LLM response for ${signal.id}`
       );
       return null;
@@ -46,7 +47,7 @@ export class AutoFixGenerator {
         .filter((r) => !r.valid)
         .map((r) => `${r.path}: ${r.error}`)
         .join('; ');
-      console.error(
+      logger.error(
         `[AutoFix] Validation failed for ${signal.id}: ${errors}`
       );
       return null;

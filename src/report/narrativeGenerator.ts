@@ -1,7 +1,8 @@
-import { ReadinessReport, NarrativeSections, NarrativeMetric, ToolingHealthItem, FrictionStep, AI_TOOLS, AITool, MATURITY_LEVELS } from '../scoring/types';
+import { ReadinessReport, NarrativeSections, NarrativeMetric, ToolingHealthItem, FrictionStep, AI_TOOLS, AITool, MATURITY_LEVELS, SignalResult } from '../scoring/types';
 import { CopilotClient } from '../llm/copilotClient';
 import { getPlatformExpertPrompt } from '../remediation/fixPrompts';
 import { logger } from '../logging';
+import { calculateInstructionRealitySync } from './instructionRealitySync';
 
 export class NarrativeGenerator {
   constructor(private client: CopilotClient) {}
@@ -36,14 +37,32 @@ export class NarrativeGenerator {
       const platformSignalIdSet = new Set(PlatformSignalFilter.getSignalIds(tool));
       const allSignals = report.levels.flatMap(l => l.signals);
 
-      // Instruction/Reality Sync — only count reality checks from THIS platform's signals
+      // Instruction/Reality Sync — root instruction presence + scoped coverage + skills/tools + path accuracy,
+      // blended with deep instructionQuality when available.
       const platformSignals = allSignals.filter(s => platformSignalIdSet.has(s.signalId));
+
+      // Ground truth: verified signal detection status for instruction files
+      const rootSignalId = this.getRootSignalId(tool);
+      const rootSignal = allSignals.find(s => s.signalId === rootSignalId);
+      const rootInstructionDetected = rootSignal?.detected ?? false;
+      const rootInstructionFiles = rootSignal?.files ?? [];
+      const signalGroundTruth = this.buildSignalGroundTruth(allSignals, platformSignalIdSet);
+
       const realityChecks = platformSignals
         .filter(s => s.realityChecks?.length)
         .flatMap(s => s.realityChecks!);
       const validChecks = realityChecks.filter(r => r.status === 'valid').length;
-      const totalChecks = realityChecks.length || 1;
-      const instructionSyncScore = totalChecks > 1 ? Math.round((validChecks / totalChecks) * 100) : Math.min(50, report.overallScore);
+      const totalChecks = realityChecks.length;
+      const instructionSyncScore = calculateInstructionRealitySync(report as ReadinessReport & {
+        deepAnalysis?: {
+          instructionQuality?: {
+            overall?: number;
+            accuracy?: number;
+            coverage?: number;
+          };
+          coveragePercent?: number;
+        };
+      });
 
       // Business Logic Alignment — 3-factor blend:
       // 1. Business validation scores (LLM cross-reference: do instructions match code?)
@@ -107,15 +126,30 @@ export class NarrativeGenerator {
 You are writing a platform readiness assessment for a ${toolConfig.name} user.
 Project: ${report.projectName} (Level ${report.primaryLevel}: ${MATURITY_LEVELS[report.primaryLevel].name}, Score: ${report.overallScore}/100)
 
-For each metric below, write ONE specific, insightful sentence explaining what the score means for THIS project. Reference actual project details when possible. Do NOT be generic.
+For each metric below, write ONE specific, insightful sentence explaining what the score means for THIS project. Reference actual component names. Do NOT mention calculation methodology.
+
+IMPORTANT: Your narrative must match the metric's actual meaning:
+- Business Logic Alignment: Do instruction files accurately describe the codebase structure and conventions?
+- Type & Environment Strictness: Language-aware type safety. Statically typed languages score high. Python with type hints gets partial credit. Config files excluded.
+- Semantic Density: Ratio of documentation (comments, docstrings) to code. Higher = agents understand better.
+- Instruction/Reality Sync: Gated metric — 30pt base for primary instruction file + 40pt max path accuracy + 35pt max instruction depth. General docs (README, conventions) give 0-20 credit when no AI instruction files exist. NOT about applyTo patterns.
+- Context Efficiency: 60% component coverage (specific mention=100, scoped applyTo=80, global-only=40, absent=0) + 40% token budget. A global copilot-instructions.md gives only 40/100 per component — scoped instructions are needed for high scores. Low score = insufficient or too generic instruction coverage.
 
 Metrics:
 ${dimensions.map(d => `- ${d.dimension}: ${d.score}/100`).join('\n')}
+
+GROUND TRUTH — VERIFIED SIGNAL DETECTION (filesystem-verified facts — DO NOT contradict these):
+${signalGroundTruth}
+Root instruction file: ${rootInstructionDetected ? `EXISTS and verified (${rootInstructionFiles.join(', ')})` : 'NOT DETECTED — no root instruction file found'}
+
+MANDATORY: For "Instruction/Reality Sync", if the root instruction file is listed as EXISTS above, your narrative MUST NOT describe it as "absent", "missing", or "lacking". If NOT DETECTED, do NOT claim it exists.
 
 Context:
 - Languages: ${report.projectContext.languages.join(', ')}
 - Components: ${report.componentScores.slice(0, 8).map(c => `${c.name} (L${c.primaryLevel}, ${c.overallScore}pts)`).join(', ')}
 - Reality check: ${validChecks}/${totalChecks} paths verified
+- Instruction files: ${report.contextAudit ? `${report.contextAudit.contextEfficiency.totalTokens} tokens (${report.contextAudit.contextEfficiency.budgetPct}% of budget)` : 'unknown'}
+- Project type: ${report.projectContext.projectType}${report.projectContext.projectType === 'monorepo' ? ' — scores reflect ROOT-LEVEL config only. Sub-projects with their own .github/ are scored independently.' : ''}
 - ${report.levels.flatMap(l => l.signals).filter(s => s.detected).length} signals detected out of ${report.levels.flatMap(l => l.signals).length}
 
 Respond as JSON array:
@@ -124,8 +158,13 @@ Respond as JSON array:
       const response = await this.client.analyzeFast(prompt);
       const parsed = this.parseJsonArray<{ dimension: string; narrative: string }>(response);
 
+      // Post-validate: patch any IQ Sync narrative that contradicts signal ground truth
+      const validated = this.validateIQSyncNarrative(
+        parsed, rootInstructionDetected, rootInstructionFiles, instructionSyncScore
+      );
+
       return dimensions.map(d => {
-        const match = parsed?.find(p => p.dimension === d.dimension);
+        const match = validated?.find(p => p.dimension === d.dimension);
         const label = d.score >= 75 ? 'excellent' as const : d.score >= 55 ? 'strong' as const : d.score >= 35 ? 'warning' as const : 'critical' as const;
         return {
           dimension: d.dimension,
@@ -211,6 +250,12 @@ Project: ${report.projectName}
 Languages: ${report.projectContext.languages.join(', ')}
 Components: ${report.componentScores.slice(0, 6).map(c => c.name).join(', ')}
 
+EXISTING FILES (DO NOT suggest creating these — they already exist):
+${[
+  ...(report.structureComparison?.expected?.filter((f) => f.exists).map((f) => `✅ ${f.path}`) || []),
+  ...(report.levels.flatMap(l => l.signals).filter(s => s.detected).flatMap(s => s.files).filter(Boolean).map(f => `✅ ${f}`)),
+].filter((v, i, a) => a.indexOf(v) === i).join('\n') || '(none detected)'}
+
 Missing signals: ${missingSignals.map(s => `${s.signalId}: ${s.finding}`).join('\n')}
 
 Reality check failures: ${realityFailures.slice(0, 5).map(r => `${r.claim} → ${r.reality} (${r.file})`).join('\n') || 'none'}
@@ -218,6 +263,8 @@ Reality check failures: ${realityFailures.slice(0, 5).map(r => `${r.claim} → $
 Critical insights: ${insights.filter(i => i.severity === 'critical').slice(0, 3).map(i => `${i.title}: ${i.recommendation}`).join('\n') || 'none'}
 
 Low-scoring components: ${report.componentScores.filter(c => c.overallScore < 40).slice(0, 5).map(c => `${c.name} (${c.overallScore}pts)`).join(', ') || 'none'}
+
+IMPORTANT: Only suggest creating files that are MISSING. Never suggest creating a file listed above as existing.
 
 Create 3-5 numbered remediation steps. Each step should have:
 - A creative, memorable title (e.g. "Fix the Ghost Map", "Patch the Semantic Black Holes")
@@ -260,7 +307,16 @@ Respond as JSON array:
       ['Business Logic Alignment', Math.round(score * 0.8)],
       ['Type & Environment Strictness', Math.round(l1TS ?? m?.typeStrictnessIndex ?? score * 0.7)],
       ['Semantic Density', Math.round(l1SD ?? m?.semanticDensity ?? score * 0.6)],
-      ['Instruction/Reality Sync', Math.min(50, score)],
+      ['Instruction/Reality Sync', calculateInstructionRealitySync(report as ReadinessReport & {
+        deepAnalysis?: {
+          instructionQuality?: {
+            overall?: number;
+            accuracy?: number;
+            coverage?: number;
+          };
+          coveragePercent?: number;
+        };
+      })],
       ['Context Efficiency', report.contextAudit?.contextEfficiency?.score ?? Math.min(60, score + 10)],
     ];
     return dims.map(([dimension, s]) => ({
@@ -301,6 +357,112 @@ Respond as JSON array:
     if (score >= 55) return `${dimension} is solid at ${score}/100 with room for improvement.`;
     if (score >= 35) return `${dimension} at ${score}/100 needs attention — agents may struggle here.`;
     return `${dimension} at ${score}/100 is a critical friction point for AI agents.`;
+  }
+
+  // ── Ground truth & narrative validation ──
+
+  /** Map tool to its primary root instruction signal ID */
+  private getRootSignalId(tool: AITool): string {
+    const map: Record<AITool, string> = {
+      copilot: 'copilot_instructions',
+      cline: 'cline_rules',
+      cursor: 'cursor_rules',
+      claude: 'claude_instructions',
+      roo: 'roo_modes',
+      windsurf: 'windsurf_rules',
+      aider: 'aider_config',
+    };
+    return map[tool] || 'copilot_instructions';
+  }
+
+  /** Build a ground truth summary of detected/missing instruction signals */
+  private buildSignalGroundTruth(allSignals: SignalResult[], platformSignalIdSet: Set<string>): string {
+    const lines: string[] = [];
+    for (const signal of allSignals) {
+      if (!platformSignalIdSet.has(signal.signalId)) continue;
+      const status = signal.detected ? '✅ DETECTED (EXISTS)' : '❌ NOT DETECTED';
+      const files = signal.files?.length ? ` — files: ${signal.files.join(', ')}` : '';
+      lines.push(`  ${signal.signalId}: ${status}${files}`);
+    }
+    return lines.join('\n') || '  (no platform signals found)';
+  }
+
+  /**
+   * Post-validate IQ Sync narrative against signal ground truth.
+   * If the LLM claims the root instruction file is absent when it actually exists
+   * (or vice versa), replace with a deterministic, factually correct narrative.
+   */
+  private validateIQSyncNarrative(
+    narratives: { dimension: string; narrative: string }[] | null,
+    rootInstructionDetected: boolean,
+    rootInstructionFiles: string[],
+    iqSyncScore: number,
+  ): { dimension: string; narrative: string }[] | null {
+    if (!narratives) return null;
+
+    return narratives.map(n => {
+      if (n.dimension !== 'Instruction/Reality Sync') return n;
+
+      if (rootInstructionDetected && this.containsRootAbsenceClaim(n.narrative)) {
+        logger.warn(
+          'NarrativeGenerator: IQ Sync narrative contradicts ground truth — ' +
+          `root instruction file EXISTS (${rootInstructionFiles.join(', ')}) ` +
+          'but narrative claims absence. Replacing with corrected narrative.'
+        );
+        return {
+          ...n,
+          narrative: this.correctedIQSyncNarrative(true, rootInstructionFiles, iqSyncScore),
+        };
+      }
+
+      if (!rootInstructionDetected && this.containsRootPresenceClaim(n.narrative)) {
+        logger.warn(
+          'NarrativeGenerator: IQ Sync narrative contradicts ground truth — ' +
+          'root instruction file NOT detected but narrative claims presence. Replacing.'
+        );
+        return {
+          ...n,
+          narrative: this.correctedIQSyncNarrative(false, [], iqSyncScore),
+        };
+      }
+
+      return n;
+    });
+  }
+
+  /** Check if narrative claims the root instruction file is absent/missing */
+  private containsRootAbsenceClaim(narrative: string): boolean {
+    const patterns = [
+      /absence\s+of\s+(?:a\s+)?(?:root|primary|main|\.github\/copilot|copilot)/i,
+      /(?:root|primary|main)\s+instruction\s+(?:file\s+)?(?:is\s+)?(?:missing|absent|not\s+(?:present|found|detected))/i,
+      /(?:missing|absent)\s+(?:a\s+)?(?:root|primary|main)\s+instruction/i,
+      /\bno\s+(?:root|primary|main)\s+instruction\s+file/i,
+      /copilot-instructions(?:\.md)?\s+(?:is\s+)?(?:missing|absent|not\s+(?:present|found|detected))/i,
+      /without\s+(?:a\s+)?(?:root|primary|main)\s+instruction/i,
+    ];
+    return patterns.some(p => p.test(narrative));
+  }
+
+  /** Check if narrative claims root instruction file exists when it doesn't */
+  private containsRootPresenceClaim(narrative: string): boolean {
+    const lower = narrative.toLowerCase();
+    if (lower.includes('not ') || lower.includes('missing') || lower.includes('absent') || lower.includes('no ')) {
+      return false;
+    }
+    return /(?:root|primary|main)\s+instruction\s+(?:file\s+)?(?:is\s+)?(?:present|exists|detected|found|in\s+place)/i.test(narrative);
+  }
+
+  /** Generate a deterministic, factually correct IQ Sync narrative */
+  private correctedIQSyncNarrative(exists: boolean, files: string[], score: number): string {
+    const fileDesc = files.length ? files.join(', ') : 'root instruction file';
+    if (exists) {
+      if (score >= 75) return `Root instruction file (${fileDesc}) is present and well-integrated, providing strong guidance with verified path accuracy and good instruction depth.`;
+      if (score >= 55) return `Root instruction file (${fileDesc}) is present, providing a solid foundation, though adding scoped instructions or improving path accuracy could further strengthen agent guidance.`;
+      if (score >= 35) return `Root instruction file (${fileDesc}) exists but would benefit from enrichment — scoped instructions and improved path references would help agents navigate the codebase more effectively.`;
+      return `Root instruction file (${fileDesc}) is present but provides limited guidance — expanding instruction depth and adding verified path references would significantly improve agent effectiveness.`;
+    }
+    if (score >= 20) return `No root instruction file detected — general documentation provides some context, but creating a dedicated instruction file would substantially improve agent guidance.`;
+    return `No root instruction file detected, significantly limiting AI agent effectiveness — creating one is the highest-impact improvement available.`;
   }
 
   private parseJsonArray<T>(text: string): T[] | null {

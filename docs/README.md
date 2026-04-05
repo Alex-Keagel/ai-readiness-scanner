@@ -2,7 +2,7 @@
 
 ## What It Does
 
-AI Readiness Scanner is a VS Code extension that analyzes a codebase and assesses its readiness for AI/agentic coding adoption. It scans project files, evaluates structure, patterns, and practices against criteria defined in [AGENTIC_CODING_ASSESSMENT_SPEC.md](./AGENTIC_CODING_ASSESSMENT_SPEC.md), then produces an actionable readiness report.
+AI Readiness Scanner is a VS Code extension that analyzes a codebase and assesses its readiness for AI/agentic coding adoption. It scans project files, evaluates structure and configuration against a 6-level maturity ladder, then produces an actionable readiness report. Scoring criteria are defined in `src/scoring/levelSignals.ts` and `src/scoring/maturityEngine.ts`.
 
 ### Core Capabilities
 
@@ -100,5 +100,5 @@ The output file `generated-insight-improvement-Component-.md` has a trailing das
 ### 5. Cross-platform install scripts
 `scripts/install.ps1` (Windows) and `scripts/install.sh` (Unix/macOS) handle environment setup. They are **not** invoked by `npm install` automatically — run them manually on first setup if your environment needs system-level dependencies.
 
-### 6. Assessment spec is the source of truth
-All scoring criteria and readiness dimensions are defined in [`docs/AGENTIC_CODING_ASSESSMENT_SPEC.md`](./AGENTIC_CODING_ASSESSMENT_SPEC.md). Changes to assessment logic in code must stay in sync with this spec.
+### 6. Scoring code is the source of truth
+All scoring criteria are defined in `src/scoring/levelSignals.ts` (signal definitions with file patterns, weights, and categories) and `src/scoring/maturityEngine.ts` (scoring pipeline, dimension weights, anti-pattern detection). The main README documents the full methodology.

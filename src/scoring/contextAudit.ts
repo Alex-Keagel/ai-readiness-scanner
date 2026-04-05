@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { AITool, AI_TOOLS, ProjectContext } from './types';
 import { logger } from '../logging';
+import { isNestedConfig } from '../utils';
 
 // ─── Result Interfaces ──────────────────────────────────────────────
 
@@ -73,7 +74,12 @@ async function readFileText(uri: vscode.Uri): Promise<string | null> {
 
 async function findFiles(workspaceUri: vscode.Uri, pattern: string): Promise<vscode.Uri[]> {
   const relPattern = new vscode.RelativePattern(workspaceUri, pattern);
-  return vscode.workspace.findFiles(relPattern, '**/node_modules/**', 500);
+  const results = await vscode.workspace.findFiles(relPattern, '**/node_modules/**', 500);
+  // Filter out files nested inside sub-projects (e.g., extension/.github/)
+  return results.filter(uri => {
+    const relPath = vscode.workspace.asRelativePath(uri, false);
+    return !isNestedConfig(relPath);
+  });
 }
 
 function parseYamlFrontmatter(content: string): Record<string, unknown> {
@@ -164,8 +170,24 @@ export async function auditMCPHealth(workspaceUri: vscode.Uri): Promise<MCPHealt
       const toolCount = Array.isArray(tools) ? tools.length : 5; // Default estimate
       totalTools += toolCount;
 
-      const status: 'healthy' | 'misconfigured' | 'unused' = issues.length > 0 ? 'misconfigured' : 'healthy';
+      // Check if server is disabled (VS Code mcp.json supports "disabled": true)
+      const isDisabled = serverConfig.disabled === true;
+      if (isDisabled) {
+        // Skip disabled servers from token cost but still report them
+        totalTools -= toolCount;
+      }
+
+      const status: 'healthy' | 'misconfigured' | 'unused' = issues.length > 0 ? 'misconfigured' : isDisabled ? 'unused' : 'healthy';
       servers.push({ name, status, issues });
+    }
+  }
+
+  // Check for too many active servers
+  const activeServers = servers.filter(s => s.status !== 'unused');
+  if (activeServers.length > 5) {
+    for (const s of activeServers.slice(5)) {
+      s.issues.push(`${activeServers.length} MCP servers active — consider disabling unused ones to reduce context overhead (~${totalTools * 300} tokens)`);
+      if (s.status === 'healthy') { (s as any).status = 'misconfigured'; }
     }
   }
 
@@ -280,7 +302,7 @@ export async function auditContextEfficiency(
   let budget = DEFAULT_BUDGETS[selectedTool || ''] || 128_000;
   try {
     const vscode = require('vscode');
-    const userBudgets = vscode.workspace.getConfiguration('ai-readiness').get<Record<string, number>>('contextBudgets');
+    const userBudgets = vscode.workspace.getConfiguration('ai-readiness').get('contextBudgets') as Record<string, number> | undefined;
     if (userBudgets && selectedTool && userBudgets[selectedTool]) {
       budget = userBudgets[selectedTool];
     }
@@ -329,56 +351,94 @@ export async function auditContextEfficiency(
   const totalTokens = instructionTokens + mcpTokenCost + memoryTokens;
   const budgetPct = (totalTokens / budget) * 100;
 
-  // ── Per-component coverage analysis ──
-  // For each component, check if instructions cover its path
+  // ── Per-component coverage + budget analysis ──
   const TYPE_WEIGHTS: Record<string, number> = { service: 1.0, app: 1.0, library: 0.9, infra: 0.6, config: 0.4, script: 0.5, data: 0.3, unknown: 0.5 };
   const components = context.components || [];
 
-  let coverageWeightedSum = 0;
+  let efficiencyWeightedSum = 0;
   let totalWeight = 0;
 
   for (const comp of components) {
     const weight = TYPE_WEIGHTS[comp.type] ?? 0.5;
     totalWeight += weight;
 
-    // Check if any instruction file covers this component's path
-    let compScore = 0;
-    const covered = instructionFiles.some(f => {
-      // Check if instruction content mentions this component path or name
+    // ── Coverage: how well is this component covered? ──
+    let coverageType: 'specific' | 'scoped' | 'global' | 'none' = 'none';
+    let compTokens = 0; // tokens from instruction files covering this component
+
+    for (const f of instructionFiles) {
       const mentionsPath = f.content.includes(comp.path) || f.content.includes(comp.name);
-      // Check applyTo/paths frontmatter targeting this component
+      if (mentionsPath) { coverageType = 'specific'; compTokens += f.tokens; continue; }
+
       const hasGlob = f.content.match(/(?:applyTo|paths|glob):\s*[^\n]*/) !== null;
       const globCoversComp = hasGlob && (
         f.content.includes(`${comp.path}/`) ||
         f.content.includes(`${comp.path}/**`) ||
         f.content.includes(`*.${comp.language === 'Python' ? 'py' : comp.language === 'TypeScript' ? 'ts' : comp.language?.toLowerCase() || '*'}`)
       );
-      // Check subdirectory placement (CLAUDE.md, AGENTS.md in component dir)
+      if (globCoversComp && coverageType !== 'specific') { coverageType = 'scoped'; compTokens += f.tokens; continue; }
+
       const isSubdirInstruction = f.path.startsWith(comp.path + '/');
-      // Check if this is a global instruction (covers everything)
+      if (isSubdirInstruction) { coverageType = 'specific'; compTokens += f.tokens; continue; }
+
       const isGlobal = !hasGlob && (
         f.path.includes('copilot-instructions') || f.path.includes('default-rules') ||
         f.path === 'CLAUDE.md' || f.path === '.cursorrules' || f.path === '.roorules'
       );
-
-      return mentionsPath || globCoversComp || isSubdirInstruction || isGlobal;
-    });
-
-    // Scoring: specific mention = 100, global-only = 60, not covered = 0
-    const hasGlobalCoverage = instructionFiles.some(f =>
-      f.path.includes('copilot-instructions') || f.path.includes('default-rules') ||
-      f.path === 'CLAUDE.md' || f.path === '.cursorrules' || f.path === '.roorules'
-    );
-    if (covered) {
-      compScore = 100;
-    } else if (hasGlobalCoverage) {
-      compScore = 60; // global instructions give partial credit
+      if (isGlobal && coverageType === 'none') { coverageType = 'global'; }
     }
-    coverageWeightedSum += compScore * weight;
+
+    const coverageScore = coverageType === 'specific' ? 100 : coverageType === 'scoped' ? 80 : coverageType === 'global' ? 40 : 0;
+
+    // ── Budget: are the instruction tokens for this component right-sized? ──
+    // Per-component ideal: 500-3000 tokens. Too little = generic, too much = verbose.
+    let compBudgetScore: number;
+    if (compTokens === 0) {
+      compBudgetScore = coverageType === 'global' ? 30 : 10; // global gives some implicit tokens
+    } else if (compTokens <= 200) {
+      compBudgetScore = 40; // too thin
+    } else if (compTokens <= 3000) {
+      compBudgetScore = 80 + Math.round((1 - Math.abs(compTokens - 1500) / 1500) * 20); // sweet spot ~1500
+    } else if (compTokens <= 8000) {
+      compBudgetScore = Math.round(80 - (compTokens - 3000) / 250); // getting heavy
+    } else {
+      compBudgetScore = Math.max(20, Math.round(60 - (compTokens - 8000) / 500)); // too verbose
+    }
+    compBudgetScore = clampScore(compBudgetScore);
+
+    // Blend per-component: 60% coverage + 40% budget
+    const compEfficiency = Math.round(coverageScore * 0.6 + compBudgetScore * 0.4);
+    efficiencyWeightedSum += compEfficiency * weight;
   }
 
-  // Component coverage score (0-100): weighted average of per-component coverage
-  const coverageScore = totalWeight > 0 ? Math.round(coverageWeightedSum / totalWeight) : 50;
+  // Weighted average across all components
+  let efficiencyScore = totalWeight > 0 ? Math.round(efficiencyWeightedSum / totalWeight) : 50;
+
+  // Cross-platform credit: if this platform has low coverage but OTHER platforms have
+  // instruction files, give partial credit (knowledge exists, just needs migration)
+  if (selectedTool && efficiencyScore < 50) {
+    const otherPlatformPatterns = Object.entries(PLATFORM_PATTERNS)
+      .filter(([p]) => p !== selectedTool)
+      .flatMap(([, pats]) => pats);
+    let crossPlatformFiles = 0;
+    let instructionFiles = 0; // files with actual instruction content (higher credit)
+    for (const pat of otherPlatformPatterns.slice(0, 10)) {
+      const found = await findFiles(workspaceUri, pat);
+      crossPlatformFiles += found.length;
+      // Count files named *.instructions.md or containing coding conventions
+      for (const f of found) {
+        const name = f.fsPath.split('/').pop() || '';
+        if (name.includes('instructions') || name.includes('rules') || name.includes('conventions')) {
+          instructionFiles++;
+        }
+      }
+    }
+    if (crossPlatformFiles > 0) {
+      // Higher credit for actual instruction files (4 pts each) vs generic files (2 pts each)
+      const crossCredit = Math.min(25, instructionFiles * 6 + (crossPlatformFiles - instructionFiles) * 2);
+      efficiencyScore = Math.min(65, efficiencyScore + crossCredit);
+    }
+  }
 
   const breakdown: ContextEfficiencyResult['breakdown'] = [
     { category: 'Instructions', tokens: instructionTokens, pct: totalTokens > 0 ? (instructionTokens / totalTokens) * 100 : 0 },
@@ -395,24 +455,7 @@ export async function auditContextEfficiency(
     }
   }
 
-  // Final score: blend budget efficiency (40%) + component coverage (60%)
-  // Budget efficiency: inverted U-curve (too little or too much is bad)
-  let budgetScore: number;
-  if (totalTokens === 0) {
-    budgetScore = 15;
-  } else if (budgetPct <= 1) {
-    budgetScore = 40 + Math.round(budgetPct * 30);
-  } else if (budgetPct <= 8) {
-    budgetScore = 70 + Math.round((1 - Math.abs(budgetPct - 4) / 4) * 30);
-  } else if (budgetPct <= 15) {
-    budgetScore = Math.round(70 - (budgetPct - 8) * 5);
-  } else {
-    budgetScore = Math.max(10, Math.round(35 - (budgetPct - 15) * 2));
-  }
-  budgetScore = clampScore(budgetScore);
-
-  // Blend: coverage matters more than raw budget
-  const score = clampScore(Math.round(coverageScore * 0.6 + budgetScore * 0.4));
+  const score = clampScore(efficiencyScore);
 
   endTimer?.end?.();
   return { score, totalTokens, budgetPct: Math.round(budgetPct * 100) / 100, breakdown, redundancies };

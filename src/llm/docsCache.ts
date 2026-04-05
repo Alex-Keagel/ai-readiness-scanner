@@ -17,7 +17,7 @@ export class DocsCache {
   private cache = new Map<string, CachedDoc>();
 
   constructor(private context: vscode.ExtensionContext) {
-    const saved = context.globalState.get<Record<string, CachedDoc>>(DOCS_CACHE_KEY);
+    const saved = context.workspaceState.get<Record<string, CachedDoc>>(DOCS_CACHE_KEY);
     if (saved) {
       for (const [key, val] of Object.entries(saved)) {
         this.cache.set(key, val);
@@ -107,7 +107,7 @@ export class DocsCache {
   private async persistCache(): Promise<void> {
     const cacheObj: Record<string, CachedDoc> = {};
     for (const [k, v] of this.cache) { cacheObj[k] = v; }
-    await this.context.globalState.update(DOCS_CACHE_KEY, cacheObj);
+    await this.context.workspaceState.update(DOCS_CACHE_KEY, cacheObj);
   }
 
   private fetchUrl(url: string, redirectCount = 0): Promise<string | null> {

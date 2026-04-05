@@ -8,11 +8,69 @@ import { MaturityEngine } from '../scoring/maturityEngine';
 import { RealityChecker, RealityReport } from './realityChecker';
 import { logger } from '../logging';
 import { getPlatformExpertPrompt } from '../remediation/fixPrompts';
-import { analyzeFileContent, calculateCodebaseMetrics } from '../metrics';
+import { analyzeFileContent, calculateCodebaseMetrics, computeWeightedSemanticDensity } from '../metrics';
 import { auditContextEfficiency } from '../scoring/contextAudit';
 import { PlatformSignalFilter } from '../scoring/signalFilter';
+import { isNestedConfig } from '../utils';
+import { isVirtualEnvPath } from './componentMapper';
 
-const EXCLUDE_GLOB = '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/__pycache__/**,**/.venv/**,**/venv/**,**/target/**,**/coverage/**';
+const EXCLUDE_GLOB = '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/__pycache__/**,**/.venv/**,**/venv/**,**/target/**,**/coverage/**,**/ai-readiness-scanner*/**,**/site-packages/**,**/.tox/**,**/env/**';
+const SEMANTIC_DENSITY_SAMPLE_MAX = 100;
+const SEMANTIC_DENSITY_LLM_SAMPLE_MAX = 10;
+const SEMANTIC_DENSITY_SMALL_SAMPLE_MIN = 10;
+
+function normalizeRepoPath(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.?\//, '').replace(/\/$/, '');
+}
+
+function isInSubProject(filePath: string, subProjectPaths: string[]): boolean {
+  const normalizedFile = normalizeRepoPath(filePath);
+  return subProjectPaths.some(subProjectPath => {
+    const normalizedSubProject = normalizeRepoPath(subProjectPath);
+    if (!normalizedSubProject) { return false; }
+    return normalizedFile === normalizedSubProject ||
+      normalizedFile.startsWith(`${normalizedSubProject}/`) ||
+      normalizedFile.includes(`/${normalizedSubProject}/`) ||
+      normalizedFile.endsWith(`/${normalizedSubProject}`);
+  });
+}
+
+function buildMonorepoScopeBlock(context: ProjectContext, subProjectPaths: string[]): string {
+  if (context.projectType !== 'monorepo') {
+    return '';
+  }
+
+  const boundaries = subProjectPaths.length > 0
+    ? subProjectPaths.map(path => `  - ${path}/`).join('\n')
+    : '  - (no root-owned sub-project .github/ boundaries detected)';
+
+  return `MONOREPO ROOT-SCOPE RULES:
+- Evaluate ONLY repository-root files for root-level signals.
+- The file lists below have already been filtered to exclude files inside known sub-projects.
+- Treat these directories as sub-project boundaries and EXCLUDE them from root scoring:
+${boundaries}
+- If a capability exists only inside those sub-projects, treat it as NOT detected at the root.`;
+}
+
+export function filterRootFiles(files: vscode.Uri[], subProjectPaths: string[]): vscode.Uri[] {
+  if (subProjectPaths.length === 0) {
+    return files;
+  }
+
+  return files.filter(uri => !isInSubProject(uri.fsPath || uri.path, subProjectPaths) && !isInSubProject(uri.path, subProjectPaths));
+}
+
+export interface SemanticDensitySampleCandidate {
+  path: string;
+  language: string;
+  component: string;
+  size: number;
+  isTest: boolean;
+}
+
+interface SemanticDensityWorkspaceCandidate extends SemanticDensitySampleCandidate {
+  uri: vscode.Uri;
+}
 
 export class MaturityScanner {
   private realityChecker: RealityChecker;
@@ -52,11 +110,13 @@ export class MaturityScanner {
     if (token.isCancellationRequested) { return []; }
     progress.report({ message: `📂 Discovering ${toolConfig.name} configuration files...`, increment: 5 });
 
+    const subProjectPaths = await this.collectMonorepoSubProjectPaths(workspaceUri, context);
+
     const [l2Files, l3Files, l4Files, l5Files] = await Promise.all([
-      toolConfig.level2Files.length > 0 ? this.findFiles(toolConfig.level2Files, workspaceUri, 20) : Promise.resolve([]),
-      toolConfig.level3Files.length > 0 ? this.findFiles(toolConfig.level3Files, workspaceUri, 20) : Promise.resolve([]),
-      toolConfig.level4Files.length > 0 ? this.findFiles(toolConfig.level4Files, workspaceUri, 20) : Promise.resolve([]),
-      toolConfig.level5Files.length > 0 ? this.findFiles(toolConfig.level5Files, workspaceUri, 20) : Promise.resolve([]),
+      toolConfig.level2Files.length > 0 ? this.findFiles(toolConfig.level2Files, workspaceUri, 20, subProjectPaths) : Promise.resolve([]),
+      toolConfig.level3Files.length > 0 ? this.findFiles(toolConfig.level3Files, workspaceUri, 20, subProjectPaths) : Promise.resolve([]),
+      toolConfig.level4Files.length > 0 ? this.findFiles(toolConfig.level4Files, workspaceUri, 20, subProjectPaths) : Promise.resolve([]),
+      toolConfig.level5Files.length > 0 ? this.findFiles(toolConfig.level5Files, workspaceUri, 20, subProjectPaths) : Promise.resolve([]),
     ]);
 
     const totalFiles = l2Files.length + l3Files.length + l4Files.length + l5Files.length;
@@ -74,7 +134,7 @@ export class MaturityScanner {
     logger.info(`Phase 3b: Batch evaluating tool levels (agent: ${toolConfig.name} expert, model: ${this.copilotClient.getFastModelName()})...`);
     progress.report({ message: `🧠 Analyzing ${toolConfig.name} signals across L2–L5 via LLM...`, increment: 5 });
 
-    const toolLevelResults = await this.batchEvaluateToolLevels(tool, levelFiles, context, quickMode, token, progress);
+    const toolLevelResults = await this.batchEvaluateToolLevels(tool, levelFiles, context, quickMode, token, progress, subProjectPaths);
     allSignalResults.push(...toolLevelResults);
 
     const detectedCount = toolLevelResults.filter(r => r.detected).length;
@@ -124,7 +184,7 @@ export class MaturityScanner {
     const allBatchSignals = [...sharedSignals, ...accuracySignals];
 
     const batchSignalResults = await this.batchEvaluateSignals(
-      allBatchSignals, workspaceUri, context, quickMode, token, tool
+      allBatchSignals, workspaceUri, context, quickMode, token, tool, subProjectPaths
     );
     allSignalResults.push(...batchSignalResults);
 
@@ -136,7 +196,14 @@ export class MaturityScanner {
       // Only analyze app/library/service code — exclude infra, config, data, script
       const APP_TYPES = new Set(['app', 'library', 'service']);
       const appComponents = context.components.filter(c => APP_TYPES.has(c.type));
-      const appPaths = appComponents.map(c => c.path);
+      const rootScopedAppPaths = context.projectType === 'monorepo'
+        ? appComponents
+          .filter(c => !c.parentPath && !c.path.includes('/'))
+          .map(c => normalizeSemanticDensityPath(c.path))
+        : [];
+      const appPaths = context.projectType === 'monorepo'
+        ? rootScopedAppPaths
+        : appComponents.map(c => normalizeSemanticDensityPath(c.path));
       logger.info(`L1: ${appComponents.length} app-layer components (${appPaths.join(', ') || 'none'}) of ${context.components.length} total`);
 
       // Find source files in app-layer components
@@ -144,6 +211,9 @@ export class MaturityScanner {
       let appGlobs: string[];
       if (appPaths.length > 0) {
         appGlobs = appPaths.map(p => `${p}/**/*.${codeExts}`);
+      } else if (context.projectType === 'monorepo') {
+        logger.info('L1: monorepo root scan, limiting source discovery to root-owned code');
+        appGlobs = [`*.${codeExts}`, `src/**/*.${codeExts}`, `lib/**/*.${codeExts}`];
       } else {
         // No app/service/library components found — scan all source code
         // This handles repos where components are typed as 'unknown'
@@ -156,49 +226,117 @@ export class MaturityScanner {
         try {
           const found = await vscode.workspace.findFiles(
             new vscode.RelativePattern(workspaceUri, glob),
-            '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**',
+            '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/.venv/**,**/venv/**,**/obj/**,**/bin/**,**/__pycache__/**,**/site-packages/**,**/.tox/**,**/env/**',
             200
           );
-          codeFiles.push(...found);
+          codeFiles.push(...found.filter(f => !isVirtualEnvPath(f.path)));
         } catch { /* skip */ }
       }
 
-      logger.info(`L1: found ${codeFiles.length} source files from ${appGlobs.length} glob patterns`);
+      const uniqueCodeFiles = Array.from(new Map(codeFiles.map(uri => [uri.fsPath, uri])).values());
+      logger.info(`L1: found ${uniqueCodeFiles.length} unique source files from ${appGlobs.length} glob patterns`);
 
-      if (codeFiles.length > 0) {
-        const analyses = await Promise.all(
-          codeFiles.slice(0, 100).map(async (uri) => {
+      if (uniqueCodeFiles.length > 0) {
+        let workspaceCandidates = (await Promise.all(
+          uniqueCodeFiles.map(async (uri) => {
             try {
-              const content = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf-8');
+              const relativePath = normalizeSemanticDensityPath(vscode.workspace.asRelativePath(uri, false));
               const ext = uri.fsPath.split('.').pop()?.toLowerCase() || '';
               const langMap: Record<string, string> = { ts: 'typescript', tsx: 'typescript', js: 'javascript', jsx: 'javascript', py: 'python', cs: 'csharp', java: 'java', go: 'go', rs: 'rust', rb: 'ruby' };
-              return analyzeFileContent(uri.fsPath, content, langMap[ext] || 'typescript');
-            } catch { return null; }
+              const stat = await vscode.workspace.fs.stat(uri);
+              return {
+                uri,
+                path: relativePath,
+                language: langMap[ext] || ext,
+                component: findSemanticDensityComponent(relativePath, appPaths),
+                size: stat.size,
+                isTest: isSemanticDensityTestFile(relativePath),
+              } satisfies SemanticDensityWorkspaceCandidate;
+            } catch {
+              return null;
+            }
+          })
+        )).filter((candidate): candidate is SemanticDensityWorkspaceCandidate => candidate !== null);
+
+        if (context.projectType === 'monorepo') {
+          workspaceCandidates = workspaceCandidates.filter(candidate =>
+            isMonorepoRootScopedSemanticDensityPath(candidate.path, rootScopedAppPaths)
+          );
+          logger.info(`L1: monorepo root scope retained ${workspaceCandidates.length} source files`);
+        }
+
+        const primaryCandidates = workspaceCandidates.filter(candidate => !candidate.isTest);
+        let selectedCandidates = selectRepresentativeSemanticDensitySample(primaryCandidates, SEMANTIC_DENSITY_SAMPLE_MAX);
+        if (selectedCandidates.length < Math.min(SEMANTIC_DENSITY_SAMPLE_MAX, workspaceCandidates.length)) {
+          const selectedPaths = new Set(selectedCandidates.map(candidate => candidate.path));
+          const fallbackCandidates = workspaceCandidates.filter(candidate =>
+            candidate.isTest && !selectedPaths.has(candidate.path)
+          );
+          selectedCandidates = [
+            ...selectedCandidates,
+            ...selectRepresentativeSemanticDensitySample(
+              fallbackCandidates,
+              SEMANTIC_DENSITY_SAMPLE_MAX - selectedCandidates.length,
+            ),
+          ];
+        }
+
+        logger.info(`L1: selected ${selectedCandidates.length} representative files (${selectedCandidates.filter(c => !c.isTest).length} non-test)`);
+
+        const analyses = await Promise.all(
+          selectedCandidates.map(async (candidate) => {
+            try {
+              const content = Buffer.from(await vscode.workspace.fs.readFile(candidate.uri)).toString('utf-8');
+              return analyzeFileContent(candidate.path, content, candidate.language);
+            } catch {
+              return null;
+            }
           })
         );
         const validAnalyses = analyses.filter((a): a is NonNullable<typeof a> => a !== null);
+        const candidateByPath = new Map(selectedCandidates.map(candidate => [candidate.path, candidate]));
 
         if (validAnalyses.length > 0) {
-          // Use LLM to get accurate procedure/documentation counts on a sample
-          let totalProcs = validAnalyses.reduce((s, a) => s + a.totalProcedures, 0);
-          let docProcs = validAnalyses.reduce((s, a) => s + a.documentedProcedures, 0);
+          // Use LLM to get accurate procedure/documentation counts on a representative sample
+          const regexTotalProcs = validAnalyses.reduce((s, a) => s + a.totalProcedures, 0);
+          const regexDocProcs = validAnalyses.reduce((s, a) => s + a.documentedProcedures, 0);
+          let totalProcs = regexTotalProcs;
+          let docProcs = regexDocProcs;
 
           if (this.copilotClient?.isAvailable()) {
             try {
-              // Sample up to 10 files, send their signatures to LLM for accurate counting
-              const sample = validAnalyses
+              const llmSampleCandidates = validAnalyses
                 .filter(a => a.totalProcedures > 0)
-                .sort((a, b) => b.totalProcedures - a.totalProcedures)
-                .slice(0, 10);
+                .map(a => ({
+                  path: a.path,
+                  language: a.language,
+                  component: candidateByPath.get(a.path)?.component ?? findSemanticDensityComponent(a.path, appPaths),
+                  size: Math.max(1, a.totalLines - a.blankLines),
+                  isTest: candidateByPath.get(a.path)?.isTest ?? isSemanticDensityTestFile(a.path),
+                }));
 
-              if (sample.length > 0) {
-                const fileSummaries = await Promise.all(sample.map(async (a) => {
-                  const uri = codeFiles.find(u => u.fsPath.endsWith(a.path) || vscode.workspace.asRelativePath(u) === a.path);
-                  if (!uri) return null;
-                  const content = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf-8');
+              const llmSample = selectRepresentativeSemanticDensitySample(
+                llmSampleCandidates.filter(candidate => !candidate.isTest),
+                SEMANTIC_DENSITY_LLM_SAMPLE_MAX,
+              );
+              const effectiveLlmSample = llmSample.length > 0
+                ? llmSample
+                : selectRepresentativeSemanticDensitySample(llmSampleCandidates, SEMANTIC_DENSITY_LLM_SAMPLE_MAX);
+
+              if (effectiveLlmSample.length > 0) {
+                const fileSummaries = await Promise.all(effectiveLlmSample.map(async (candidate) => {
+                  const analysis = validAnalyses.find(a => a.path === candidate.path);
+                  const workspaceCandidate = candidateByPath.get(candidate.path);
+                  if (!analysis || !workspaceCandidate) return null;
+                  const content = Buffer.from(await vscode.workspace.fs.readFile(workspaceCandidate.uri)).toString('utf-8');
                   // Extract first 150 lines or full file if short
                   const preview = content.split('\n').slice(0, 150).join('\n');
-                  return { path: a.path, preview, regexTotal: a.totalProcedures, regexDoc: a.documentedProcedures };
+                  return {
+                    path: analysis.path,
+                    preview,
+                    regexTotal: analysis.totalProcedures,
+                    regexDoc: analysis.documentedProcedures,
+                  };
                 }));
 
                 const validSummaries = fileSummaries.filter(s => s !== null);
@@ -218,7 +356,7 @@ Respond as JSON array: [{"path":"...","totalProcedures":N,"documentedProcedures"
                     // Calculate correction factor from sample
                     let regexTotal = 0, regexDoc = 0, llmTotal = 0, llmDoc = 0;
                     for (const lc of llmCounts) {
-                      const sa = sample.find(s => s.path === lc.path || lc.path.endsWith(s.path));
+                      const sa = validAnalyses.find(s => s.path === lc.path || lc.path.endsWith(s.path));
                       if (sa) {
                         regexTotal += sa.totalProcedures;
                         regexDoc += sa.documentedProcedures;
@@ -228,19 +366,15 @@ Respond as JSON array: [{"path":"...","totalProcedures":N,"documentedProcedures"
                     }
 
                     if (regexTotal > 0 && llmTotal > 0) {
-                      const totalFactor = llmTotal / regexTotal;
-                      const docFactor = regexDoc > 0 ? llmDoc / regexDoc : 1;
-                      
-                      // Sanity check: if correction is too extreme (>3x or <0.1x), skip it
-                      // Also skip if LLM doc ratio is drastically lower than regex ratio
-                      const regexRatio = regexDoc / regexTotal;
-                      const llmRatio = llmDoc / llmTotal;
-                      if (totalFactor > 0.1 && totalFactor < 3.0 && !(regexRatio > 0.3 && llmRatio < 0.1)) {
-                        totalProcs = Math.round(totalProcs * totalFactor);
-                        docProcs = Math.round(docProcs * docFactor);
-                        logger.info(`L1 LLM correction applied: regex=${regexTotal}/${regexDoc} → LLM=${llmTotal}/${llmDoc} → factors: total=${totalFactor.toFixed(2)}, doc=${docFactor.toFixed(2)} → adjusted: ${totalProcs}/${docProcs}`);
+                      const correction = applyLlmProcCorrection(totalProcs, docProcs, regexTotal, regexDoc, llmTotal, llmDoc);
+                      if (correction.applied) {
+                        totalProcs = correction.totalProcs;
+                        docProcs = correction.docProcs;
+                        logger.info(`L1 LLM correction applied: regex=${regexTotal}/${regexDoc} → LLM=${llmTotal}/${llmDoc} → adjusted: ${totalProcs}/${docProcs}`);
                       } else {
-                        logger.info(`L1 LLM correction SKIPPED (extreme): regex=${regexTotal}/${regexDoc} (${Math.round(regexRatio*100)}%) → LLM=${llmTotal}/${llmDoc} (${Math.round(llmRatio*100)}%) — keeping regex counts`);
+                        const regexRatio = regexDoc / regexTotal;
+                        const llmRatio = llmTotal > 0 ? llmDoc / llmTotal : 0;
+                        logger.info(`L1 LLM correction SKIPPED (extreme): regex=${regexTotal}/${regexDoc} (${Math.round(regexRatio * 100)}%) → LLM=${llmTotal}/${llmDoc} (${Math.round(llmRatio * 100)}%) — keeping regex counts`);
                       }
                     }
                   }
@@ -251,18 +385,32 @@ Respond as JSON array: [{"path":"...","totalProcedures":N,"documentedProcedures"
             }
           }
 
-          logger.info(`L1 analysis: ${validAnalyses.length} files, ${totalProcs} procedures, ${docProcs} documented (${totalProcs > 0 ? Math.round(docProcs/totalProcs*100) : 0}%)`);
+          logger.info(`L1 analysis: ${validAnalyses.length} files, ${totalProcs} procedures, ${docProcs} documented (${totalProcs > 0 ? Math.round(docProcs / totalProcs * 100) : 0}%)`);
 
           const depGraph = validAnalyses.filter(a => a.importCount > 0).map(a => ({ source: a.path, targets: [] as string[] }));
           const metrics = calculateCodebaseMetrics(validAnalyses, depGraph);
-          // Override semantic density with LLM-corrected ratio
-          const correctedDensity = totalProcs > 0 ? Math.round((docProcs / totalProcs) * 100) : metrics.semanticDensity;
+          const correctedDensity = regexTotalProcs > 0
+            ? computeWeightedSemanticDensity(validAnalyses, {
+              totalProceduresFactor: regexTotalProcs > 0 ? totalProcs / regexTotalProcs : 1,
+              documentedProceduresFactor: regexDocProcs > 0 ? docProcs / regexDocProcs : 1,
+            })
+            : metrics.semanticDensity;
+          const nonTestAnalyses = validAnalyses.filter(a => !(candidateByPath.get(a.path)?.isTest ?? isSemanticDensityTestFile(a.path)));
+          const semanticDensitySummary = applySemanticDensitySampleGate(correctedDensity, nonTestAnalyses.length);
 
           allSignalResults.push(
-            { signalId: 'codebase_type_strictness', level: 1 as MaturityLevel, detected: true, score: Math.round(metrics.typeStrictnessIndex), finding: `Type strictness: ${Math.round(metrics.typeStrictnessIndex)}/100 across ${validAnalyses.length} app-layer files`, files: [], confidence: 'high' as const },
-            { signalId: 'codebase_semantic_density', level: 1 as MaturityLevel, detected: true, score: correctedDensity, finding: `Semantic density: ${correctedDensity}/100 — ${docProcs}/${totalProcs} procedures documented across ${validAnalyses.length} files`, files: [], confidence: 'high' as const },
+            { signalId: 'codebase_type_strictness', level: 1 as MaturityLevel, detected: true, score: Math.round(metrics.typeStrictnessIndex), finding: `Type strictness: ${Math.round(metrics.typeStrictnessIndex)}/100 across ${validAnalyses.length} representative app-layer files`, files: [], confidence: 'high' as const },
+            {
+              signalId: 'codebase_semantic_density',
+              level: 1 as MaturityLevel,
+              detected: true,
+              score: semanticDensitySummary.score,
+              finding: `Semantic density: ${semanticDensitySummary.score}/100 — ${docProcs}/${totalProcs} procedures documented across ${validAnalyses.length} representative files${semanticDensitySummary.note ? ` (${semanticDensitySummary.note})` : ''}`,
+              files: [],
+              confidence: semanticDensitySummary.confidence,
+            },
           );
-          logger.info(`L1 signals: typeStrictness=${Math.round(metrics.typeStrictnessIndex)}, semanticDensity=${correctedDensity} from ${validAnalyses.length} app-layer files`);
+          logger.info(`L1 signals: typeStrictness=${Math.round(metrics.typeStrictnessIndex)}, semanticDensity=${semanticDensitySummary.score} from ${validAnalyses.length} representative app-layer files`);
         }
       }
 
@@ -349,18 +497,20 @@ Respond as JSON array: [{"path":"...","totalProcedures":N,"documentedProcedures"
           }
         }
 
+        const rawFinding = parsed.finding + (businessFindings?.length ? ' | Business logic validated' : '');
         const result: SignalResult = {
           signalId,
           level: level as MaturityLevel,
           detected: parsed.detected,
           score: finalScore,
-          finding: parsed.finding + (businessFindings?.length ? ' | Business logic validated' : ''),
+          finding: sanitizeFinding(rawFinding, realityChecks),
           files: files.map(f => f.relativePath),
           modelUsed: this.copilotClient.getModelName(),
           confidence: parsed.confidence,
           businessFindings,
         };
         if (realityChecks) { result.realityChecks = realityChecks; }
+        result.confidenceScore = computeQuickConfidence(result);
         return result;
       }
     } catch (err) {
@@ -369,6 +519,7 @@ Respond as JSON array: [{"path":"...","totalProcedures":N,"documentedProcedures"
 
     const fallback = this.evaluateToolLevelDeterministic(tool, level, category, files, realityReport);
     if (realityChecks) { fallback.realityChecks = realityChecks; }
+    fallback.confidenceScore = computeQuickConfidence(fallback);
     return fallback;
   }
 
@@ -431,7 +582,8 @@ Respond as JSON array: [{"path":"...","totalProcedures":N,"documentedProcedures"
     context: ProjectContext,
     quickMode: boolean,
     token?: vscode.CancellationToken,
-    progress?: vscode.Progress<{ message?: string; increment?: number }>
+    progress?: vscode.Progress<{ message?: string; increment?: number }>,
+    subProjectPaths: string[] = []
   ): Promise<SignalResult[]> {
     // If quick mode or LLM unavailable, fall back to per-level deterministic
     if (quickMode || !this.copilotClient.isAvailable()) {
@@ -469,7 +621,7 @@ Respond as JSON array: [{"path":"...","totalProcedures":N,"documentedProcedures"
     logger.info('Phase 3b: Building batch prompt + fetching live docs...');
     const promptTimer = logger.time('Phase 3b: Prompt build + docs fetch');
     progress?.report({ message: `🧠 Building analysis prompt for LLM...` });
-    const prompt = await this.buildBatchToolLevelPrompt(tool, levelFiles, context, realityResults);
+    const prompt = await this.buildBatchToolLevelPrompt(tool, levelFiles, context, realityResults, subProjectPaths);
     const promptKb = Math.round(prompt.length / 1024);
     promptTimer?.end?.();
     logger.info(`Phase 3b: Prompt ready (${promptKb}KB), sending to ${this.copilotClient.getFastModelName()} (Flash)...`);
@@ -501,7 +653,8 @@ Respond as JSON array: [{"path":"...","totalProcedures":N,"documentedProcedures"
     tool: AITool,
     levelFiles: Map<number, FileContent[]>,
     context: ProjectContext,
-    realityResults: Map<number, { report?: RealityReport; checks?: RealityCheckRef[] }>
+    realityResults: Map<number, { report?: RealityReport; checks?: RealityCheckRef[] }>,
+    subProjectPaths: string[] = []
   ): Promise<string> {
     const toolConfig = AI_TOOLS[tool];
 
@@ -547,6 +700,7 @@ ${realitySummary ? `\nREALITY CHECKS FOR L${level}:\n${realitySummary}` : ''}
     }
 
     const expertPrompt = getPlatformExpertPrompt(tool);
+    const monorepoScopeBlock = buildMonorepoScopeBlock(context, subProjectPaths);
 
     return `${expertPrompt}
 
@@ -561,8 +715,11 @@ Project REALITY (ground truth):
 ${context.buildTasks ? `- Build/automation tasks (.vscode/tasks.json):\n${context.buildTasks}` : ''}
 - Directory structure:
 ${context.directoryTree.slice(0, 800)}
+${monorepoScopeBlock ? `\n\n${monorepoScopeBlock}` : ''}
 
 ${fileSections}
+
+Treat the automated reality checks as authoritative for filesystem claims. Do NOT say a verified path is missing, non-existent, hallucinated, or an incorrect directory. If you mention path problems, cite only specific invalid path claims listed in the reality checks.
 
 For EACH level that has files, score 0-100 based on:
 1. ACCURACY — do references match the real project?
@@ -613,12 +770,13 @@ Only include levels that have files to evaluate.`;
           level: level as MaturityLevel,
           detected: item.detected,
           score: Math.max(0, Math.min(100, item.score)),
-          finding: item.finding,
+          finding: sanitizeFinding(item.finding, realityData?.checks),
           files: files.map(f => f.relativePath),
           modelUsed: this.copilotClient.getModelName(),
           confidence: ['high', 'medium', 'low'].includes(item.confidence) ? item.confidence : 'medium',
         };
         if (realityData?.checks) { result.realityChecks = realityData.checks; }
+        result.confidenceScore = computeQuickConfidence(result);
         results.push(result);
       }
     } catch (err) {
@@ -629,6 +787,7 @@ Only include levels that have files to evaluate.`;
         const realityData = realityResults.get(level);
         const result = this.evaluateToolLevelDeterministic(tool, level, category, files, realityData?.report);
         if (realityData?.checks) { result.realityChecks = realityData.checks; }
+        result.confidenceScore = computeQuickConfidence(result);
         results.push(result);
       }
     }
@@ -660,13 +819,14 @@ Only include levels that have files to evaluate.`;
     context: ProjectContext,
     quickMode: boolean,
     token?: vscode.CancellationToken,
-    tool?: AITool
+    tool?: AITool,
+    subProjectPaths: string[] = []
   ): Promise<SignalResult[]> {
     // Gather files for all signals first
     logger.info(`Phase 3c: Gathering files for ${signals.length} signals...`);
     const signalFiles = new Map<string, FileContent[]>();
     const filePromises = signals.map(async (signal) => {
-      const files = await this.findFiles(signal.filePatterns, workspaceUri);
+      const files = await this.findFiles(signal.filePatterns, workspaceUri, 10, subProjectPaths);
       signalFiles.set(signal.id, files);
     });
     await Promise.all(filePromises);
@@ -747,6 +907,7 @@ ${fileContents}`;
 
     const expertPrompt = tool ? getPlatformExpertPrompt(tool) : '';
     const toolName = tool ? (AI_TOOLS[tool]?.name || tool) : 'AI agent';
+    const monorepoScopeBlock = buildMonorepoScopeBlock(context, subProjectPaths);
 
     const prompt = `${expertPrompt}
 
@@ -758,6 +919,7 @@ Project REALITY:
 - Package manager: ${context.packageManager}
 - Directory structure:
 ${context.directoryTree.slice(0, 600)}
+${monorepoScopeBlock ? `\n\n${monorepoScopeBlock}` : ''}
 
 ${signalSections}
 
@@ -830,7 +992,8 @@ Respond with ONLY valid JSON array:
     category: string,
     files: FileContent[],
     context: ProjectContext,
-    realitySummary: string = ''
+    realitySummary: string = '',
+    subProjectPaths: string[] = []
   ): Promise<string> {
     const toolConfig = AI_TOOLS[tool];
     const levelDescriptions: Record<number, string> = {
@@ -845,7 +1008,14 @@ Respond with ONLY valid JSON array:
     ).join('\n\n');
 
     const realityBlock = realitySummary
-      ? `\n${realitySummary}\n\nUse these automated reality checks as evidence. If many paths are invalid or commands are wrong, score lower.\n`
+      ? `\n${realitySummary}\n\n` +
+        `CRITICAL INSTRUCTION FOR PATH ACCURACY:\n` +
+        `- The reality checks above are GROUND TRUTH from filesystem verification.\n` +
+        `- If a reality check marks a path as "valid", that path EXISTS. Do NOT claim it is missing, non-existent, or hallucinated.\n` +
+        `- If a reality check marks a path as "invalid", it genuinely does not exist.\n` +
+        `- Your finding text MUST NOT contradict the reality check results.\n` +
+        `- Do NOT invent path-existence claims. Only reference paths verified above or visible in the directory tree.\n` +
+        `- If many paths are invalid or commands are wrong, score lower.\n`
       : '';
 
     // Try to use live docs; fall back to static reasoningContext
@@ -864,6 +1034,8 @@ Use this documentation to evaluate whether the files follow ${toolConfig.name}'s
       docsBlock = this.buildStaticDocsBlock(toolConfig);
     }
 
+    const monorepoScopeBlock = buildMonorepoScopeBlock(context, subProjectPaths);
+
     return `${getPlatformExpertPrompt(tool)}
 
 You are now EVALUATING (not generating) a repository's readiness for **${toolConfig.name}** (AI coding assistant).
@@ -881,6 +1053,7 @@ Project REALITY (ground truth):
 - Package manager: ${context.packageManager}
 - Directory structure:
 ${context.directoryTree.slice(0, 800)}
+${monorepoScopeBlock ? `\n\n${monorepoScopeBlock}` : ''}
 ${realityBlock}
 ${toolConfig.name} files found:
 ${fileContents}
@@ -921,8 +1094,9 @@ ${toolConfig?.reasoningContext?.antiPatterns ?? ''}`;
     quickMode: boolean,
     token?: vscode.CancellationToken
   ): Promise<SignalResult> {
+    const subProjectPaths = await this.collectMonorepoSubProjectPaths(workspaceUri, context);
     // 1. Discover files matching the signal's patterns
-    const files = await this.findFiles(signal.filePatterns, workspaceUri);
+    const files = await this.findFiles(signal.filePatterns, workspaceUri, 10, subProjectPaths);
 
     // 2. If no files found, signal not detected
     if (files.length === 0) {
@@ -943,7 +1117,7 @@ ${toolConfig?.reasoningContext?.antiPatterns ?? ''}`;
     }
 
     // 5. LLM deep analysis
-    return this.evaluateWithLLM(signal, files, context, token);
+    return this.evaluateWithLLM(signal, files, context, token, subProjectPaths);
   }
 
   private evaluateDeterministic(signal: LevelSignal, files: FileContent[]): SignalResult {
@@ -982,7 +1156,8 @@ ${toolConfig?.reasoningContext?.antiPatterns ?? ''}`;
     signal: LevelSignal,
     files: FileContent[],
     context: ProjectContext,
-    token?: vscode.CancellationToken
+    token?: vscode.CancellationToken,
+    subProjectPaths: string[] = []
   ): Promise<SignalResult> {
     // Check cache
     const cacheKey = files.map(f => f.content);
@@ -1001,7 +1176,7 @@ ${toolConfig?.reasoningContext?.antiPatterns ?? ''}`;
     }
 
     try {
-      const prompt = await this.buildSignalPrompt(signal, files, context);
+      const prompt = await this.buildSignalPrompt(signal, files, context, undefined, subProjectPaths);
       const response = await this.copilotClient.analyzeFast(prompt, token);
       const parsed = this.parseResponse(response);
 
@@ -1034,7 +1209,7 @@ ${toolConfig?.reasoningContext?.antiPatterns ?? ''}`;
     return det;
   }
 
-  private async buildSignalPrompt(signal: LevelSignal, files: FileContent[], context: ProjectContext, tool?: AITool): Promise<string> {
+  private async buildSignalPrompt(signal: LevelSignal, files: FileContent[], context: ProjectContext, tool?: AITool, subProjectPaths: string[] = []): Promise<string> {
     const fileContents = files.slice(0, 5).map(f =>
       `### ${f.relativePath}\n\`\`\`\n${f.content.slice(0, 2000)}\n\`\`\``
     ).join('\n\n');
@@ -1065,6 +1240,8 @@ ${toolConfig?.reasoningContext?.antiPatterns ?? ''}`;
       toolContextBlock = blocks.join('\n');
     }
 
+    const monorepoScopeBlock = buildMonorepoScopeBlock(context, subProjectPaths);
+
     return `${expertPrompt}
 
 You are now EVALUATING (not generating) a repository's AI Agent Readiness — specifically whether instruction/context files are ACCURATE and up-to-date.
@@ -1077,6 +1254,7 @@ Project REALITY (ground truth):
 - Package manager: ${context.packageManager}
 - Actual directory structure:
 ${context.directoryTree.slice(0, 800)}
+${monorepoScopeBlock ? `\n\n${monorepoScopeBlock}` : ''}
 
 Files to evaluate:
 ${fileContents}
@@ -1118,20 +1296,53 @@ Respond with ONLY valid JSON:
     return contexts[level];
   }
 
-  private async findFiles(patterns: string[], workspaceUri: vscode.Uri, max: number = 10): Promise<FileContent[]> {
+  private async collectMonorepoSubProjectPaths(workspaceUri: vscode.Uri, context: ProjectContext): Promise<string[]> {
+    if (context.projectType !== 'monorepo') {
+      return [];
+    }
+
+    const candidates = [...new Set(
+      (context.components || [])
+        .filter(component => (component.parentPath === '' || !component.parentPath) && component.path && !component.path.startsWith('.'))
+        .map(component => normalizeRepoPath(component.path))
+    )];
+
+    const resolved = await Promise.all(candidates.map(async candidate => {
+      try {
+        await vscode.workspace.fs.stat(vscode.Uri.joinPath(workspaceUri, candidate, '.github'));
+        return candidate;
+      } catch {
+        return undefined;
+      }
+    }));
+
+    const subProjectPaths = resolved.filter((candidate): candidate is string => Boolean(candidate));
+    if (subProjectPaths.length > 0) {
+      logger.info(`MaturityScanner: monorepo root scope excludes ${subProjectPaths.length} sub-project(s): ${subProjectPaths.join(', ')}`);
+    }
+    return subProjectPaths;
+  }
+
+  private async findFiles(patterns: string[], workspaceUri: vscode.Uri, max: number = 10, subProjectPaths: string[] = []): Promise<FileContent[]> {
     const files: FileContent[] = [];
     for (const pattern of patterns) {
       if (files.length >= max) break;
-      const uris = await vscode.workspace.findFiles(
+      const uris = filterRootFiles(await vscode.workspace.findFiles(
         new vscode.RelativePattern(workspaceUri, pattern), EXCLUDE_GLOB, max - files.length
-      );
+      ), subProjectPaths);
       for (const uri of uris) {
         try {
+          const relPath = vscode.workspace.asRelativePath(uri, false);
+          // Skip files nested inside sub-projects
+          if (isNestedConfig(relPath)) {
+            logger.debug(`findFiles: skipping nested config ${relPath}`);
+            continue;
+          }
           const raw = await vscode.workspace.fs.readFile(uri);
           const content = Buffer.from(raw).toString('utf-8');
           const lines = content.split('\n');
           const truncated = lines.length > 500 ? lines.slice(0, 500).join('\n') + '\n...(truncated)' : content;
-          files.push({ path: uri.fsPath, content: truncated, relativePath: vscode.workspace.asRelativePath(uri) });
+          files.push({ path: uri.fsPath, content: truncated, relativePath: relPath });
         } catch (err) {
           logger.warn('Failed to read file, skipping', { error: err instanceof Error ? err.message : String(err) });
         }
@@ -1268,7 +1479,7 @@ Respond with ONLY valid JSON:
     _context: ProjectContext
   ): Promise<FileContent[]> {
     const evidence: FileContent[] = [];
-    const exclude = '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/__pycache__/**,**/.venv/**,**/target/**';
+    const exclude = '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/__pycache__/**,**/.venv/**,**/venv/**,**/target/**,**/site-packages/**,**/.tox/**,**/env/**';
 
     // 1. Entry points — main files, index files, app files
     const entryPatterns = [
@@ -1338,4 +1549,305 @@ Respond with ONLY valid JSON:
       return null;
     }
   }
+}
+
+/**
+ * Compute a real confidence score (0.0-1.0) for a signal result,
+ * based on evidence strength — replaces hard-coded 'high'/'medium'/'low'.
+ */
+export function computeQuickConfidence(result: SignalResult): number {
+  let score = 0.0;
+
+  // File evidence: more files = higher confidence
+  const fileCount = result.files?.length || 0;
+  score += Math.min(fileCount / 3, 0.3);
+
+  // Reality checks: high validation rate = higher confidence
+  const checks = result.realityChecks || [];
+  if (checks.length > 0) {
+    const validRate = checks.filter(c => c.status === 'valid').length / checks.length;
+    score += validRate * 0.3;
+  } else if (fileCount > 0) {
+    score += 0.1; // Some files but no checks — moderate
+  }
+
+  // Detection + score alignment
+  if (result.detected) {
+    score += 0.15;
+    // High scores with few files = less confident
+    if (result.score > 80 && fileCount < 2) score -= 0.1;
+  }
+
+  // Model-backed analysis bonus
+  if (result.modelUsed) score += 0.1;
+
+  // Business validation bonus
+  if (result.businessFindings && result.businessFindings.length > 0) score += 0.1;
+
+  // Penalty for contradiction indicators in finding text
+  const finding = (result.finding || '').toLowerCase();
+  if (finding.includes('non-existent') || finding.includes('hallucinated') || finding.includes('does not exist')) {
+    // Finding claims something doesn't exist — reduce confidence
+    const validPaths = checks.filter(c => c.status === 'valid').length;
+    if (validPaths > 0) score -= 0.2; // Contradicts reality checks
+  }
+
+  return Math.max(0.0, Math.min(1.0, Math.round(score * 100) / 100));
+}
+
+export function normalizeSemanticDensityPath(path: string): string {
+  return path.replace(/^\.?\//, '').replace(/\\/g, '/');
+}
+
+export function isSemanticDensityTestFile(path: string): boolean {
+  const normalized = normalizeSemanticDensityPath(path).toLowerCase();
+  const fileName = normalized.split('/').pop() ?? normalized;
+  return (
+    /(?:^|\/)(?:test|tests|__tests__|spec|e2e|fixtures|mocks|samples)(?:\/|$)/i.test(normalized) ||
+    normalized.includes('.test.') ||
+    normalized.includes('.spec.') ||
+    fileName.startsWith('test_') ||
+    fileName.endsWith('_test.py') ||
+    fileName === 'conftest.py'
+  );
+}
+
+export function findSemanticDensityComponent(path: string, appPaths: string[]): string {
+  const normalized = normalizeSemanticDensityPath(path);
+  const owner = [...appPaths]
+    .sort((a, b) => b.length - a.length)
+    .find(componentPath =>
+      normalized === componentPath || normalized.startsWith(`${componentPath}/`)
+    );
+  if (owner) return owner;
+  const topDir = normalized.split('/')[0];
+  return topDir && topDir !== normalized ? topDir : 'root';
+}
+
+export function isMonorepoRootScopedSemanticDensityPath(path: string, rootScopedAppPaths: string[]): boolean {
+  const normalized = normalizeSemanticDensityPath(path);
+  if (!normalized.includes('/')) return true;
+  return rootScopedAppPaths.some(componentPath =>
+    normalized === componentPath || normalized.startsWith(`${componentPath}/`)
+  );
+}
+
+function selectEvenlySpacedCandidates<T>(items: T[], count: number): T[] {
+  if (count <= 0 || items.length === 0) return [];
+  if (count >= items.length) return [...items];
+  if (count === 1) return [items[Math.floor((items.length - 1) / 2)]];
+
+  const chosen = new Set<number>();
+  for (let i = 0; i < count; i++) {
+    const index = Math.round((i * (items.length - 1)) / (count - 1));
+    chosen.add(index);
+  }
+
+  return [...chosen].sort((a, b) => a - b).map(index => items[index]);
+}
+
+export function selectRepresentativeSemanticDensitySample<T extends SemanticDensitySampleCandidate>(
+  candidates: T[],
+  maxFiles = SEMANTIC_DENSITY_SAMPLE_MAX,
+): T[] {
+  if (maxFiles <= 0 || candidates.length === 0) return [];
+  if (candidates.length <= maxFiles) return [...candidates];
+
+  const groups = new Map<string, T[]>();
+  for (const candidate of candidates) {
+    const key = `${candidate.component}::${candidate.language}`;
+    const group = groups.get(key) ?? [];
+    group.push(candidate);
+    groups.set(key, group);
+  }
+
+  const orderedGroups = [...groups.values()]
+    .map(group => [...group].sort((a, b) => a.size - b.size))
+    .sort((a, b) => b.length - a.length);
+
+  if (orderedGroups.length >= maxFiles) {
+    return orderedGroups
+      .slice(0, maxFiles)
+      .map(group => selectEvenlySpacedCandidates(group, 1)[0]);
+  }
+
+  const allocations = new Map<number, number>();
+  let remaining = maxFiles;
+  orderedGroups.forEach((_, index) => {
+    allocations.set(index, 1);
+    remaining--;
+  });
+
+  const totalCandidates = orderedGroups.reduce((sum, group) => sum + group.length, 0);
+  const remainders: Array<{ index: number; remainder: number }> = [];
+
+  orderedGroups.forEach((group, index) => {
+    const rawAllocation = maxFiles * (group.length / totalCandidates);
+    const cappedBase = Math.min(group.length, Math.max(1, Math.floor(rawAllocation)));
+    const alreadyAllocated = allocations.get(index) ?? 0;
+    const extraBase = Math.max(0, cappedBase - alreadyAllocated);
+    allocations.set(index, alreadyAllocated + extraBase);
+    remaining -= extraBase;
+    remainders.push({ index, remainder: rawAllocation - Math.floor(rawAllocation) });
+  });
+
+  remainders.sort((a, b) => b.remainder - a.remainder);
+  while (remaining > 0) {
+    let allocated = false;
+    for (const { index } of remainders) {
+      const group = orderedGroups[index];
+      const current = allocations.get(index) ?? 0;
+      if (current >= group.length) continue;
+      allocations.set(index, current + 1);
+      remaining--;
+      allocated = true;
+      if (remaining === 0) break;
+    }
+    if (!allocated) break;
+  }
+
+  return orderedGroups.flatMap((group, index) =>
+    selectEvenlySpacedCandidates(group, allocations.get(index) ?? 0)
+  );
+}
+
+export function applySemanticDensitySampleGate(
+  score: number,
+  analyzedFileCount: number,
+): { score: number; confidence: 'high' | 'low'; note?: string } {
+  if (analyzedFileCount < SEMANTIC_DENSITY_SMALL_SAMPLE_MIN) {
+    return {
+      score: Math.min(score, 60),
+      confidence: 'low',
+      note: 'Low confidence — small sample',
+    };
+  }
+
+  return { score, confidence: 'high' };
+}
+
+/**
+ * Apply LLM correction factors to procedure counts with sanity caps.
+ * Exported for testability.
+ */
+export function applyLlmProcCorrection(
+  totalProcs: number,
+  docProcs: number,
+  regexTotal: number,
+  regexDoc: number,
+  llmTotal: number,
+  llmDoc: number,
+): { totalProcs: number; docProcs: number; applied: boolean } {
+  if (regexTotal <= 0 || llmTotal <= 0) {
+    return { totalProcs, docProcs, applied: false };
+  }
+
+  const totalFactor = llmTotal / regexTotal;
+  const docFactor = regexDoc > 0 ? llmDoc / regexDoc : 1;
+  const cappedDocFactor = Math.min(docFactor, 1.5);
+  const regexRatio = regexDoc / regexTotal;
+  const llmRatio = llmDoc / llmTotal;
+
+  if (totalFactor <= 0.1 || totalFactor >= 3.0 || (regexRatio > 0.3 && llmRatio < 0.1)) {
+    return { totalProcs, docProcs, applied: false };
+  }
+
+  const correctedTotal = Math.round(totalProcs * totalFactor);
+  const correctedDoc = Math.round(docProcs * cappedDocFactor);
+  const cappedDoc = Math.min(correctedDoc, Math.round(correctedTotal * 0.85));
+
+  return { totalProcs: correctedTotal, docProcs: cappedDoc, applied: true };
+}
+
+/**
+ * Cross-references LLM finding text with reality check data to remove
+ * hallucinated path claims. If the finding says a path doesn't exist but
+ * reality checks confirm it's valid, the false claim is corrected.
+ */
+export function sanitizeFinding(finding: string, realityChecks?: RealityCheckRef[]): string {
+  if (!realityChecks || realityChecks.length === 0) {
+    return finding;
+  }
+
+  const validPathChecks = realityChecks.filter(
+    c => c.category === 'path' && c.status === 'valid'
+  );
+  const invalidPathChecks = realityChecks.filter(
+    c => c.category === 'path' && c.status === 'invalid'
+  );
+  const warningPathChecks = realityChecks.filter(
+    c => c.category === 'path' && c.status === 'warning'
+  );
+  if (validPathChecks.length === 0) {
+    return finding;
+  }
+
+  // Patterns that indicate the LLM is falsely claiming a path doesn't exist
+  const falseClaims: RegExp[] = [
+    /(?:non-?existent|missing|hallucinated|fabricated|incorrect|invalid|fake|wrong)\s+(?:script\s+)?(?:paths?|directories?|dir|folders?|files?|structures?)/gi,
+    /(?:paths?|directories?|dir|folders?|files?|structures?)\s+(?:do(?:es)?n'?t|don'?t|does\s+not|do\s+not)\s+exist/gi,
+    /referenc(?:es?|ing)\s+(?:non-?existent|missing|invalid|incorrect|wrong)\s+(?:script\s+)?(?:paths?|directories?|folders?|files?)/gi,
+    /(?:paths?|directories?|folders?|files?)\s+(?:are|is)\s+(?:non-?existent|missing|invalid|incorrect|fabricated|hallucinated)/gi,
+    /(?:incorrect|wrong|invalid)\s+(?:directory\s+)?structures?\s+like\s+['"`]([^'"`]+)['"`]/gi,
+  ];
+
+  let sanitized = finding;
+  const verifiedPaths = validPathChecks.map(c => c.claim);
+  const lowerFinding = finding.toLowerCase();
+  const mentionsVerifiedPath = verifiedPaths.some(path => lowerFinding.includes(path.toLowerCase()));
+
+  // Extract quoted paths from "like 'X'" or "'X'" constructs and check against verified paths
+  const quotedPathPattern = /['"`]([^'"`\s]{2,}(?:\/[^'"`\s]*)*)['"`]/g;
+  let quotedMatch;
+  let quotedPathIsVerified = false;
+  while ((quotedMatch = quotedPathPattern.exec(finding)) !== null) {
+    const quotedPath = quotedMatch[1];
+    if (verifiedPaths.some(vp => vp === quotedPath || vp.endsWith(quotedPath) || quotedPath.endsWith(vp))) {
+      quotedPathIsVerified = true;
+      break;
+    }
+  }
+
+  const hasNegativePathClaim = falseClaims.some(pattern => {
+    pattern.lastIndex = 0;
+    return pattern.test(finding);
+  }) || [
+    'non-existent', 'nonexistent', 'doesn\'t exist', 'does not exist',
+    'don\'t exist', 'do not exist', 'missing path', 'invalid path',
+    'hallucinated', 'fabricated', 'incorrect directory', 'incorrect path',
+    'wrong path', 'wrong directory', 'non-existent script',
+  ].some(indicator => lowerFinding.includes(indicator));
+
+  // Check each verified-valid path — if the finding negatively references it, correct it
+  for (const check of validPathChecks) {
+    const pathSegments = check.claim.replace(/^['"`]+|['"`]+$/g, '').split('/');
+    const leafName = pathSegments[pathSegments.length - 1];
+    const parentDir = pathSegments.length > 1 ? pathSegments[pathSegments.length - 2] : null;
+
+    const nameMatches = (name: string | null) =>
+      name != null && sanitized.toLowerCase().includes(name.toLowerCase());
+
+    if (nameMatches(parentDir) || nameMatches(leafName)) {
+      for (const pattern of falseClaims) {
+        pattern.lastIndex = 0;
+        if (pattern.test(sanitized)) {
+          sanitized = sanitized.replace(pattern, 'referenced paths');
+        }
+      }
+    }
+  }
+
+  const shouldRewrite = sanitized !== finding || (hasNegativePathClaim && (mentionsVerifiedPath || quotedPathIsVerified || invalidPathChecks.length === 0));
+  if (shouldRewrite) {
+    const pathList = verifiedPaths.slice(0, 5).map(path => `'${path}'`).join(', ');
+    const invalidSummary = invalidPathChecks.length > 0
+      ? ` and found ${invalidPathChecks.length} invalid path claim(s)`
+      : ' with no invalid path claims';
+    const warningSummary = warningPathChecks.length > 0
+      ? `, plus ${warningPathChecks.length} stale path warning(s)`
+      : '';
+    return `Automated reality checks verified ${validPathChecks.length} path reference(s) on disk, including ${pathList}${invalidSummary}${warningSummary}.`;
+  }
+
+  return sanitized;
 }

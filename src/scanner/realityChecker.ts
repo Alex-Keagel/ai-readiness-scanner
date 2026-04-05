@@ -221,7 +221,7 @@ Respond ONLY as JSON array: [{"str":"exact string","type":"file_path"|"not_path"
       }
     });
     const pathResults = await Promise.all(pathCheckPromises);
-    checks.push(...pathResults.filter((r): r is RealityCheck => r !== null));
+    checks.push(...pathResults.filter((r): r is NonNullable<typeof r> => r !== null) as RealityCheck[]);
 
     return checks;
   }
@@ -558,11 +558,22 @@ Respond ONLY as JSON array: [{"str":"exact string","type":"file_path"|"not_path"
       return 'Reality validation: No checkable claims found in instruction files.';
     }
 
+    const validPathChecks = report.checks.filter(c => c.category === 'path' && c.status === 'valid');
     const lines: string[] = [
       `Reality validation results (automated checks):`,
       `- Total checks: ${report.totalChecks} (${report.valid} valid, ${report.invalid} invalid, ${report.warnings} warnings)`,
       `- Accuracy score: ${report.accuracyScore}%`,
     ];
+
+    if (validPathChecks.length > 0) {
+      lines.push(`- Verified existing paths (authoritative ground truth — do NOT call these missing):`);
+      for (const c of validPathChecks.slice(0, 10)) {
+        lines.push(`  • "${c.claim}" in ${c.file}: ${c.reality}`);
+      }
+      if (validPathChecks.length > 10) {
+        lines.push(`  ... and ${validPathChecks.length - 10} more verified paths`);
+      }
+    }
 
     const invalidChecks = report.checks.filter(c => c.status === 'invalid');
     if (invalidChecks.length > 0) {

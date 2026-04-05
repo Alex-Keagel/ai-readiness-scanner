@@ -40,6 +40,51 @@ export class ComponentScorer {
     const scores: ComponentScore[] = [];
     for (const comp of context.components) {
       try {
+        // Skip removed/deprecated/legacy components — score them minimally
+        const nameLower = (comp.name || '').toLowerCase();
+        const descLower = (comp.description || '').toLowerCase();
+        if (/(removed|deprecated|obsolete|archived)/.test(nameLower) || /(removed|deprecated|obsolete|archived)/.test(descLower)) {
+          scores.push({
+            name: comp.name,
+            path: comp.path,
+            language: comp.language || 'unknown',
+            type: comp.type || 'unknown',
+            primaryLevel: 1,
+            overallScore: 0,
+            depth: 0,
+            signals: [],
+            levels: [],
+            description: comp.description,
+            parentPath: comp.parentPath,
+            isGenerated: comp.isGenerated,
+          } as ComponentScore);
+          continue;
+        }
+        // Generated components: check weight from config (default 0 = skip scoring)
+        if (comp.isGenerated) {
+          let genWeight = 0;
+          try { 
+            const tw = vscode.workspace.getConfiguration('ai-readiness').get<Record<string, number>>('componentTypeWeights');
+            genWeight = tw?.generated ?? 0;
+          } catch { /* tests */ }
+          if (genWeight === 0) {
+            scores.push({
+              name: comp.name,
+              path: comp.path,
+              language: comp.language || 'unknown',
+              type: comp.type || 'unknown',
+              primaryLevel: 1,
+              overallScore: 0,
+              depth: 0,
+              signals: [],
+              levels: [],
+              description: comp.description,
+              parentPath: comp.parentPath,
+              isGenerated: true,
+            } as ComponentScore);
+            continue;
+          }
+        }
         const score = await this.scoreComponent(workspaceUri, comp, context, selectedTool);
         scores.push(score);
       } catch (err) {
@@ -54,12 +99,48 @@ export class ComponentScorer {
           overallScore: 0,
           depth: 0,
           signals: [],
+          levels: [],
           description: comp.description,
           parentPath: comp.parentPath,
+          isGenerated: comp.isGenerated,
         } as ComponentScore);
       }
     }
-    return scores;
+
+    // Parent-group score inheritance
+    for (const comp of scores) {
+      if (!comp.children?.length) continue;
+      const childScores = scores.filter(s => comp.children!.includes(s.path));
+      if (childScores.length === 0) continue;
+      const childAvg = Math.round(childScores.reduce((sum, c) => sum + c.overallScore, 0) / childScores.length);
+
+      // Virtual/synthetic groups (created by Phase 3 grouping) fully inherit child average
+      const isVirtualGroup = comp.path.startsWith('.') || comp.path.includes('.group-');
+      if (isVirtualGroup) {
+        comp.overallScore = childAvg;
+        comp.depth = childAvg;
+        comp.primaryLevel = childAvg >= 80 ? 4 : childAvg >= 60 ? 3 : childAvg >= 40 ? 2 : 1;
+      } else if (comp.overallScore < childAvg && comp.overallScore < 50) {
+        // Real containers: boost to 80% of child average if they score too low
+        comp.overallScore = Math.max(comp.overallScore, Math.round(childAvg * 0.8));
+        comp.depth = comp.overallScore;
+        comp.primaryLevel = comp.overallScore >= 80 ? 4 : comp.overallScore >= 60 ? 3 : comp.overallScore >= 40 ? 2 : 1;
+      }
+    }
+
+    // Filter out virtual/phantom components from output
+    // They served their purpose for score inheritance but shouldn't appear in reports
+    return scores.filter(comp => {
+      // Remove .group-* virtual aggregation groups
+      if (comp.path.includes('.group-')) return false;
+      // Remove phantom aggregators (.devconfig, .infrastructure) — these are scanner-created
+      // virtual parents that don't exist on disk. Real dotfile dirs (.github, .vscode) are kept.
+      const REAL_DOTDIRS = new Set(['.github', '.vscode', '.devcontainer', '.clinerules', '.roo',
+        '.windsurf', '.cursor', '.config', '.azuredevops', '.pipelines', '.release',
+        '.release-fpa', '.release-manifestRollout', '.dev-setup', '.build', '.editorconfig']);
+      if (/^\.[\w-]+$/.test(comp.path) && !REAL_DOTDIRS.has(comp.path)) return false;
+      return true;
+    });
   }
 
   async scoreLanguages(
@@ -167,7 +248,36 @@ export class ComponentScorer {
     const passed = signals.filter(s => s.present).length;
     const total = signals.length;
     const passRate = total > 0 ? passed / total : 0;
-    const level = passRate >= 0.8 ? 4 : passRate >= 0.6 ? 3 : passRate >= 0.4 ? 2 : 1;
+    let level = passRate >= 0.8 ? 4 : passRate >= 0.6 ? 3 : passRate >= 0.4 ? 2 : 1;
+
+    // Minimum complexity threshold: prevent small/config-only directories from inflated levels
+    if (!isFile && comp.path !== '.') {
+      const codePattern = new vscode.RelativePattern(compUri,
+        '**/*.{ts,tsx,js,jsx,py,go,rs,java,kt,cs,rb,swift,c,cpp,h,php,scala}');
+      const codeFiles = await vscode.workspace.findFiles(codePattern, EXCLUDE_GLOB, 200);
+
+      if (codeFiles.length === 0) {
+        // Pure config directory (no code files) — cap at L1
+        level = Math.min(level, 1);
+      } else if (codeFiles.length < 5) {
+        // Small component — check total lines
+        let totalLines = 0;
+        for (const f of codeFiles) {
+          try {
+            const content = Buffer.from(await vscode.workspace.fs.readFile(f)).toString('utf-8');
+            totalLines += content.split('\n').length;
+          } catch { /* skip unreadable files */ }
+        }
+        if (totalLines < 200) {
+          level = Math.min(level, 2);
+        }
+      }
+    }
+
+    // Cap overallScore/depth to match level cap:
+    // L1 → max 25%, L2 → max 50%, L3 → max 75%, L4 → 100%
+    const maxScoreForLevel = level * 25;
+    const cappedScore = Math.min(Math.round(passRate * 100), maxScoreForLevel);
 
     return {
       name: comp.name,
@@ -178,10 +288,11 @@ export class ComponentScorer {
       parentPath: comp.parentPath,
       children: comp.children,
       primaryLevel: level as MaturityLevel,
-      depth: Math.round(passRate * 100),
-      overallScore: Math.round(passRate * 100),
+      depth: cappedScore,
+      overallScore: cappedScore,
       levels: [],
       signals,
+      isGenerated: comp.isGenerated,
     };
   }
 
@@ -213,16 +324,15 @@ export class ComponentScorer {
     const hasDocs = await this.hasFile(rel('{docs/**,*.md}'));
     signals.push({ signal: 'Documentation', present: hasDocs, detail: hasDocs ? 'Documentation found' : 'No docs' });
 
-    // ── 3. Agent Instructions (all components) ──
+    // ── 3. Agent Instructions (component-scoped only) ──
     const toolConfig = AI_TOOLS[selectedTool];
     const agentPatterns = [...toolConfig.level2Files, ...toolConfig.level3Files];
-    let hasAgentInstructions = false;
-    for (const pattern of agentPatterns) {
-      if (await this.hasFile(new vscode.RelativePattern(workspaceUri, pattern))) {
-        hasAgentInstructions = true;
-        break;
-      }
-    }
+    const hasAgentInstructions = await this.hasComponentScopedFiles(
+      workspaceUri,
+      compUri,
+      comp.path,
+      agentPatterns
+    );
     signals.push({
       signal: `${toolConfig.name} Instructions`,
       present: hasAgentInstructions,
@@ -267,6 +377,44 @@ export class ComponentScorer {
       const hasDeploy = await this.hasFile(rel('{deploy*,*.parameters.json,**/parameters/**}'))
         || await this.hasFile(new vscode.RelativePattern(workspaceUri, '{docs/deploy*,docs/infrastructure*,runbooks/**}'));
       signals.push({ signal: 'Deployment Documented', present: hasDeploy, detail: hasDeploy ? 'Deployment docs found' : 'No deployment documentation' });
+    }
+
+    // ── 10. Tests (app/service/library components) ──
+    if (isProgramming && (compType === 'app' || compType === 'service' || compType === 'library')) {
+      let hasTests = await this.hasFile(rel('{tests/**,test/**,**/test_*,**/*_test.*,**/*.test.*,**/*.spec.*,**/*Tests*}'));
+      // Check for companion test projects (e.g., Storage → Storage.Tests, X → X.Tests)
+      if (!hasTests) {
+        const compName = comp.name;
+        const parentDir = comp.path.includes('/') ? comp.path.substring(0, comp.path.lastIndexOf('/')) : '';
+        // Also extract parent namespace (DataProcessing.Domain → DataProcessing)
+        const parentNs = compName.includes('.') ? compName.substring(0, compName.lastIndexOf('.')) : '';
+        const companionPatterns = [
+          // Direct companion: Foo → Foo.Tests
+          `${parentDir ? parentDir + '/' : ''}${compName}.Tests`,
+          `${parentDir ? parentDir + '/' : ''}${compName}.Test`,
+          `${parentDir ? parentDir + '/' : ''}${compName}.Integration.Tests`,
+        ];
+        // Shared test project: DataProcessing.Domain → DataProcessing.Tests
+        if (parentNs && parentNs !== compName) {
+          companionPatterns.push(`${parentDir ? parentDir + '/' : ''}${parentNs}.Tests`);
+          companionPatterns.push(`${parentDir ? parentDir + '/' : ''}${parentNs}.Integration.Tests`);
+        }
+        // Also check parent directory for Tests subdir (Sample.Console → Console/Sample.Console.Tests)
+        if (parentDir) {
+          const grandParent = parentDir.includes('/') ? parentDir.substring(0, parentDir.lastIndexOf('/')) : '';
+          if (grandParent) {
+            companionPatterns.push(`${grandParent}/${compName}.Tests`);
+          }
+        }
+        for (const pattern of companionPatterns) {
+          try {
+            await vscode.workspace.fs.stat(vscode.Uri.joinPath(workspaceUri, pattern));
+            hasTests = true;
+            break;
+          } catch { /* companion doesn't exist */ }
+        }
+      }
+      signals.push({ signal: 'Tests', present: hasTests, detail: hasTests ? 'Test files found' : 'No test directory or test files' });
     }
 
     return signals;
@@ -339,7 +487,7 @@ export class ComponentScorer {
         } catch (err) { logger.warn('Failed to read instruction file for language check', { error: err instanceof Error ? err.message : String(err) }); }
       }
     }
-    signals.push({ signal: `${toolName} Instructions`, present: hasLangInstructions, detail: instructionsDetail });
+    signals.push({ signal: `${toolName} Instructions`, present: hasLangInstructions, detail: hasLangInstructions ? `${toolName} instruction file references ${language}` : `No ${toolName} instruction file mentions ${language}` });
 
     // ── 2. Documentation (applies to ALL languages) ──
     const readmeFiles = await vscode.workspace.findFiles(rel('{README.md,readme.md}'), EXCLUDE_GLOB, 1);
@@ -455,5 +603,72 @@ export class ComponentScorer {
   private async hasFile(pattern: vscode.RelativePattern): Promise<boolean> {
     const uris = await vscode.workspace.findFiles(pattern, EXCLUDE_GLOB, 1);
     return uris.length > 0;
+  }
+
+  private async hasComponentScopedFiles(
+    workspaceUri: vscode.Uri,
+    compUri: vscode.Uri,
+    compPath: string,
+    patterns: string[]
+  ): Promise<boolean> {
+    const searches = this.getComponentScopedPatterns(workspaceUri, compUri, compPath, patterns);
+    for (const { base, pattern } of searches) {
+      if (await this.hasFile(new vscode.RelativePattern(base, pattern))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private getComponentScopedPatterns(
+    workspaceUri: vscode.Uri,
+    compUri: vscode.Uri,
+    compPath: string,
+    patterns: string[]
+  ): Array<{ base: vscode.Uri; pattern: string }> {
+    const searches: Array<{ base: vscode.Uri; pattern: string }> = [];
+    const seen = new Set<string>();
+    const normalizedCompPath = this.normalizeRelativePath(compPath);
+
+    const addSearch = (base: vscode.Uri, pattern: string) => {
+      if (!pattern) { return; }
+      const key = `${base.fsPath}::${pattern}`;
+      if (seen.has(key)) { return; }
+      seen.add(key);
+      searches.push({ base, pattern });
+    };
+
+    for (const rawPattern of patterns) {
+      const candidatePatterns = this.normalizeSearchPatterns(rawPattern);
+      for (const pattern of candidatePatterns) {
+        addSearch(compUri, pattern);
+        if (normalizedCompPath) {
+          addSearch(workspaceUri, `${normalizedCompPath}/${pattern}`);
+        }
+      }
+    }
+
+    return searches;
+  }
+
+  private normalizeSearchPatterns(pattern: string): string[] {
+    const candidates = new Set<string>([pattern]);
+    if (pattern.startsWith('./')) {
+      candidates.add(pattern.slice(2));
+    }
+    const withoutGlobstar = pattern.replace(/^(?:\*\*\/)+/, '');
+    if (withoutGlobstar && withoutGlobstar !== pattern) {
+      candidates.add(withoutGlobstar);
+    }
+    return [...candidates];
+  }
+
+  private normalizeRelativePath(value: string): string {
+    if (!value || value === '.') { return ''; }
+    return value
+      .replace(/\\/g, '/')
+      .replace(/^\.\/+/, '')
+      .replace(/^\/+/, '')
+      .replace(/\/+$/, '');
   }
 }

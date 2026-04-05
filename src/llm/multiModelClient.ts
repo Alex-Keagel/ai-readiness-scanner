@@ -53,8 +53,8 @@ export class MultiModelClient {
     // Synthesizer = best available model (first in our preference order)
     this.synthesizer = selected[0];
     
-    console.log(`[MultiModel] Selected ${selected.length} models: ${selected.map(m => m.name).join(', ')}`);
-    console.log(`[MultiModel] Synthesizer: ${this.synthesizer.name}`);
+    logger.info(`MultiModel: Selected ${selected.length} models: ${selected.map(m => m.name).join(', ')}`);
+    logger.info(`MultiModel: Synthesizer: ${this.synthesizer.name}`);
     return true;
   }
 

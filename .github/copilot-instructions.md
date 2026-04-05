@@ -2,79 +2,101 @@
 
 ## What This Extension Does
 
-VS Code extension that evaluates codebases for AI coding agent readiness. Scans for agent config files (Copilot, Cline, Cursor, Claude Code, Roo, Windsurf, Aider), scores them on a 6-level maturity ladder using the EGDR scoring model, and generates missing files via multi-LLM consensus.
+VS Code extension that evaluates codebases for AI coding agent readiness. Scans for agent config files across 7 platforms (Copilot, Cline, Cursor, Claude Code, Roo, Windsurf, Aider), scores on a 6-level maturity ladder, and generates fixes via multi-model consensus using Copilot models via the VS Code LM API with a unified knowledge graph.
 
 ## Project Structure
 
 | Directory | Purpose |
 |-----------|---------|
-| `src/extension.ts` | Entry point — all command registrations, state management, disposables |
-| `src/scoring/` | EGDR maturity engine, level signals, component scorer, insights |
-| `src/scanner/` | Workspace analysis — file inventory, reality checker, structure analyzer |
-| `src/agents/` | Multi-agent orchestrator — Mapper, Specialist, Auditor pipeline |
-| `src/llm/` | LLM integration — `CopilotClient`, `MultiModelClient`, caching |
-| `src/remediation/` | Fix generation — auto-fix, guided-fix, recommendations, migration |
+| `src/extension.ts` | Entry point — commands, pipeline orchestration, state management |
+| `src/scoring/` | EGDR maturity engine, level signals, component scorer, context audit, insights |
+| `src/scanner/` | 3-agent component mapping, workspace scanner (8 phases), maturity signals |
+| `src/semantic/` | Indexer (4-tier), vector store (TF-IDF), call graph, data flow, advanced features (HyDE, roll-up, blast radius, health cards, edge labels, dead branches) |
+| `src/deep/` | 15-phase deep analysis pipeline — instruction analysis, profiling, cross-ref, complexity, recommendations, skill evaluation, dead code |
+| `src/graph/` | Knowledge graph builder + enrichment, dependency scanner |
+| `src/llm/` | CopilotClient, validated calls (4-tier with debate + tiebreaker) |
+| `src/live/` | Vibe Report, 13 SRE metrics, session polling (4 platforms), live AIPM |
+| `src/ui/` | Webview panels — report, AI strategy, action center, graph, sidebar |
+| `src/agents/` | Agent definition loader (YAML frontmatter + markdown body) |
 | `src/chat/` | Chat participant (`@readiness`) with slash commands |
-| `src/ui/` | Webview panels, tree view, status bar, recommendations panel |
-| `src/live/` | Live AIPM tracker — session polling, metrics engine, vibe reports |
-| `src/semantic/` | AST-based code chunking, content-hash cache, MCP provider |
-| `src/security/` | Blast radius risk analysis per component |
-| `src/graph/` | Dependency scanning, knowledge graph builder |
-| `src/simulation/` | Micro-simulations — sandboxed LLM tasks per component |
-| `src/storage/` | `RunStorage` — persists scan results via `context.globalState` |
-| `src/report/` | Markdown report generator |
+| `src/remediation/` | Fix generation — auto-fix, guided-fix, platform-specific prompts |
+| `src/report/` | Narrative generator (platform readiness, tooling health, friction map) |
+| `src/storage/` | RunStorage + FixStorage — workspaceState persistence (per-workspace) |
+| `src/metrics/` | Codebase readiness metrics (semantic density, type strictness) |
+| `src/logging/` | Structured logging with phase timing |
 
 ## Build & Development
 
 ```bash
 npm run build      # esbuild bundling → dist/extension.js
-npm run watch      # rebuild on file changes
-npm run lint       # ESLint
-npm run package    # create .vsix (runs build first)
+npm run test       # vitest (638 tests)
+npm run package    # create .vsix (runs build first via prepackage)
+npm run release    # build + test + bump + package
 ```
 
-Press `F5` in VS Code to launch the Extension Development Host for testing.
+Press `F5` in VS Code to launch the Extension Development Host.
+
+## Version Management
+
+**Before every version bump**, ensure:
+1. Update `README.md` version badge to match new version
+2. Update `src/README.md` if module architecture changed
+3. Run `npm test` to confirm all tests pass
+4. Commit all changes before bumping
+
+```bash
+npm run bump           # auto-detect from conventional commits
+npm run bump:patch     # 1.0.2 → 1.0.3
+npm run bump:minor     # 1.0.2 → 1.1.0
+npm run bump:major     # 1.0.2 → 2.0.0
+```
+
+The bump script (`scripts/bump-version.js`) updates package.json, package-lock.json, and CHANGELOG.md.
+
+**Conventional commit prefixes** (from `.versionrc.json`):
+- `feat:` → minor bump
+- `fix:` / `perf:` / `refactor:` / `docs:` / `chore:` → patch bump
+- `BREAKING CHANGE:` → major bump
 
 ## LLM API — Critical Rules
 
 - **ONLY** use `vscode.lm.selectChatModels()` and `vscode.LanguageModelChat` — the VS Code Copilot LM API
 - **NEVER** import or call external LLM APIs (OpenAI SDK, Anthropic SDK, etc.)
-- Model selection: `CopilotClient.selectBestModel()` picks from available Copilot models by preference (Opus → Gemini Pro → GPT-5.4 → Sonnet → fallback)
-- Multi-model: `MultiModelClient` runs 3 models in parallel for consensus recommendations
-- Always pass `CancellationToken` to LLM calls for user cancellation support
+- Model selection: `CopilotClient.selectBestModel()` picks from available Copilot models
+- Validated calls: `validatedAnalyze()` in `src/llm/validatedCall.ts` — 4 tiers (critical/important/standard/display) with debate + tiebreaker
+- Always pass `CancellationToken` to LLM calls
 
 ## Coding Conventions
 
 - **TypeScript strict mode** — all types explicit, no implicit `any`
-- Use `any` ONLY when casting VS Code API returns that lack proper types
 - **async/await** with `try/catch` — never `.catch()` chains
-- **Barrel exports** via `index.ts` in each module directory
 - **PascalCase** for classes/interfaces, **camelCase** for functions/variables
 - Every command registered in `activate()` must be added to `context.subscriptions`
 - Use `vscode.workspace.findFiles()` for glob search, `vscode.Uri` for all paths
-- Error handling: `vscode.window.showErrorMessage()` for user-facing errors; silent catch for optional features (LLM unavailable, etc.)
+- **workspaceState only** — never use `globalState` (causes cross-repo contamination)
+- Error handling: `vscode.window.showErrorMessage()` for user-facing; silent catch for optional features
 
-## Key Types
+## Key Types (src/scoring/types.ts)
 
-Core types are in `src/scoring/types.ts`:
 - `AITool` — union of 7 platform identifiers
-- `ReadinessReport` — full scan output (levels, components, scores)
-- `LevelSignal` — signal definition (id, level, filePatterns, contentMarkers)
+- `ReadinessReport` — full scan output (levels, components, scores, knowledgeGraph)
+- `ComponentScore` — per-component maturity with `isGenerated`, `parentPath`, `children`
+- `ComponentInfo` — component metadata from mapper with `isGenerated` flag
 - `SignalResult` — evaluated signal with score, confidence, reality checks
-- `ComponentScore` — per-component maturity assessment
 
 ## Architecture Notes
 
-- The scan pipeline runs 8 phases (see `WorkspaceScanner.scan()`)
-- Quick scan = deterministic only (phases 1–2); Full scan = all 8 phases with LLM
-- Scoring uses 4 dimensions (Presence, Quality, Operability, Breadth) weighted per platform
-- Chat participant registered via `vscode.chat.createChatParticipant()` with 13 slash commands
-- Webview panels use `createWebviewPanel()` with HTML generation and `onDidReceiveMessage` for bidirectional comms
-- **Do not** reference "tests" as a readiness signal — removed by design
+- Full scan runs entire pipeline: signals → insights → deep analysis (15 phases) → narrative
+- Scoring: 6-stage pipeline (signals → reality checks → EGDR blend → anti-patterns → gates → component weighting)
+- Component mapping uses 3-agent pipeline: Structure Analyst → Domain Architect → Completeness Validator
+- Knowledge graph is the unified data model — enriched with call graph, data flow, edge labels after deep analysis
+- Lock mechanism (`isBusy` flag) prevents concurrent scan/generate operations
+- All storage uses `workspaceState` — isolated per workspace folder
 
 ## Adding New Features
 
-- **New signal**: Add to `LEVEL_SIGNALS` array in `src/scoring/levelSignals.ts`, update `PLATFORM_SIGNAL_CLASS` in `src/scoring/maturityEngine.ts` if platform-specific
-- **New command**: Register in `src/extension.ts` `activate()`, add to `package.json` contributes.commands
-- **New chat command**: Add case to `ChatParticipant.handleRequest()` in `src/chat/participant.ts`, register in `package.json` chatParticipants commands
-- **New webview panel**: Follow pattern in `src/ui/` — extend panel class, use `getWebviewContent()` for HTML
+- **New signal**: Add to `LEVEL_SIGNALS` in `src/scoring/levelSignals.ts`
+- **New command**: Register in `extension.ts`, add to `package.json` contributes.commands
+- **New deep analysis phase**: Add to `src/deep/index.ts` pipeline, update `DeepAnalysisResult` interface
+- **New semantic feature**: Add to `src/semantic/advancedFeatures.ts`, wire in `deep/index.ts`
+- **New graph edge type**: Add to `GraphEdge.relation` union in `src/graph/types.ts`, handle in `graphBuilder.ts`

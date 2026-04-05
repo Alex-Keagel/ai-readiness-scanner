@@ -1,11 +1,11 @@
 # AI Readiness Scanner for VS Code
 
 [![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-Install-007ACC?logo=visual-studio-code&logoColor=white)](https://marketplace.visualstudio.com/)
-[![Version](https://img.shields.io/badge/version-2.3.5-blue)](https://marketplace.visualstudio.com/)
+[![Version](https://img.shields.io/badge/version-1.0.0-blue)](https://marketplace.visualstudio.com/)
 [![Powered by](https://img.shields.io/badge/Powered%20by-GitHub%20Copilot%20LM%20API-8957e5?logo=github)](https://github.com/features/copilot)
-[![Tests](https://img.shields.io/badge/tests-234%20passing-brightgreen)](https://github.com/)
+[![Tests](https://img.shields.io/badge/tests-702%20passing-brightgreen)](https://github.com/)
 
-> **Is your codebase ready for AI coding agents?** Find out in 60 seconds.
+> **Is your codebase ready for AI coding agents?** 
 
 AI agents like Copilot, Cline, Cursor, and Claude Code work **dramatically better** on some codebases than others. The difference isn't the agent — it's the **environment**. This extension scans your workspace, scores it on a 100-point scale across a **6-Level Maturity Ladder**, and generates the exact files you need to level up.
 
@@ -46,13 +46,30 @@ Your current level shows in the status bar: `🏆 L3: Skill-Equipped (72%)`
 
 ### 🧠 Semantic Code Understanding
 
-Not just "does the file exist" — the scanner **reads and understands** your code:
+Not just "does the file exist" — the scanner **reads, maps, and reasons** about your code:
 
-- **Fan-in analysis** — identifies hub files imported by many others
-- **Git velocity** — detects frequently-changed, multi-author files
-- **Security patterns** — flags auth, crypto, and API integration code
-- **LLM enrichment** — summarizes what each important file actually does
-- **TF-IDF vector search** — enables semantic querying of your entire codebase
+**Architecture Discovery**
+- **Call graph extraction** — maps function calls across modules (direct, cross-module, callback, event-driven)
+- **Data flow tracing** — traces data from source → transformation → sink across your pipeline
+- **Type hierarchy** — extracts class inheritance and interface implementations (extends/implements)
+- **Import graph separation** — distinguishes project imports from package imports for accurate fan-in
+
+**Intelligence Layer**
+- **Module role classification** — auto-classifies every file as entry-point, core-logic, utility, UI, config, test, or generated
+- **Complexity factor** — per-component score (0-1.0) based on size, fan-in, exports, call graph centrality, and pipeline involvement
+- **Product detection** — LLM identifies which components are customer-facing products vs internal support
+- **Generated code detection** — flags backup files, protobuf stubs, and exported code (scored differently)
+- **Dead code detection** — finds exported symbols never imported by other modules
+
+**Semantic Search**
+- **LLM enrichment** — summarizes what each important file actually does using GitHub Copilot
+- **TF-IDF vector search** — enables semantic querying across your entire codebase
+- **Fan-in analysis** — identifies hub files imported by many others (high-impact change targets)
+
+**Language-Aware Analysis**
+- **Type strictness scoring** — C#/Java get inherent credit (statically typed), Python scores based on hint coverage, config files excluded
+- **Semantic density** — measures documentation-to-code ratio per module (docstrings, comments, descriptive names)
+- **KQL/SQL awareness** — query languages scored as data components, not penalized for missing type hints
 
 ### 💡 Actionable Insights with One-Click Fix
 
@@ -61,6 +78,74 @@ Every recommendation comes with a **Generate** button that creates the exact fil
 - 🔴 **Critical** — Missing instruction files, broken configs
 - 🟡 **Important** — Missing skills, incomplete documentation
 - 🔵 **Suggestions** — Workflow playbooks, MCP integrations
+
+### 💡 AI Strategy — Executive Brief
+
+The **AI Strategy** panel gives you the big picture at a glance:
+
+- **Readiness Overview** — Score, maturity level, signals needed for the next level
+- **Action Items** — Total critical/important/suggestion counts (matching the Action Center)
+- **🎯 What Matters Most** — Auto-generated strategic bullets (missing foundational signals, low-scoring components, quality gaps)
+- **🧠 LLM Analysis** — Each AI-generated insight as a card with recommendation, category, affected component, and estimated impact
+- **Path Flow Graph** — Visual roadmap from current level to the next
+- **Best Setup** — Ideal file combination for your platform, in build order
+- **Component Health** — Lowest-scoring components that drag your overall score
+
+### 🔧 Action Center — Tactical Fixes
+
+The **Action Center** surfaces every actionable fix across three sources:
+
+- **Signal-based** — Missing and low-quality signals with auto-fix generation
+- **Insight-based** — LLM-identified issues converted to actionable cards
+- **Component-based** — Undocumented or low-scoring components needing README/docs
+- **Fix state tracking** — Approve, decline, or re-generate each fix (persisted across sessions)
+- **Multi-file generation** — Batch generate and apply fixes with confirmation
+- **Source file protection** — Existing non-`.md` files get `.suggestions.md` advisory instead of overwrite
+
+### 🧪 Deep Recommendation Engine
+
+Goes beyond surface-level checks to cross-reference your instructions against the actual codebase:
+
+- **Instruction Analyzer** — Extracts claims from instruction files (regex + LLM semantic extraction)
+- **Codebase Profiler** — Maps modules, fan-in, import graphs, and execution pipelines
+- **Cross-Reference Engine** — Finds coverage gaps, path drift, structural drift, and semantic drift
+- **Recommendation Synthesizer** — Generates evidence-backed fixes with exact file content
+- **Output Validator** — Validates all LLM-generated content (deterministic + LLM checks, auto-fix, retry)
+
+### 🕸️ Unified Knowledge Graph
+
+All analysis flows into a single **Knowledge Graph** — the central data structure connecting every piece of understanding:
+
+- **Component nodes** with complexity factors, health cards, and roll-up summaries
+- **DEPENDS_ON** edges from import analysis (Python hyphen/underscore aware)
+- **CALLS** edges from call graph with intent labels ("passes sanitized payload to billing webhook")
+- **DATA_FLOWS_TO** edges tracing data pipelines (source → transform → sink)
+- **EXTENDS / IMPLEMENTS** edges from type hierarchy
+- **Domain grouping** via 3-agent pipeline: Structure Analyst → Domain Architect → Completeness Validator
+
+The Repository Structure view renders this graph as an interactive collapsible tree.
+
+### 🤖 3-Agent Component Mapping Pipeline
+
+Component discovery uses three specialized expert agents:
+
+| Agent | Role | Guarantee |
+|-------|------|-----------|
+| **Structure Analyst** | Maps every directory to a flat micro-component | Orphan injection — zero path drops |
+| **Domain Architect** | Groups micro-components into business + technical domains | Mandatory taxonomy enforced |
+| **Completeness Validator** | Checks for dropped paths, self-corrects | Deterministic safety net |
+
+### 🔬 Advanced Semantic Features (15-Phase Deep Analysis)
+
+| Phase | Feature | Description |
+|-------|---------|-------------|
+| 1-9 | Core analysis | Instructions, profiling, call graph, data flow, complexity, cross-ref, recommendations, skills, dead code |
+| 10 | **HyDE Search** | Generates hypothetical search queries per module for intent-based matching |
+| 11 | **Roll-Up Summaries** | File → directory → architecture summaries (zoomable understanding) |
+| 12 | **Edge Labels** | Top 20 call graph edges get LLM intent descriptions |
+| 13 | **Blast Radius** | Entry points analyzed for downstream impact with LLM warnings |
+| 14 | **Health Cards** | Top 3 critical components audited by Explainer + Red Teamer + Critic |
+| 15 | **Dead Branches** | Config files scanned for feature flags making code unreachable |
 
 ### 📊 Codebase Readiness Metrics
 
@@ -86,18 +171,39 @@ Use natural language in Copilot Chat:
 
 | Command | What It Does |
 |---------|-------------|
-| `@readiness /scan` | Full scan with LLM analysis |
-| `@readiness /quick` | Instant deterministic scan |
+| `@readiness /scan` | Full scan with deep analysis |
 | `@readiness /levelup` | Guided progression to next level |
-| `@readiness /vibe` | Agentic proficiency assessment |
+| `@readiness /vibe` | Agentic proficiency + SRE assessment |
 | `@readiness /guide` | Platform setup guide |
 | `@readiness /migrate cline copilot` | Convert configs between platforms |
 | `@readiness /graph` | Repository structure visualization |
 | `@readiness /live` | Real-time AI tokens-per-minute |
 
-### 📈 Vibe Report
+### 📈 Vibe Report & SRE Metrics
 
-Assess your team's agentic coding proficiency across 5 dimensions: Autonomy, Delegation, Recovery, Depth, and Output quality. Track metrics over time with sparkline charts.
+Assess your team's agentic coding proficiency with two layers of analysis:
+
+**Agentic Proficiency Score (APS)** — 5 dimensions: Autonomy, Delegation, Recovery, Depth, Output quality. Track growth over time with sparkline charts.
+
+**SRE Reliability Metrics** — 13 metrics computed from actual conversation content:
+
+| Metric | What It Measures |
+|--------|-----------------|
+| Hallucination Index | How often the agent gets corrected |
+| Laziness Index | Short responses, refusals, placeholder code |
+| First-Try Success | % of sessions with zero corrections |
+| Flow Score | Productive momentum without friction |
+| Context Rot | Quality degradation as sessions get longer |
+| Loop Detection | Stuck correction cycles (3+ rounds) |
+| Session Health | Clean / Bumpy / Troubled classification |
+| Prompt Effectiveness | Success rate by category (fix, test, create, etc.) |
+| Regression Detection | Quality decline alerts (recent vs earlier) |
+| DORA Metrics | Deploy frequency, lead time, change failure rate, MTTR |
+| Activity Heatmap | When you're most productive (day × hour) |
+| Code Churn | Files re-edited across commits (instability signal) |
+| Cost Per Outcome | Estimated spend per session, message, and tool call |
+
+Supports **all 4 platforms**: Copilot CLI, Claude Code, Cline, Roo Code. Per-platform AND cross-platform comparison.
 
 ### 🎨 Tactical Glassbox Theme
 
@@ -128,12 +234,17 @@ All panels use a purpose-built dark theme with glass-morphism cards, glow border
 
 | Setting | Description | Default |
 |---------|-------------|---------|
-| `ai-readiness.selectedTool` | Default AI platform | `ask` (prompts each time) |
-| `ai-readiness.enrichmentDepth` | % of files to LLM-enrich (10-100) | `70` |
-| `ai-readiness.llmTimeout` | LLM call timeout in seconds | `45` |
-| `ai-readiness.enrichmentConcurrency` | Parallel LLM calls | `5` |
-| `ai-readiness.enrichmentBatchSize` | Files per LLM batch | `10` |
-| `ai-readiness.cacheTTL` | Cache lifetime in days | `7` |
+| `selectedTool` | Default AI platform | `ask` (prompts each time) |
+| `enrichmentDepth` | % of files to LLM-enrich (10-100) | `70` |
+| `llmTimeout` | LLM call timeout in seconds | `45` |
+| `enrichmentConcurrency` | Parallel LLM calls | `5` |
+| `enrichmentBatchSize` | Files per LLM batch | `10` |
+| `cacheTTL` | Cache lifetime in days | `1` |
+| `dimensionWeights` | EGDR dimension weights (presence/quality/operability/breadth) | `{P:0.2, Q:0.4, O:0.15, B:0.25}` |
+| `componentTypeWeights` | Importance multiplier per component type | `{service:1, app:1, library:0.9, ...}` |
+| `scoringMode` | Harmonic blend ratio: `lenient`, `balanced`, `strict` | `balanced` |
+| `signalWeights` | Per-signal weight overrides (0.25-3.0) | `{}` |
+| `contextBudgets` | Context window budget per platform (tokens) — adjust to your plan limits | `{copilot:200000, cline:200000, cursor:128000, ...}` |
 
 All settings are accessible from the sidebar settings panel.
 
@@ -234,22 +345,33 @@ The report shows 5 diagnostic metrics on a radar chart. Each is **platform-aware
 | Metric | Formula | Scope | What It Means for Agents |
 |--------|---------|-------|-------------------------|
 | **Business Logic Alignment** | avg(signal.score) for LLM-validated signals | App/library components only | Do your instructions accurately describe the actual application code? Infra/config signals excluded. |
-| **Type & Environment Strictness** | (annotations/declarations × 80) + strict mode bonus | App/library code only | Can agents use LSP for cross-file navigation? Measured on service/app/library code, not config files. |
+| **Type & Environment Strictness** | Language-aware: base score per language (C#=85, Python=45+hints) + annotation bonus. Config/data files excluded. | App/library code only | Can agents use LSP for cross-file navigation? Statically typed langs get inherent credit. |
 | **Semantic Density** | documentedProcedures / totalProcedures × 100 | App/library code only | What % of functions and classes have a docstring or comment? Binary per procedure — verbose inline comments don't count, only documented APIs. |
 | **Instruction/Reality Sync** | validChecks / totalChecks × 100 | Selected platform only | Are file paths and commands in YOUR platform's instruction files real? Copilot scan only checks `.github/` paths, not `.clinerules/`. |
 | **Context Efficiency** | 60% component coverage + 40% budget efficiency | Selected platform only | Per-component: do instructions cover each important component? Budget: is token usage in the sweet spot (1-8%) for the platform's context window? |
 
-**Platform-specific context budgets** (configurable via `ai-readiness.contextBudgets`):
+**Platform-specific context budgets** — configurable in VS Code Settings (`ai-readiness.contextBudgets`).
+Adjust these to match your plan's actual context window limits:
 
-| Platform | Default Budget |
-|----------|---------------|
-| Copilot | 200K tokens |
-| Cline | 200K tokens |
-| Claude | 200K tokens |
-| Roo | 200K tokens |
-| Cursor | 128K tokens |
-| Windsurf | 128K tokens |
-| Aider | 128K tokens |
+| Platform | Default Budget | Setting Key |
+|----------|---------------|-------------|
+| Copilot | 200,000 tokens | `copilot` |
+| Cline | 200,000 tokens | `cline` |
+| Claude | 200,000 tokens | `claude` |
+| Roo | 200,000 tokens | `roo` |
+| Cursor | 128,000 tokens | `cursor` |
+| Windsurf | 128,000 tokens | `windsurf` |
+| Aider | 128,000 tokens | `aider` |
+
+Example override in `settings.json`:
+```json
+{
+  "ai-readiness.contextBudgets": {
+    "copilot": 400000,
+    "claude": 1000000
+  }
+}
+```
 
 ### L1 Codebase Quality Signals
 
@@ -284,13 +406,16 @@ Access via Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
 | Command | Description |
 |---------|-------------|
-| `AI Readiness: Scan Workspace` | Run a full scan |
-| `AI Readiness: Quick Scan` | Fast deterministic scan |
-| `AI Readiness: Show Insights` | Open insights panel |
+| `AI Readiness: Full Scan` | Run a complete scan with LLM deep analysis |
+| `AI Readiness: Show Insights` | Open AI Strategy panel |
+| `AI Readiness: Action Center` | Tactical fixes with one-click generation |
 | `AI Readiness: Show Guide` | Platform configuration guide |
 | `AI Readiness: Show Graph` | Repository structure tree |
-| `AI Readiness: Vibe Report` | Agentic proficiency report |
+| `AI Readiness: Show Report` | Open last scan report |
+| `AI Readiness: Compare Scans` | Side-by-side run comparison |
+| `AI Readiness: Vibe Report` | Agentic proficiency + SRE metrics |
 | `AI Readiness: Start Live Tracking` | Real-time AIPM dashboard |
+| `AI Readiness: Migrate` | Convert configs between platforms |
 | `AI Readiness: Clear History` | Reset scan history |
 
 ---
@@ -305,7 +430,7 @@ Access via Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 
 - **All analysis runs locally** in your VS Code instance
 - Code snippets are sent to GitHub Copilot's LM API (same as Copilot Chat) — never to third parties
-- Scan results are cached in VS Code's `globalState` — no external storage
+- Scan results are cached in VS Code's `workspaceState` — isolated per workspace, no external storage
 - No telemetry is collected
 
 ---
@@ -313,12 +438,10 @@ Access via Command Palette (`Ctrl+Shift+P` / `Cmd+Shift+P`):
 ## Building from Source
 
 ```bash
-git clone https://github.com/alex-keagel/vscode-ai-readiness.git
-cd vscode-ai-readiness
 npm install
 npm run build
-npm test           # 234 tests
-npm run package    # creates .vsix
+npm test            # 708 tests
+npm run package     # produces .vsix
 ```
 
 Press `F5` to launch the Extension Development Host for debugging.
@@ -327,34 +450,6 @@ Press `F5` to launch the Extension Development Host for debugging.
 
 ## Release Notes
 
-### 2.3.5
-- Dynamic platform guide generation from official documentation
-- Context architecture audit (MCP, skills, hooks, tool security)
-- One-click insight fixes with diff editor preview
-- Defensive error handling across all components
-
-### 2.2.0
-- Smart semantic indexing — fan-in analysis, git velocity, importance ranking
-- Configurable enrichment depth and concurrency
-- Expert agent personas for all 7 platforms
-
-### 2.1.0
-- 10-agent audit with memory leak fixes and scoring accuracy improvements
-- Scan performance: 13min → 80s for large monorepos
-- Structured logging across all components
-
-### 2.0.0
-- Complete rewrite with 6-level maturity ladder
-- EGDR scoring model with per-platform profiles
-- Semantic RAG engine with TF-IDF vector search
-- Tactical Glassbox dark theme
-- 7 AI platform support
-
----
-
-## License
-
-MIT
 
 ---
 

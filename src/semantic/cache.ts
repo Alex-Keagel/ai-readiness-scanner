@@ -11,6 +11,8 @@ export interface SemanticEntry {
   exports: string[];       // exported symbols
   complexity: 'low' | 'medium' | 'high';
   lastIndexed: string;     // ISO timestamp
+  hypotheticalQueries?: string[];  // HyDE: 10 search queries developers might type
+  rollUpSummary?: string;          // directory-level aggregated summary
 }
 
 export class SemanticCache {
@@ -22,7 +24,7 @@ export class SemanticCache {
 
   constructor(private context: vscode.ExtensionContext) {
     // Load persisted cache
-    const saved = context.globalState.get<Record<string, SemanticEntry>>(this.cacheKey());
+    const saved = context.workspaceState.get<Record<string, SemanticEntry>>(this.cacheKey());
     if (saved) {
       for (const [k, v] of Object.entries(saved)) {
         this.entries.set(k, v);
@@ -145,7 +147,7 @@ export class SemanticCache {
   /** Clear entire cache */
   async clear(): Promise<void> {
     this.entries.clear();
-    await this.context.globalState.update(this.cacheKey(), {});
+    await this.context.workspaceState.update(this.cacheKey(), {});
   }
 
   private hash(content: string): string {
@@ -157,17 +159,17 @@ export class SemanticCache {
     for (const [k, v] of this.entries) {
       obj[k] = v;
     }
-    await this.context.globalState.update(this.cacheKey(), obj);
+    await this.context.workspaceState.update(this.cacheKey(), obj);
   }
 
-  /** Get serialized vector store data from globalState */
+  /** Get serialized vector store data from workspaceState */
   getVectorStoreData(): string | undefined {
-    return this.context.globalState.get<string>(this.vectorStoreKey());
+    return this.context.workspaceState.get<string>(this.vectorStoreKey());
   }
 
-  /** Persist serialized vector store data to globalState */
+  /** Persist serialized vector store data to workspaceState */
   setVectorStoreData(data: string): void {
-    this.context.globalState.update(this.vectorStoreKey(), data);
+    this.context.workspaceState.update(this.vectorStoreKey(), data);
   }
 
   private vectorStoreKey(): string {

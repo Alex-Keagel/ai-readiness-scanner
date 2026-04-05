@@ -2,7 +2,7 @@
   "name": "ai-readiness-scanner",
   "displayName": "AI Readiness Scanner",
   "description": "Score your codebase AI readiness across 7 platforms (Copilot, Cline, Cursor, Claude, Roo, Windsurf, Aider). 6-level maturity ladder, semantic analysis, one-click fixes.",
-  "version": "1.3.5",
+  "version": "1.0.0",
   "publisher": "alex-keagel",
   "engines": {
     "vscode": "^1.90.0"
@@ -88,7 +88,7 @@
           },
           {
             "name": "vibe",
-            "description": "Generate a Vibe Report \u2014 agentic coding proficiency assessment"
+            "description": "Generate a Vibe Report — agentic coding proficiency assessment"
           },
           {
             "name": "levelup",
@@ -106,7 +106,7 @@
         {
           "id": "ai-readiness",
           "title": "AI Readiness",
-          "icon": "media/icon.svg"
+          "icon": "media/bar-icon.png"
         }
       ]
     },
@@ -124,10 +124,6 @@
         "command": "ai-readiness.fullScan",
         "title": "AI Readiness: Full Scan",
         "icon": "$(search)"
-      },
-      {
-        "command": "ai-readiness.quickScan",
-        "title": "AI Readiness: Quick Scan"
       },
       {
         "command": "ai-readiness.showReport",
@@ -185,7 +181,15 @@
       },
       {
         "command": "ai-readiness.showGraph",
-        "title": "AI Readiness: Show Knowledge Graph"
+        "title": "AI Readiness: Repository Structure"
+      },
+      {
+        "command": "ai-readiness.showInteractiveGraph",
+        "title": "AI Readiness: Interactive Knowledge Graph"
+      },
+      {
+        "command": "ai-readiness.showDeveloperNetwork",
+        "title": "AI Readiness: Developer Network"
       },
       {
         "command": "ai-readiness.showInsights",
@@ -212,6 +216,10 @@
       {
         "command": "ai-readiness.showContext",
         "title": "AI Readiness: Show Context Architecture"
+      },
+      {
+        "command": "ai-readiness.exportGraph",
+        "title": "AI Readiness: Export Knowledge Graph"
       }
     ],
     "menus": {
@@ -287,7 +295,7 @@
         },
         "ai-readiness.cacheTTL": {
           "type": "number",
-          "default": 7,
+          "default": 1,
           "minimum": 1,
           "maximum": 30,
           "description": "LLM result cache duration in days. Cached results are reused without re-calling the LLM."
@@ -305,16 +313,17 @@
         "ai-readiness.componentTypeWeights": {
           "type": "object",
           "default": {
-            "service": 1.0,
-            "app": 1.0,
+            "service": 1,
+            "app": 1,
             "library": 0.9,
             "infra": 0.6,
             "config": 0.4,
             "script": 0.5,
             "data": 0.3,
+            "generated": 0,
             "unknown": 0.5
           },
-          "description": "Importance multiplier per component type. Core logic (service/app) weighs more than generated code (config/data). Range: 0.0-1.0."
+          "description": "Importance multiplier per component type (0.0-1.0). Core logic (service/app) weighs more than generated code. Set 'generated' to 0 to fully exclude auto-generated components from scoring."
         },
         "ai-readiness.scoringMode": {
           "type": "string",
@@ -329,7 +338,7 @@
         "ai-readiness.signalWeights": {
           "type": "object",
           "default": {},
-          "description": "Per-signal weight multipliers (0.25-3.0). Controls how much individual signals contribute within their EGDR dimension. Empty = use defaults."
+          "description": "Per-signal weight multipliers (0.0-1.0). Controls how much individual signals contribute within their EGDR dimension. 0 = disabled, 1.0 = full weight. Empty = use defaults (all 1.0)."
         },
         "ai-readiness.contextBudgets": {
           "type": "object",
@@ -342,7 +351,14 @@
             "windsurf": 128000,
             "aider": 128000
           },
-          "description": "Context window budget (in tokens) per platform. Used to calculate Context Efficiency \u2014 how much of the agent's context window your instruction files consume."
+          "description": "Context window budget (in tokens) per platform. Used to calculate Context Efficiency — how much of the agent's context window your instruction files consume."
+        },
+        "ai-readiness.confidenceThreshold": {
+          "type": "number",
+          "default": 0.5,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum confidence score (0.0-1.0) for LLM-generated recommendations. Recommendations below this threshold are dimmed in the Action Center."
         }
       }
     }
@@ -355,13 +371,24 @@
     "prepackage": "npm run build",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "bump": "node scripts/bump-version.js",
+    "bump:patch": "node scripts/bump-version.js patch",
+    "bump:minor": "node scripts/bump-version.js minor",
+    "bump:major": "node scripts/bump-version.js major",
+    "release": "npm run build && npm run test && npm run bump && npm run package"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.90.0",
     "@vitest/coverage-v8": "^4.1.1",
     "@vscode/vsce": "^3.0.0",
+    "d3-drag": "^3.0.0",
+    "d3-force": "^3.0.0",
+    "d3-scale": "^4.0.2",
+    "d3-selection": "^3.0.0",
+    "d3-shape": "^3.2.0",
+    "d3-zoom": "^3.0.0",
     "esbuild": "^0.24.0",
     "eslint": "^9.0.0",
     "typescript": "^5.5.0",

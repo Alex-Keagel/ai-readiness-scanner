@@ -1,54 +1,15 @@
-
-
-```json
 {
-  // AI Readiness Scanner — VS Code Extension Debug Profiles
-  //
-  // Prerequisites:
-  //   npm run compile   (or let the preLaunchTask handle it)
-  //
-  // Profiles:
-  //   1. "Run Extension"        — launches a new Extension Host window with the extension loaded
-  //   2. "Extension Tests"      — runs Vitest-based tests inside the Extension Host
-  //
-  // Usage:
-  //   Press F5 or open the Run and Debug panel (Ctrl+Shift+D) and select a profile.
-  //   The "npm: watch" preLaunchTask compiles src/ in watch mode so changes reload automatically.
-  //
-  // Troubleshooting:
-  //   - If the Extension Host doesn't start, ensure `npm run compile` succeeds first.
-  //   - Check the Debug Console for activation errors from src/extension.ts.
-  //   - Confirm package.json `main` points to the correct bundled output.
-  //
-  // Related files:
-  //   .vscode/tasks.json                — defines the "npm: watch" and "npm: compile" build tasks
-  //   esbuild.js                        — bundles the extension for distribution
-  //   src/extension.ts                  — extension entry point (activate / deactivate)
-  //   vitest.config.ts                  — test runner configuration
-  //   docs/AGENTIC_CODING_ASSESSMENT_SPEC.md — scoring spec the scanner implements
-
   "version": "0.2.0",
   "configurations": [
     {
-      // Launches a sandboxed VS Code window (Extension Host) with the
-      // AI Readiness Scanner extension loaded from the local build output.
-      // Open a workspace folder in that window and run the
-      // "AI Readiness Scanner: Scan Workspace" command to test scanning.
       "name": "Run Extension",
       "type": "extensionHost",
       "request": "launch",
-      "args": [
-        "--extensionDevelopmentPath=${workspaceFolder}"
-      ],
-      "outFiles": [
-        "${workspaceFolder}/dist/**/*.js"
-      ],
+      "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
+      "outFiles": ["${workspaceFolder}/dist/**/*.js"],
       "preLaunchTask": "npm: watch"
     },
     {
-      // Runs the extension's test suite inside the Extension Host.
-      // Tests are discovered by vitest.config.ts.
-      // Results appear in the Debug Console.
       "name": "Extension Tests",
       "type": "extensionHost",
       "request": "launch",
@@ -56,11 +17,8 @@
         "--extensionDevelopmentPath=${workspaceFolder}",
         "--extensionTestsPath=${workspaceFolder}/out/test"
       ],
-      "outFiles": [
-        "${workspaceFolder}/dist/**/*.js"
-      ],
-      "preLaunchTask": "npm: watch"
+      "outFiles": ["${workspaceFolder}/out/**/*.js"],
+      "preLaunchTask": "npm: compile"
     }
   ]
 }
-```

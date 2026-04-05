@@ -10,6 +10,7 @@ export class DependencyScanner {
   ): Promise<Map<string, string[]>> {
     const deps = new Map<string, string[]>();
     const exclude = '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/.venv/**,**/target/**';
+    const knownPaths = new Set(components.map(c => c.path));
     
     for (const comp of components) {
       const compDeps: string[] = [];
@@ -28,7 +29,7 @@ export class DependencyScanner {
       
       for (const pattern of sourcePatterns) {
         const files = await vscode.workspace.findFiles(
-          new vscode.RelativePattern(compUri, pattern), exclude, 20
+          new vscode.RelativePattern(compUri, pattern), exclude, 50
         );
         
         for (const file of files) {
@@ -44,7 +45,10 @@ export class DependencyScanner {
                 if (!otherComp.path || otherComp.path === '.' || otherComp.path === '/') continue;
                 const otherName = otherComp.path.split('/').pop() || '';
                 if (!otherName) continue;
-                if (imp.includes(otherName) || imp.includes(otherComp.path)) {
+                // Normalize: Python packages use underscores, dirs use hyphens
+                const otherNameNorm = otherName.replace(/-/g, '_');
+                const impNorm = imp.replace(/-/g, '_');
+                if (impNorm.includes(otherNameNorm) || impNorm.includes(otherComp.path.replace(/-/g, '_'))) {
                   if (!compDeps.includes(otherComp.path)) {
                     compDeps.push(otherComp.path);
                   }
@@ -55,17 +59,27 @@ export class DependencyScanner {
         }
       }
       
-      if (compDeps.length > 0) {
-        deps.set(comp.path, compDeps);
+      // Only include dependencies that point to known component paths
+      const validDeps = compDeps.filter(d => knownPaths.has(d));
+      if (validDeps.length > 0) {
+        deps.set(comp.path, validDeps);
       }
     }
     
     return deps;
   }
   
+  /**
+   * Sanitize a component path: normalize double-slashes and trim.
+   * Exported for testing.
+   */
+  static sanitizePath(p: string): string {
+    return p.replace(/\/{2,}/g, '/').replace(/^\/|\/$/g, '');
+  }
+  
   private extractImports(content: string, _language: string): string[] {
     const imports: string[] = [];
-    const lines = content.split('\n').slice(0, 100); // first 100 lines
+    const lines = content.split('\n').slice(0, 200); // first 200 lines
     
     for (const line of lines) {
       // Python: from X import Y, import X
@@ -87,6 +101,14 @@ export class DependencyScanner {
       // Rust: use X;
       const rsMatch = line.match(/use\s+([\w:]+)/);
       if (rsMatch) imports.push(rsMatch[1]);
+
+      // pyproject.toml: workspace = true dependencies
+      const uvSourceMatch = line.match(/^(\w[\w-]*)\s*=\s*\{\s*workspace\s*=\s*true/);
+      if (uvSourceMatch) imports.push(uvSourceMatch[1]);
+
+      // pyproject.toml: dependencies = ["package-name"]
+      const depMatch = line.match(/["'](\w[\w-]*)["']\s*(?:>=|==|,)/);
+      if (depMatch) imports.push(depMatch[1]);
     }
     
     return imports;

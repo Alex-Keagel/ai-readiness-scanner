@@ -5,6 +5,7 @@ import { GraphBuilder } from '../graph';
 import { humanizeSignalId } from '../utils';
 import { TACTICAL_GLASSBOX_CSS } from './theme';
 import { logger } from '../logging';
+import { calculateInstructionRealitySync } from '../report/instructionRealitySync';
 
 const LEVEL_COLORS: Record<MaturityLevel, string> = {
   1: '#ef4444',
@@ -288,6 +289,7 @@ export class WebviewReportPanel {
     <div style="font-size:1.3em;font-weight:700;margin-bottom:8px">📂 ${escapeHtml(report.projectName)}</div>
     <div class="level-badge">🏆 Level ${report.primaryLevel}: ${levelInfo.name}</div>
     <div class="meta">${escapeHtml(levelInfo.description)}</div>
+    ${report.projectContext.projectType === 'monorepo' ? '<div style="margin-top:6px;padding:4px 10px;background:rgba(0,210,211,0.1);border-radius:6px;font-size:0.82em;color:var(--color-cyan)">📦 Monorepo — scores reflect root-level configuration only</div>' : ''}
     <div class="score-row">
       <div class="score-item">
         <span class="score-value"><span class="pct-val">${depthPct}</span>&#37;</span>
@@ -521,7 +523,7 @@ export class WebviewReportPanel {
     let depsHtml = '';
     if (depEdges.length > 0) {
       const depLinks = depEdges.map(e => {
-        const label = e.label || e.target.replace(/^comp-/, '').replace(/[-_]/g, '/');
+        const label = e.label || e.target.replace(/^comp-/, '').replace(/_/g, '/');
         return `<span class="dep-link">→ ${escapeHtml(label)}</span>`;
       }).join('');
       depsHtml = `<div class="graph-deps">🔗 Dependencies: ${depLinks}</div>`;
@@ -966,9 +968,9 @@ export class WebviewReportPanel {
       // Formula tooltips per metric
       const formulaTooltips: Record<string, string> = {
         'Business Logic Alignment': 'Calculated: average(signal.score) for signals with LLM business validation. Measures whether your instruction files accurately describe the actual code structure and dependencies.',
-        'Type & Environment Strictness': 'Calculated: (typeAnnotations / declarations × 80) + (strictMode ? 20 : 0). Agents rely on LSPs for cross-file navigation — without type annotations, they hallucinate imports and function signatures.',
+        'Type & Environment Strictness': 'Language-aware type scoring. Statically typed languages (C#, Java, TS) get inherent credit. Python with type hints gets partial credit. Config files (JSON, YAML, KQL) are excluded.',
         'Semantic Density': 'Calculated: (commentLines / codeLines) × 150, capped at 100. Higher ratio of comments, docstrings, and descriptive names means agents pull better context when reasoning about code.',
-        'Instruction/Reality Sync': 'Calculated: validRealityChecks / totalRealityChecks × 100. The scanner verifies every path, command, and claim in your instruction files against the actual repo. Failed checks = agent will reference non-existent files.',
+        'Instruction/Reality Sync': 'Calculated from platform instruction files only: 50% root instruction presence, 20% scoped instruction coverage, 15% skills/tools support, and 15% path accuracy. When deep instructionQuality exists, it is blended in. No files = 0; no checked paths = 0 path accuracy.',
         'Context Efficiency': 'Calculated: contextAudit.score based on total instruction tokens / context budget. If your instruction files consume too much of the agent context window, it has less room for code analysis.',
       };
 
@@ -1003,14 +1005,22 @@ export class WebviewReportPanel {
 
   private computeFallbackMetrics(report: ReadinessReport): NarrativeMetric[] {
     const m = report.codebaseMetrics;
-    const realityChecks = report.levels.flatMap(l => l.signals).filter(s => s.realityChecks?.length).flatMap(s => s.realityChecks!);
-    const validPct = realityChecks.length > 0 ? Math.round((realityChecks.filter(r => r.status === 'valid').length / realityChecks.length) * 100) : 50;
+    const syncScore = calculateInstructionRealitySync(report as ReadinessReport & {
+      deepAnalysis?: {
+        instructionQuality?: {
+          overall?: number;
+          accuracy?: number;
+          coverage?: number;
+        };
+        coveragePercent?: number;
+      };
+    });
 
     const dims: [string, number][] = [
       ['Business Logic Alignment', report.overallScore],
       ['Type & Environment Strictness', m?.typeStrictnessIndex ?? 0],
       ['Semantic Density', m?.semanticDensity ?? 0],
-      ['Instruction/Reality Sync', validPct],
+      ['Instruction/Reality Sync', syncScore],
       ['Context Efficiency', report.contextAudit?.contextEfficiency?.score ?? 50],
     ];
     return dims.map(([dimension, score]) => ({

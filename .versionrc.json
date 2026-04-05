@@ -1,0 +1,15 @@
+{
+  "strategy": "conventional-commits",
+  "rules": {
+    "feat": "minor",
+    "fix": "patch",
+    "perf": "patch",
+    "refactor": "patch",
+    "docs": "patch",
+    "chore": "patch",
+    "BREAKING CHANGE": "major"
+  },
+  "tagPrefix": "v",
+  "changelog": true,
+  "commitMessage": "chore(release): v${version}"
+}

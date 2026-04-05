@@ -33,7 +33,7 @@ Each signal gets: `raw_score × confidence_multiplier × accuracy_multiplier`
 - Accuracy: based on reality check pass rate — penalizes invalid path refs and broken commands
 
 ### Stage 2: Quality Gates
-Critical signals below 50% → gate multiplier drops to 0.65. Missing critical signals → 0.55. Required signals averaging below 25 → 0.6. Heavy invalid reality checks (≥3) → 0.7. Gate multiplier compounds (takes minimum).
+Critical signals below 50% → gate multiplier drops to 0.65. Missing critical signals → 0.55. Required signals averaging below 25% → 0.6. Heavy invalid reality checks (≥3) → 0.7. Gate multiplier takes the minimum of these values.
 
 ### Stage 3: Dimension Scoring
 Per-dimension weighted average using signal classification weights:

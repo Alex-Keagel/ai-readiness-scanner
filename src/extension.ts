@@ -28,7 +28,7 @@ import { RecommendationsPanel } from './ui/recommendationsPanel';
 import { SemanticCache, WorkspaceIndexer, SemanticMCPProvider } from './semantic';
 import { initLogger, logger } from './logging';
 import { getPlatformExpertPrompt, formatProjectContext } from './remediation/fixPrompts';
-import { humanizeSignalId } from './utils';
+import { humanizeSignalId, deduplicateInsights } from './utils';
 import { DocsCache } from './llm/docsCache';
 
 let currentReport: ReadinessReport | undefined;
@@ -36,6 +36,35 @@ let sidebarPanel: SidebarPanel;
 let statusBarManager: StatusBarManager;
 let livePoller: SessionPoller | undefined;
 let liveEngine: LiveMetricsEngine | undefined;
+let isBusy = false;
+
+/** Guard against concurrent operations */
+function acquireLock(operation: string): boolean {
+  if (isBusy) {
+    vscode.window.showWarningMessage(`Please wait — ${operation} is still running.`);
+    return false;
+  }
+  isBusy = true;
+  vscode.commands.executeCommand('setContext', 'ai-readiness.isBusy', true);
+  return true;
+}
+
+function releaseLock(): void {
+  isBusy = false;
+  vscode.commands.executeCommand('setContext', 'ai-readiness.isBusy', false);
+}
+
+/** Get the current report only if it matches the active workspace */
+function getValidReport(): ReadinessReport | undefined {
+  if (!currentReport) return undefined;
+  const currentWorkspace = vscode.workspace.workspaceFolders?.[0]?.name;
+  if (currentWorkspace && currentReport.projectName !== currentWorkspace) {
+    logger.info(`Report mismatch: report is for "${currentReport.projectName}" but workspace is "${currentWorkspace}" — clearing stale report`);
+    currentReport = undefined;
+    return undefined;
+  }
+  return currentReport;
+}
 let liveStatusBar: LiveStatusBar | undefined;
 let runStorage: RunStorage;
 let fixStorage: FixStorage;
@@ -45,7 +74,6 @@ let copilotClient: CopilotClient;
 export function activate(context: vscode.ExtensionContext) {
   initLogger(context);
   logger.info('AI Readiness Scanner activated');
-  console.log('AI Readiness Scanner is now active');
 
   runStorage = new RunStorage(context);
   fixStorage = new FixStorage(context);
@@ -54,9 +82,10 @@ export function activate(context: vscode.ExtensionContext) {
   vscode.commands.executeCommand('setContext', 'ai-readiness.hasResults', runStorage.getRuns().length > 0);
   vscode.commands.executeCommand('setContext', 'ai-readiness.hasMultipleRuns', runStorage.getRuns().length >= 2);
 
-  // Restore latest report from saved runs
+  // Restore latest report from saved runs (only if it matches current workspace)
   const latestRun = runStorage.getLatestRun();
-  if (latestRun) {
+  const currentWorkspaceName = vscode.workspace.workspaceFolders?.[0]?.name;
+  if (latestRun && (!currentWorkspaceName || latestRun.report.projectName === currentWorkspaceName)) {
     currentReport = latestRun.report;
   }
 
@@ -74,6 +103,16 @@ export function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push({ dispose: () => semanticCache.dispose() });
   const remediationEngine = new RemediationEngine(copilotClient);
 
+  // Clear stale data when workspace changes
+  context.subscriptions.push(
+    vscode.workspace.onDidChangeWorkspaceFolders(() => {
+      logger.info('Workspace changed — clearing stale report data');
+      currentReport = undefined;
+      InsightsPanel.currentPanel = undefined;
+      statusBarManager.clear();
+    })
+  );
+
   context.subscriptions.push(
     vscode.window.registerWebviewViewProvider(SidebarPanel.viewType, sidebarPanel)
   );
@@ -83,30 +122,22 @@ export function activate(context: vscode.ExtensionContext) {
   // Register commands
   context.subscriptions.push(
     vscode.commands.registerCommand('ai-readiness.fullScan', async () => {
+      if (!acquireLock('a scan')) return;
       try {
         const tool = await pickAITool();
-        if (!tool) return;
-        await runScan(scanner, context, false, tool);
+        if (!tool) { releaseLock(); return; }
+        await runScan(scanner, context, tool);
       } catch (err) {
         logger.error('Command fullScan failed', err);
         vscode.window.showErrorMessage(`Command failed: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }),
-
-    vscode.commands.registerCommand('ai-readiness.quickScan', async () => {
-      try {
-        const tool = await pickAITool();
-        if (!tool) return;
-        await runScan(scanner, context, true, tool);
-      } catch (err) {
-        logger.error('Command quickScan failed', err);
-        vscode.window.showErrorMessage(`Command failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        releaseLock();
       }
     }),
 
     vscode.commands.registerCommand('ai-readiness.showReport', () => {
       try {
-        let report = currentReport;
+        let report = getValidReport();
         if (!report) {
           const latestRun = runStorage.getLatestRun();
           if (latestRun) { report = latestRun.report; currentReport = report; }
@@ -156,14 +187,15 @@ export function activate(context: vscode.ExtensionContext) {
     }),
 
     vscode.commands.registerCommand('ai-readiness.fixAll', async () => {
+      if (!acquireLock('Action Center')) return;
       try {
       const tool = await pickAITool();
-      if (!tool) return;
+      if (!tool) { releaseLock(); return; }
 
       const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
       if (!workspaceFolder) return;
 
-      let report = currentReport;
+      let report = getValidReport();
 
       // Run all prerequisites in one progress flow
       await vscode.window.withProgress({
@@ -195,6 +227,7 @@ export function activate(context: vscode.ExtensionContext) {
               category: i.category || 'improvement',
               estimatedImpact: i.estimatedImpact ? `+${i.estimatedImpact} points` : undefined,
               affectedComponent: i.affectedComponent || i.affectedLanguage,
+              confidenceScore: i.estimatedImpact ? Math.min(0.9, 0.5 + (i.estimatedImpact / 20) * 0.4) : 0.6,
             }));
             logger.info(`Action Center: generated ${report!.insights!.length} insights`);
           } catch (err) {
@@ -202,7 +235,63 @@ export function activate(context: vscode.ExtensionContext) {
           }
         }
 
-        // Step 3: Generate narrative if not present
+        // Step 3: Run deep analysis (cross-reference instructions vs code)
+        // Skip if already computed during Full Scan
+        if (!(report as any).deepAnalysis) {
+        progress.report({ message: '🔬 Deep analysis: cross-referencing instructions vs code...', increment: 15 });
+        try {
+          const { runDeepAnalysis } = await import('./deep');
+          const deepResult = await runDeepAnalysis(workspaceFolder.uri, copilotClient, tool, progress, undefined, report?.projectContext?.projectType);
+          // Store deep analysis data regardless of recommendation count
+          (report as any).deepAnalysis = {
+            instructionQuality: deepResult.crossRef.instructionQuality,
+            coveragePercent: deepResult.crossRef.coveragePercent,
+            gapCount: deepResult.crossRef.coverageGaps.length,
+            driftCount: deepResult.crossRef.driftIssues.length,
+            complexity: deepResult.complexity,
+            callGraph: deepResult.callGraph,
+            dataFlow: deepResult.dataFlow,
+          };
+          // Enrich knowledge graph
+          if (report!.knowledgeGraph) {
+            try {
+              const { GraphBuilder } = await import("./graph/graphBuilder");
+              new GraphBuilder().enrichWithDeepAnalysis(report!.knowledgeGraph as any, deepResult as any);
+              logger.info(`Action Center: knowledge graph enriched`);
+            } catch (enrichErr) { logger.debug("Knowledge graph enrichment failed", { error: String(enrichErr) }); }
+          }
+          // Merge deep recommendations into insights
+          if (deepResult.recommendations.length > 0) {
+            if (!report!.insights) report!.insights = [];
+            for (const rec of deepResult.recommendations) {
+              report!.insights.push({
+                title: rec.title,
+                recommendation: rec.suggestedContent || rec.description,
+                severity: rec.severity === 'critical' ? 'critical' : rec.severity === 'important' ? 'important' : 'suggestion',
+                category: rec.type,
+                estimatedImpact: `+${Math.min(20, Math.max(1, Math.round(rec.impactScore / 5)))} points`,
+                affectedComponent: rec.affectedModules.join(', '),
+                confidenceScore: (rec as any).confidence || Math.min(0.9, 0.5 + (rec.impactScore / 100) * 0.4),
+              });
+            }
+            logger.info(`Action Center: deep analysis added ${deepResult.recommendations.length} recommendations`);
+          }
+          // Deduplicate all insights (regular + deep merged)
+          if (report!.insights && report!.insights.length > 0) {
+            const before = report!.insights.length;
+            report!.insights = deduplicateInsights(report!.insights);
+            if (report!.insights.length < before) {
+              logger.info(`Action Center: deduped insights ${before} → ${report!.insights.length}`);
+            }
+          }
+        } catch (err) {
+          logger.warn('Action Center: deep analysis failed, using standard insights', err);
+        }
+        } else {
+          logger.info('Action Center: reusing deep analysis from scan');
+        }
+
+        // Step 4: Generate narrative if not present
         if (!report!.narrativeSections) {
           progress.report({ message: '📊 Generating report narrative...', increment: 10 });
           try {
@@ -217,12 +306,24 @@ export function activate(context: vscode.ExtensionContext) {
 
       if (!report) return;
 
-      // Ask for user context
-      const userContext = await vscode.window.showInputBox({
-        prompt: 'Describe your project context (optional — helps generate better recommendations)',
-        placeHolder: 'e.g., "Python data pipeline for DDoS detection, uses uv for package management, KQL for analytics"',
-        value: '',
-      }) ?? '';
+      // Re-save report with deep analysis + narrative data to persist in workspaceState
+      currentReport = report;
+      await runStorage.updateLatestReport(report);
+
+      // Auto-detect project context from README (no user input needed)
+      let userContext = '';
+      try {
+        const readmeUris = await vscode.workspace.findFiles(
+          new vscode.RelativePattern(workspaceFolder.uri, '{README.md,readme.md,README.rst}'),
+          null, 1
+        );
+        if (readmeUris.length > 0) {
+          const content = Buffer.from(await vscode.workspace.fs.readFile(readmeUris[0])).toString('utf-8');
+          // Extract first 500 chars as project context (title + description)
+          userContext = content.slice(0, 500).replace(/\n/g, ' ').trim();
+          logger.info(`Action Center: auto-detected project context from README (${userContext.length} chars)`);
+        }
+      } catch { /* no README — proceed without context */ }
 
       // Initialize multi-model client
       if (!multiModelClient.isAvailable()) {
@@ -239,6 +340,8 @@ export function activate(context: vscode.ExtensionContext) {
       } catch (err) {
         logger.error('Command fixAll failed', err);
         vscode.window.showErrorMessage(`Command failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        releaseLock();
       }
     }),
 
@@ -366,7 +469,7 @@ export function activate(context: vscode.ExtensionContext) {
         await semanticCache.clear();
         currentReport = undefined;
         // Close any open panels
-        try { RecommendationsPanel.currentPanel?.panel?.dispose(); } catch { /* */ }
+        try { (RecommendationsPanel.currentPanel as any)?.panel?.dispose(); } catch { /* */ }
         InsightsPanel.currentPanel = undefined;
         vscode.commands.executeCommand('setContext', 'ai-readiness.hasResults', false);
         vscode.commands.executeCommand('setContext', 'ai-readiness.hasMultipleRuns', false);
@@ -392,7 +495,7 @@ export function activate(context: vscode.ExtensionContext) {
     // Open dedicated graph page
     vscode.commands.registerCommand('ai-readiness.showGraph', () => {
       try {
-        let report = currentReport;
+        let report = getValidReport();
         if (!report) {
           const latestRun = runStorage.getLatestRun();
           if (latestRun) { report = latestRun.report; }
@@ -408,10 +511,59 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
 
+    vscode.commands.registerCommand('ai-readiness.showInteractiveGraph', () => {
+      try {
+        let report = getValidReport();
+        if (!report) {
+          const latestRun = runStorage.getLatestRun();
+          if (latestRun) { report = latestRun.report; }
+        }
+        if (!report) {
+          vscode.window.showInformationMessage('Run a scan first to build the knowledge graph.');
+          return;
+        }
+        const { KnowledgeGraphPanel } = require('./ui/knowledgeGraphPanel');
+        KnowledgeGraphPanel.createOrShow(report, context.extensionUri);
+      } catch (err) {
+        logger.error('Command showInteractiveGraph failed', err);
+        vscode.window.showErrorMessage(`Command failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }),
+
+    vscode.commands.registerCommand('ai-readiness.showDeveloperNetwork', async () => {
+      try {
+        await vscode.window.withProgress({
+          location: vscode.ProgressLocation.Notification,
+          title: 'Building Developer Profile...',
+        }, async () => {
+          const { collectDeveloperProfile, detectADORepos } = await import('./live/developerNetwork');
+          const wsFolder = vscode.workspace.workspaceFolders?.[0];
+          const cwd = wsFolder?.uri.fsPath || '';
+
+          const detected = detectADORepos(cwd);
+          const configRepos = vscode.workspace.getConfiguration('ai-readiness').get<string[]>('networkRepos') || [];
+          const repoNames = [...new Set([...detected.repos, ...configRepos])];
+
+          const profile = await collectDeveloperProfile(repoNames, detected.org || 'msazure', detected.project || 'One', cwd);
+          const { DeveloperNetworkPanel } = await import('./ui/developerNetworkPanel');
+          const refreshFn = async () => {
+            const freshDetected = detectADORepos(cwd);
+            const freshRepos = [...new Set([...freshDetected.repos, ...configRepos])];
+            return collectDeveloperProfile(freshRepos, freshDetected.org || 'msazure', freshDetected.project || 'One', cwd);
+          };
+          DeveloperNetworkPanel.createOrShow(profile, context.extensionUri, refreshFn);
+        });
+      } catch (err) {
+        logger.error('Command showDeveloperNetwork failed', err);
+        vscode.window.showErrorMessage(`Developer Profile failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }),
+
+
     // Open context architecture audit panel
     vscode.commands.registerCommand('ai-readiness.showContext', () => {
       try {
-        let report = currentReport;
+        let report = getValidReport();
         if (!report) {
           const latestRun = runStorage.getLatestRun();
           if (latestRun) { report = latestRun.report; }
@@ -427,11 +579,61 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
 
+    // Export knowledge graph + deep analysis as JSON for debugging
+    vscode.commands.registerCommand('ai-readiness.exportGraph', async () => {
+      try {
+        let report = getValidReport();
+        if (!report) {
+          const latestRun = runStorage.getLatestRun();
+          if (latestRun) { report = latestRun.report; }
+        }
+        if (!report) {
+          vscode.window.showInformationMessage('Run a scan first.');
+          return;
+        }
+        const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+        if (!workspaceFolder) return;
+
+        const exportData = {
+          projectName: report.projectName,
+          scannedAt: report.scannedAt,
+          overallScore: report.overallScore,
+          primaryLevel: report.primaryLevel,
+          componentCount: report.componentScores.filter(c => {
+            const n = c.name.toLowerCase();
+            return !n.endsWith('.tests') && !n.endsWith('.test') && !n.startsWith('testfx') && !n.includes('testutils');
+          }).length,
+          totalComponentCount: report.componentScores.length,
+          insights: report.insights || [],
+          narrativeSections: report.narrativeSections || null,
+          knowledgeGraph: report.knowledgeGraph,
+          deepAnalysis: (report as any).deepAnalysis,
+          componentScores: report.componentScores.map(c => ({
+            name: c.name, path: c.path, language: c.language, type: c.type,
+            score: c.overallScore, level: c.primaryLevel, depth: c.depth,
+            parentPath: c.parentPath, children: c.children,
+            isGenerated: c.isGenerated, description: c.description,
+            signals: c.signals,
+          })),
+        };
+
+        const filePath = vscode.Uri.joinPath(workspaceFolder.uri, `ai-readiness-graph-${report.projectName}.json`);
+        await vscode.workspace.fs.writeFile(filePath, Buffer.from(JSON.stringify(exportData, null, 2), 'utf-8'));
+        const doc = await vscode.workspace.openTextDocument(filePath);
+        await vscode.window.showTextDocument(doc, { preview: false });
+        vscode.window.showInformationMessage(`Knowledge graph exported to ${filePath.fsPath}`);
+      } catch (err) {
+        logger.error('Command exportGraph failed', err);
+        vscode.window.showErrorMessage(`Export failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }),
+
     // Open dedicated insights page — generate on-demand
     vscode.commands.registerCommand('ai-readiness.showInsights', async () => {
+      if (!acquireLock('AI Strategy')) return;
       try {
       // Use current report or pick a saved run
-      let report = currentReport;
+      let report = getValidReport();
       if (!report) {
         const runs = runStorage.getRuns();
         if (runs.length === 0) {
@@ -482,8 +684,12 @@ export function activate(context: vscode.ExtensionContext) {
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           vscode.window.showErrorMessage(`Insight generation failed: ${msg}`);
-          console.error('[Insights] Generation failed:', err);
+          logger.error('Insights: Generation failed', err);
         }
+
+        // Persist enriched report to storage and in-memory
+        currentReport = report;
+        await runStorage.updateLatestReport(report);
       }
 
       if (report.insights?.length) {
@@ -544,6 +750,8 @@ export function activate(context: vscode.ExtensionContext) {
       } catch (err) {
         logger.error('Command showInsights failed', err);
         vscode.window.showErrorMessage(`Command failed: ${err instanceof Error ? err.message : String(err)}`);
+      } finally {
+        releaseLock();
       }
     }),
 
@@ -732,10 +940,16 @@ export function activate(context: vscode.ExtensionContext) {
       const tool = await pickAITool();
       if (!tool) { return; }
 
-      const name = await vscode.window.showInputBox({
-        prompt: 'Your name (for the report header)',
-        placeHolder: 'Developer',
-      });
+      // Auto-detect name from git config
+      let name = 'Developer';
+      try {
+        const { execSync } = require('child_process');
+        const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (cwd) {
+          name = execSync('git config user.name 2>/dev/null', { cwd, encoding: 'utf-8' }).trim() || 'Developer';
+        }
+      } catch { /* use default */ }
+
 
       await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
@@ -807,10 +1021,16 @@ export function activate(context: vscode.ExtensionContext) {
       const tool = await pickAITool();
       if (!tool) return;
 
-      const name = await vscode.window.showInputBox({
-        prompt: 'Your name (for the report header)',
-        placeHolder: 'Developer',
-      });
+      // Auto-detect name from git config
+      let name = 'Developer';
+      try {
+        const { execSync } = require('child_process');
+        const cwd = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (cwd) {
+          name = execSync('git config user.name 2>/dev/null', { cwd, encoding: 'utf-8' }).trim() || 'Developer';
+        }
+      } catch { /* use default */ }
+
 
       await vscode.window.withProgress({
         location: vscode.ProgressLocation.Notification,
@@ -862,7 +1082,7 @@ export function activate(context: vscode.ExtensionContext) {
       });
       if (!selected) return;
 
-      await runScan(scanner, context, false, selected.toolId);
+      await runScan(scanner, context, selected.toolId);
       } catch (err) {
         logger.error('Command selectTool failed', err);
         vscode.window.showErrorMessage(`Command failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1230,29 +1450,28 @@ async function generateViaLLM(
   const projectCtx = formatProjectContext(report.projectContext);
 
   // Determine if this could be a multi-file recommendation
-  const isMultiFile = recommendation.includes('hierarchy') || recommendation.includes('directory') ||
-    recommendation.includes('Create `.clinerules') || recommendation.includes('memory-bank') ||
-    recommendation.includes('workflow') || recommendation.match(/create.*files/i);
+  const isMultiFile = true; // Always request structured multi-file format for reliability
 
-  const formatInstruction = isMultiFile
-    ? `Generate content for EACH file separately. Use this exact format for each file:
+  const formatInstruction = `If generating multiple files, use this exact format for EACH file:
 
 === FILE: path/to/file.md ===
-(file content here)
+(file content here — no code fences wrapping the content)
 === END FILE ===
 
-Generate each file individually with its full path. Do NOT combine multiple files into one block.`
-    : `Generate ONLY the file content — no explanation, no markdown code fences around the entire output. Follow the platform's exact file format.`;
+If generating a single file, output ONLY the file content with no wrapping.
+Always use the full file path starting from the repository root.
+Do NOT wrap file content in markdown code fences (\`\`\`).`;
 
   const content = await copilotClient.analyze(
     `${expertPrompt}\n\nPROJECT CONTEXT:\n${projectCtx}\n\nTASK: ${recommendation}\n\n${formatInstruction}`,
     undefined, 120_000
   );
 
-  // Parse multi-file response
-  const fileBlocks = content.matchAll(/===\s*FILE:\s*(.+?)\s*===\n([\s\S]*?)===\s*END FILE\s*===/gi);
+  // Parse multi-file response — try 3 formats
   const parsedFiles: { filePath: string; content: string; existing: string; signalId: string }[] = [];
 
+  // Format 1: === FILE: path === ... === END FILE ===
+  const fileBlocks = content.matchAll(/===\s*FILE:\s*(.+?)\s*===\n([\s\S]*?)===\s*END FILE\s*===/gi);
   for (const match of fileBlocks) {
     const filePath = match[1].trim();
     const fileContent = match[2].trim();
@@ -1264,7 +1483,8 @@ Generate each file individually with its full path. Do NOT combine multiple file
   // If multi-file parsing found files, return them
   if (parsedFiles.length > 0) {
     logger.info(`generateViaLLM: parsed ${parsedFiles.length} files from multi-file response`);
-    return parsedFiles;
+    const protectedFiles = protectSourceFiles(parsedFiles, wsFolder);
+    return validateAndRetry(protectedFiles, recommendation, signalId, tool, report, wsFolder);
   }
 
   // Fallback: try to split by markdown ## headers with file paths
@@ -1283,7 +1503,30 @@ Generate each file individually with its full path. Do NOT combine multiple file
 
   if (parsedFiles.length > 0) {
     logger.info(`generateViaLLM: parsed ${parsedFiles.length} files from header-based response`);
-    return parsedFiles;
+    const protectedFiles = protectSourceFiles(parsedFiles, wsFolder);
+    return validateAndRetry(protectedFiles, recommendation, signalId, tool, report, wsFolder);
+  }
+
+  // Format 3: **File: `path`** or **File: path** with ```code fences```
+  const boldFileSections = content.split(/^(?=\*\*File:\s*)/m).filter(s => s.trim());
+  for (const sec of boldFileSections) {
+    const pathMatch = sec.match(/^\*\*File:\s*`?([^`*\n]+)`?\s*\*\*/);
+    if (!pathMatch) continue;
+    const filePath = pathMatch[1].trim();
+    const body = sec.replace(/^\*\*File:.*\*\*\s*\n*/, '').trim();
+    // Extract content from code fences if present
+    const fenced = body.match(/```(?:markdown|yaml|json|md|typescript|javascript)?\n([\s\S]*?)```/);
+    const fileContent = fenced ? fenced[1].trim() : body;
+    if (fileContent.length < 10) continue; // skip empty sections
+    let existing = '';
+    try { existing = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(wsFolder.uri, filePath))).toString('utf-8'); } catch { /* new */ }
+    parsedFiles.push({ filePath, content: fileContent, existing, signalId });
+  }
+
+  if (parsedFiles.length > 0) {
+    logger.info(`generateViaLLM: parsed ${parsedFiles.length} files from **File:** format`);
+    const protectedFiles = protectSourceFiles(parsedFiles, wsFolder);
+    return validateAndRetry(protectedFiles, recommendation, signalId, tool, report, wsFolder);
   }
 
   // Final fallback: single file
@@ -1295,16 +1538,110 @@ Generate each file individually with its full path. Do NOT combine multiple file
 
   parsedFiles.push({ filePath, content, existing, signalId });
 
-  // Protect existing source/config files from being overwritten
-  // For existing files, create advisory suggestions instead of replacing content
-  return parsedFiles.map(f => {
-    if (!f.existing) return f; // New file — safe to create
-    
-    // Only allow overwriting .md files (documentation) — everything else gets advisory
+  const protected1 = protectSourceFiles(parsedFiles, wsFolder);
+  return validateAndRetry(protected1, recommendation, signalId, tool, report, wsFolder);
+}
+
+async function validateAndRetry(
+  files: { filePath: string; content: string; existing: string; signalId: string }[],
+  recommendation: string,
+  signalId: string,
+  tool: AITool,
+  report: ReadinessReport,
+  wsFolder: vscode.WorkspaceFolder,
+  attempt: number = 1
+): Promise<{ filePath: string; content: string; existing: string; signalId: string }[]> {
+  if (!copilotClient.isAvailable() || files.length === 0 || attempt > 2) return files;
+
+  try {
+    const { OutputValidator } = await import('./deep/outputValidator');
+    const validator = new OutputValidator(copilotClient);
+    const result = await validator.validate(
+      files.map(f => ({ filePath: f.filePath, content: f.content })),
+      recommendation
+    );
+
+    if (result.valid) {
+      if (result.issues.length > 0) {
+        logger.info(`Validator: ${result.issues.length} warnings (non-blocking): ${result.issues.map(i => i.issue).join('; ')}`);
+      }
+      return files;
+    }
+
+    // Validation failed — fix deterministic issues inline
+    const errorIssues = result.issues.filter(i => i.severity === 'error');
+    logger.warn(`Validator: ${errorIssues.length} errors found on attempt ${attempt}, fixing...`);
+
+    let needsRetry = false;
+    for (const issue of errorIssues) {
+      const fileIdx = files.findIndex(f => f.filePath === issue.file);
+      if (fileIdx < 0) continue;
+
+      // Auto-fix: code fence wrapping
+      if (issue.issue.includes('code fences')) {
+        files[fileIdx].content = files[fileIdx].content
+          .replace(/^```\w*\n/, '').replace(/\n```\s*$/, '');
+        logger.info(`Validator: auto-fixed code fence wrapping in ${issue.file}`);
+      }
+      // Auto-fix: JSON comments
+      else if (issue.issue.includes('comments') && issue.file.endsWith('.json')) {
+        files[fileIdx].content = files[fileIdx].content
+          .split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+        logger.info(`Validator: auto-removed JSON comments in ${issue.file}`);
+      }
+      // Auto-fix: empty content
+      else if (issue.issue.includes('empty')) {
+        files.splice(fileIdx, 1);
+        logger.info(`Validator: removed empty file ${issue.file}`);
+      }
+      // Other errors need LLM retry
+      else {
+        needsRetry = true;
+      }
+    }
+
+    if (needsRetry && attempt < 2) {
+      // Retry with validator feedback
+      logger.info(`Validator: retrying generation with feedback (attempt ${attempt + 1})`);
+      const feedback = errorIssues.map(i => `- ${i.file}: ${i.issue}${i.suggestion ? '. Fix: ' + i.suggestion : ''}`).join('\n');
+      const expertPrompt = getPlatformExpertPrompt(tool);
+      const projectCtx = formatProjectContext(report.projectContext);
+
+      const retryContent = await copilotClient.analyze(
+        `${expertPrompt}\n\nPROJECT CONTEXT:\n${projectCtx}\n\nORIGINAL TASK: ${recommendation}\n\nYour previous output had these problems:\n${feedback}\n\nFix these issues and regenerate. Use === FILE: path === format. Do NOT wrap content in code fences.`,
+        undefined, 120_000
+      );
+
+      // Re-parse
+      const retryFiles: { filePath: string; content: string; existing: string; signalId: string }[] = [];
+      const retryBlocks = retryContent.matchAll(/===\s*FILE:\s*(.+?)\s*===\n([\s\S]*?)===\s*END FILE\s*===/gi);
+      for (const match of retryBlocks) {
+        let existing = '';
+        try { existing = Buffer.from(await vscode.workspace.fs.readFile(vscode.Uri.joinPath(wsFolder.uri, match[1].trim()))).toString('utf-8'); } catch { /* new */ }
+        retryFiles.push({ filePath: match[1].trim(), content: match[2].trim(), existing, signalId });
+      }
+
+      if (retryFiles.length > 0) {
+        const protectedRetry = protectSourceFiles(retryFiles, wsFolder);
+        return validateAndRetry(protectedRetry, recommendation, signalId, tool, report, wsFolder, attempt + 1);
+      }
+    }
+
+    return files;
+  } catch (err) {
+    logger.debug('Validator: validation failed, returning unvalidated files', err);
+    return files;
+  }
+}
+
+function protectSourceFiles(
+  files: { filePath: string; content: string; existing: string; signalId: string }[],
+  wsFolder: vscode.WorkspaceFolder
+): { filePath: string; content: string; existing: string; signalId: string }[] {
+  return files.map(f => {
+    if (!f.existing) return f;
     const ext = f.filePath.split('.').pop()?.toLowerCase() || '';
-    if (ext === 'md') return f; // Markdown files can be overwritten (they're documentation)
-    
-    // All other existing files: redirect to advisory suggestions
+    if (ext === 'md') return f;
     const suggestPath = `${f.filePath}.suggestions.md`;
     logger.info(`generateViaLLM: protecting existing "${f.filePath}" → advisory "${suggestPath}"`);
     return {
@@ -1419,13 +1756,32 @@ Generate ONLY the file content — no explanation, no markdown code fences aroun
 
   try {
     logger.info(`Generate+Diff: using ${AI_TOOLS[tool]?.name || tool} expert for "${signalId}"`);
-    const content = await copilotClient.analyze(prompt, undefined, 120_000);
+    let content = await copilotClient.analyze(prompt, undefined, 120_000);
 
     // Extract file path from recommendation
     const pathMatch = recommendation.match(/`([^`]+\.[a-z]+)`/i)
       || recommendation.match(/Create\s+(\S+\.\w+)/i)
       || recommendation.match(/(\S+\/\S+\.\w+)/);
     const filePath = pathMatch?.[1] || `generated-${signalId.replace(/[^a-z0-9]/gi, '-').slice(0, 30)}.md`;
+
+    // Validate generated content
+    try {
+      const { OutputValidator } = await import('./deep/outputValidator');
+      const validator = new OutputValidator(copilotClient);
+      const valResult = await validator.validate([{ filePath, content }], recommendation);
+      if (!valResult.valid) {
+        const errors = valResult.issues.filter(i => i.severity === 'error');
+        logger.warn(`Generate+Diff: validation found ${errors.length} errors, auto-fixing...`);
+        // Auto-fix code fence wrapping
+        if (content.trimStart().startsWith('```') && content.trimEnd().endsWith('```')) {
+          content = content.replace(/^```\w*\n/, '').replace(/\n```\s*$/, '');
+        }
+        // Auto-fix JSON comments
+        if (filePath.endsWith('.json') && /^\s*\/\//m.test(content)) {
+          content = content.split('\n').filter(l => !l.trim().startsWith('//')).join('\n');
+        }
+      }
+    } catch { /* validation optional */ }
 
     const targetUri = vscode.Uri.joinPath(workspaceFolder.uri, filePath);
 
@@ -1467,7 +1823,6 @@ Generate ONLY the file content — no explanation, no markdown code fences aroun
 async function runScan(
   scanner: WorkspaceScanner,
   context: vscode.ExtensionContext,
-  quickMode: boolean,
   selectedTool: AITool
 ): Promise<void> {
   const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
@@ -1485,25 +1840,124 @@ async function runScan(
     async (progress, token) => {
       const scanStartTime = Date.now();
       try {
+        // Phase 1: Core scan (signals, components, structure)
+        progress.report({ message: '🔍 Scanning workspace signals...', increment: 10 });
         currentReport = await scanner.scan(
           workspaceFolder.uri,
-          quickMode,
+          false,
           progress,
           token,
           selectedTool
         );
 
-        // Save run to persistent storage
-        await runStorage.saveRun(currentReport);
+        if (!currentReport || token.isCancellationRequested) return;
 
+        // Save initial scan result
+        await runStorage.saveRun(currentReport);
         sidebarPanel.refresh();
         statusBarManager.update(currentReport);
         vscode.commands.executeCommand('setContext', 'ai-readiness.hasResults', true);
         vscode.commands.executeCommand('setContext', 'ai-readiness.hasMultipleRuns', runStorage.getRuns().length >= 2);
 
+        // ── Run entire pipeline ──
+
+        // Phase 2: Generate insights (LLM)
+        if (!currentReport.insights?.length) {
+          progress.report({ message: '💡 Generating AI insights...', increment: 15 });
+          try {
+            if (!copilotClient.isAvailable()) {
+              await copilotClient.initialize();
+            }
+            const insightsEng = new InsightsEngine(copilotClient);
+            const rawInsights = await insightsEng.generateInsights(currentReport, token);
+            currentReport.insights = rawInsights.map((i: any) => ({
+              title: i.title || 'Untitled insight',
+              recommendation: i.recommendation || i.description || '',
+              severity: i.severity === 'nice-to-have' ? 'suggestion' as const : i.severity === 'critical' ? 'critical' as const : i.severity === 'important' ? 'important' as const : 'suggestion' as const,
+              category: i.category || 'improvement',
+              estimatedImpact: i.estimatedImpact ? `+${i.estimatedImpact} points` : undefined,
+              affectedComponent: i.affectedComponent || i.affectedLanguage,
+              confidenceScore: i.estimatedImpact ? Math.min(0.9, 0.5 + (i.estimatedImpact / 20) * 0.4) : 0.6, // LLM-generated without debate validation
+            }));
+            logger.info(`Full scan: generated ${currentReport.insights.length} insights`);
+          } catch (err) {
+            logger.warn('Full scan: insight generation failed, continuing', err);
+          }
+        }
+        if (token.isCancellationRequested) return;
+
+        // Phase 3: Deep analysis (cross-reference instructions vs code)
+        progress.report({ message: '🔬 Deep analysis: cross-referencing instructions vs code...', increment: 15 });
+        try {
+          const { runDeepAnalysis } = await import('./deep');
+          const deepResult = await runDeepAnalysis(workspaceFolder.uri, copilotClient, selectedTool, progress, undefined, currentReport?.projectContext?.projectType);
+          // Store deep analysis data regardless of recommendation count
+          (currentReport as any).deepAnalysis = {
+            instructionQuality: deepResult.crossRef.instructionQuality,
+            coveragePercent: deepResult.crossRef.coveragePercent,
+            gapCount: deepResult.crossRef.coverageGaps.length,
+            driftCount: deepResult.crossRef.driftIssues.length,
+            complexity: deepResult.complexity,
+            callGraph: deepResult.callGraph,
+            dataFlow: deepResult.dataFlow,
+          };
+          // Enrich knowledge graph with deep analysis data
+          if (currentReport.knowledgeGraph) {
+            try {
+              const { GraphBuilder } = await import('./graph/graphBuilder');
+              new GraphBuilder().enrichWithDeepAnalysis(currentReport.knowledgeGraph as any, deepResult as any);
+              logger.info(`Full scan: knowledge graph enriched — ${(currentReport.knowledgeGraph as any).edges.length} edges`);
+            } catch (enrichErr) { logger.debug('Knowledge graph enrichment failed', { error: String(enrichErr) }); }
+          }
+          // Merge deep recommendations into insights
+          if (deepResult.recommendations.length > 0) {
+            if (!currentReport.insights) currentReport.insights = [];
+            for (const rec of deepResult.recommendations) {
+              currentReport.insights.push({
+                title: rec.title,
+                recommendation: rec.suggestedContent || rec.description,
+                severity: rec.severity === 'critical' ? 'critical' : rec.severity === 'important' ? 'important' : 'suggestion',
+                category: rec.type,
+                estimatedImpact: `+${Math.min(20, Math.max(1, Math.round(rec.impactScore / 5)))} points`,
+                affectedComponent: rec.affectedModules.join(', '),
+                confidenceScore: (rec as any).confidence || Math.min(0.9, 0.5 + (rec.impactScore / 100) * 0.4),
+              });
+            }
+            logger.info(`Full scan: deep analysis added ${deepResult.recommendations.length} recommendations`);
+          }
+          // Deduplicate all insights (regular + deep merged)
+          if (currentReport.insights && currentReport.insights.length > 0) {
+            const before = currentReport.insights.length;
+            currentReport.insights = deduplicateInsights(currentReport.insights);
+            if (currentReport.insights.length < before) {
+              logger.info(`Full scan: deduped insights ${before} → ${currentReport.insights.length}`);
+            }
+          }
+        } catch (err) {
+          logger.warn('Full scan: deep analysis failed, continuing', err);
+        }
+        if (token.isCancellationRequested) return;
+
+        // Phase 4: Generate narrative
+        if (!currentReport.narrativeSections) {
+          progress.report({ message: '📊 Generating report narrative...', increment: 10 });
+          try {
+            const { NarrativeGenerator } = await import('./report/narrativeGenerator');
+            const narrativeGen = new NarrativeGenerator(copilotClient);
+            currentReport.narrativeSections = await narrativeGen.generate(currentReport);
+            logger.info('Full scan: narrative generated');
+          } catch (err) {
+            logger.warn('Full scan: narrative generation failed', err);
+          }
+        }
+
+        // Save fully enriched report
+        await runStorage.updateLatestReport(currentReport);
+        sidebarPanel.refresh();
+
+        const scanDuration = Math.round((Date.now() - scanStartTime) / 1000);
         const level = currentReport.primaryLevel;
         const levelInfo = MATURITY_LEVELS[level];
-        const scanDuration = Math.round((Date.now() - scanStartTime) / 1000);
         vscode.window.showInformationMessage(
           `AI Readiness: Level ${level} — ${levelInfo.name} (Depth: ${currentReport.depth}%, Score: ${currentReport.overallScore}/100) [${scanDuration}s]`
         );

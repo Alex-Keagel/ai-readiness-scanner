@@ -1,4 +1,4 @@
-export type NodeType = 'repository' | 'component' | 'subcomponent' | 'language' | 'ai-platform' | 'ai-file' | 'signal' | 'insight';
+export type NodeType = 'repository' | 'component' | 'subcomponent' | 'language' | 'ai-platform' | 'ai-file' | 'signal' | 'insight' | 'module' | 'function' | 'data-source' | 'data-sink' | 'domain';
 
 export interface GraphNode {
   id: string;
@@ -16,7 +16,7 @@ export interface GraphNode {
 export interface GraphEdge {
   source: string;       // node id
   target: string;       // node id
-  relation: 'CONTAINS' | 'WRITTEN_IN' | 'CONFIGURED_BY' | 'BELONGS_TO' | 'DEPENDS_ON' | 'COVERS' | 'MISSING' | 'SUGGESTS';
+  relation: 'CONTAINS' | 'WRITTEN_IN' | 'CONFIGURED_BY' | 'BELONGS_TO' | 'DEPENDS_ON' | 'COVERS' | 'MISSING' | 'SUGGESTS' | 'CALLS' | 'DATA_FLOWS_TO' | 'EXTENDS' | 'IMPLEMENTS';
   label?: string;
   properties?: Record<string, unknown>;
 }

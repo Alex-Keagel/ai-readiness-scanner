@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { isVirtualEnvPath } from './componentMapper';
 
 export interface RepoNode {
   name: string;
@@ -71,7 +72,7 @@ const TEST_DIR_PATTERNS = [
   /(?:^|\/)(?:test|tests|__tests__|spec|e2e)(?:\/|$)/i,
 ];
 
-const EXCLUDE_PATTERN = '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/__pycache__/**,**/.venv/**,**/target/**,**/coverage/**,**/.next/**}';
+const EXCLUDE_PATTERN = '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/__pycache__/**,**/.venv/**,**/venv/**,**/target/**,**/coverage/**,**/.next/**,**/site-packages/**,**/.tox/**,**/env/**}';
 
 export class RepoMapper {
   async mapRepository(workspaceUri: vscode.Uri): Promise<RepoMap> {
@@ -81,6 +82,7 @@ export class RepoMapper {
     );
 
     const relativePaths = files
+      .filter(f => !isVirtualEnvPath(f.path))
       .map(f => vscode.workspace.asRelativePath(f, false))
       .sort();
 

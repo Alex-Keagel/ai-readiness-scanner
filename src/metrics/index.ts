@@ -3,6 +3,8 @@ export {
   type CodebaseReadinessMetrics,
   analyzeFileContent,
   calculateCodebaseMetrics,
+  computeBlendedSemanticDensity,
+  computeWeightedSemanticDensity,
 } from './codebaseMetrics.js';
 
 export {

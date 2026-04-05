@@ -65,7 +65,7 @@ export class FixPreview {
       );
       return true;
     } catch (error) {
-      console.error(`[FixPreview] Failed to show diff for ${file.path}:`, error);
+      logger.error(`[FixPreview] Failed to show diff for ${file.path}:`, error);
       return false;
     } finally {
       disposables.forEach((d) => d.dispose());
@@ -101,7 +101,7 @@ export class FixPreview {
           );
           filesWritten++;
         } catch (error) {
-          console.error(
+          logger.error(
             `[FixPreview] Failed to write ${file.path}:`,
             error
           );

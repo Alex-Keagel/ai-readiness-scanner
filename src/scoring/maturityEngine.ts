@@ -87,6 +87,7 @@ export const DEFAULT_COMPONENT_TYPE_WEIGHTS: Record<string, number> = {
   config: 0.4,
   script: 0.5,
   data: 0.3,
+  generated: 0,
   unknown: 0.5,
 };
 
@@ -216,7 +217,7 @@ export class MaturityEngine {
 
     // 1. Apply gating with platform-specific thresholds
     if (levels.length === 0) {
-      levels = [{ level: 1 as MaturityLevel, name: 'Prompt-Only', rawScore: 0, effectiveScore: 0, signalsDetected: 0, signalsTotal: 0, signals: [], qualified: false }];
+      levels = [{ level: 1 as MaturityLevel, name: 'Prompt-Only', rawScore: 0, signalsDetected: 0, signalsTotal: 0, signals: [], qualified: false }];
     }
     levels[0].qualified = true;
     for (let i = 1; i < levels.length; i++) {
@@ -224,13 +225,56 @@ export class MaturityEngine {
       const thresh = thresholds[levelNum] || { self: 50 };
       const meetsOwn = levels[i].rawScore >= thresh.self;
       const meetsPrevious = !thresh.previous || levels[i - 1].rawScore >= (thresh.previous ?? 0);
-      levels[i].qualified = meetsOwn && meetsPrevious && levels[i - 1].qualified;
+      // Require minimum signal detection rate for higher levels
+      // L2-L3: at least 1 signal detected. L4+: at least 2 signals or 50% of total.
+      const detected = levels[i].signalsDetected;
+      const total = levels[i].signalsTotal;
+      const minSignals = levelNum >= 4 ? Math.max(2, Math.ceil(total * 0.3)) : 1;
+      const meetsMinSignals = detected >= minSignals;
+      levels[i].qualified = meetsOwn && meetsPrevious && meetsMinSignals && levels[i - 1].qualified;
     }
 
     // 2. Primary level = highest qualified
     let primaryLevel: MaturityLevel = 1;
     for (const level of levels) {
       if (level.qualified) primaryLevel = level.level;
+    }
+
+    // 2b. Monorepo root correction: base primary level on root-level signals only.
+    // In monorepos, workspace-wide signal detection may find files in sub-projects,
+    // inflating the root's level. Require critical signals to be actually detected
+    // at each qualified level for the root to claim that level.
+    if (projectContext.projectType === 'monorepo') {
+      const signalClasses = PLATFORM_SIGNAL_CLASS[toolKey] || {};
+      const subProjectPaths = this.collectMonorepoSubProjectPaths(projectContext, levels);
+
+      let monorepoLevel: MaturityLevel = 1;
+      for (let i = 1; i < levels.length; i++) {
+        if (!levels[i].qualified) break;
+        const criticalSignals = levels[i].signals.filter(s =>
+          signalClasses[s.signalId] === 'critical'
+        );
+        // Critical signals must be detected AND their files must be at root, not inside sub-projects
+        if (criticalSignals.length > 0) {
+          const rootDetected = criticalSignals.every(s => {
+            if (!s.detected) return false;
+            // If signal has files, at least one must NOT be inside a sub-project
+            if (s.files && s.files.length > 0) {
+              return s.files.some(f => !([...subProjectPaths].some(sp => f.startsWith(sp + '/'))));
+            }
+            return true; // codebase signals (no files) pass through
+          });
+          if (!rootDetected) break;
+        }
+        const detected = levels[i].signals.filter(s => s.detected).length;
+        const total = levels[i].signals.length;
+        const minSignals = levels[i].level >= 4 ? Math.max(2, Math.ceil(total * 0.3)) : 1;
+        if (total > 0 && detected < minSignals) {
+          break;
+        }
+        monorepoLevel = levels[i].level;
+      }
+      primaryLevel = monorepoLevel;
     }
 
     // 3. EGDR Depth calculation
@@ -266,11 +310,13 @@ export class MaturityEngine {
 
     // 5. Apply component type weights to adjust score
     let overallScore = baseOverallScore;
-    if (componentScores.length > 0) {
+    // For monorepo roots, don't blend with sub-project component scores —
+    // the root's score should reflect its own signals only
+    if (componentScores.length > 0 && projectContext.projectType !== 'monorepo') {
       let typeWeights: Record<string, number> = { ...DEFAULT_COMPONENT_TYPE_WEIGHTS };
       try {
         const vscode = require('vscode');
-        const userTypeWeights = vscode.workspace.getConfiguration('ai-readiness').get<Record<string, number>>('componentTypeWeights');
+        const userTypeWeights = vscode.workspace.getConfiguration('ai-readiness').get('componentTypeWeights') as Record<string, number> | undefined;
         if (userTypeWeights && Object.keys(userTypeWeights).length > 0) {
           typeWeights = { ...typeWeights, ...userTypeWeights };
         }
@@ -279,7 +325,14 @@ export class MaturityEngine {
       let weightedSum = 0;
       let totalWeight = 0;
       for (const comp of componentScores) {
-        const w = typeWeights[comp.type] ?? typeWeights['unknown'] ?? 0.5;
+        const baseWeight = typeWeights[comp.type] ?? typeWeights['unknown'] ?? 0.5;
+        // Generated components use the 'generated' type weight (default 0, configurable)
+        let w = comp.isGenerated ? (typeWeights['generated'] ?? 0) : baseWeight;
+        if (w === 0) continue; // Skip zero-weight components entirely
+        // Dotfile config dirs (.vscode, .github, .clinerules, etc.) get minimal weight
+        if (comp.type === 'config' && comp.path.startsWith('.')) w = Math.min(w, 0.15);
+        // Virtual group nodes get reduced weight (they're synthetic)
+        if (comp.path.includes('.group-')) w = Math.min(w, 0.2);
         weightedSum += comp.overallScore * w;
         totalWeight += w;
       }
@@ -327,7 +380,7 @@ export class MaturityEngine {
     let dimWeights = platformDimWeights;
     try {
       const vscode = require('vscode');
-      const userDimWeights = vscode.workspace.getConfiguration('ai-readiness').get<Partial<DimensionWeights>>('dimensionWeights');
+      const userDimWeights = vscode.workspace.getConfiguration('ai-readiness').get('dimensionWeights') as Partial<DimensionWeights> | undefined;
       if (userDimWeights && Object.keys(userDimWeights).length > 0) {
         dimWeights = { ...platformDimWeights, ...userDimWeights };
         // Normalize to sum to 1.0
@@ -409,7 +462,7 @@ export class MaturityEngine {
     let arithmeticRatio = 0.65;
     try {
       const vscode = require('vscode');
-      const mode = vscode.workspace.getConfiguration('ai-readiness').get<string>('scoringMode');
+      const mode = vscode.workspace.getConfiguration('ai-readiness').get('scoringMode') as string | undefined;
       if (mode === 'lenient') arithmeticRatio = 0.80;
       else if (mode === 'strict') arithmeticRatio = 0.50;
     } catch { /* tests — use default */ }
@@ -535,6 +588,44 @@ export class MaturityEngine {
     if (signal.signalId.match(/^[a-z]+_l2_/)) return 'required';
     if (signal.signalId.match(/^[a-z]+_l[345]_/)) return 'recommended';
     return 'recommended';
+  }
+
+  private collectMonorepoSubProjectPaths(
+    projectContext: ProjectContext,
+    levels: LevelScore[],
+  ): Set<string> {
+    const subProjectPaths = new Set<string>();
+    const nestedConfigDirs = new Set([
+      '.github', '.vscode', '.clinerules', '.roo', '.cursor', '.windsurf', '.claude', 'memory-bank',
+    ]);
+    const nestedConfigFiles = new Set([
+      'CLAUDE.md', 'AGENTS.md', '.cursorrules', '.aider.conf.yml', '.aiderignore',
+    ]);
+
+    for (const component of projectContext.components || []) {
+      if ((component.parentPath === '' || !component.parentPath) && component.path && !component.path.startsWith('.')) {
+        subProjectPaths.add(component.path);
+      }
+    }
+
+    for (const level of levels) {
+      for (const signal of level.signals) {
+        for (const file of signal.files || []) {
+          const normalized = file.replace(/^\.?\//, '');
+          const parts = normalized.split('/').filter(Boolean);
+          if (parts.length < 2) continue;
+
+          const [topDir, secondPart] = parts;
+          if (!topDir || topDir.startsWith('.')) continue;
+
+          if (nestedConfigDirs.has(secondPart) || nestedConfigFiles.has(secondPart)) {
+            subProjectPaths.add(topDir);
+          }
+        }
+      }
+    }
+
+    return subProjectPaths;
   }
 
   private harmonicMean(values: number[]): number {

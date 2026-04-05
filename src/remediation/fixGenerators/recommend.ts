@@ -1,3 +1,4 @@
+import { logger } from '../../logging';
 import * as vscode from 'vscode';
 import {
   AITool,
@@ -23,7 +24,7 @@ export class RecommendGenerator {
     try {
       response = await this.copilotClient.analyze(prompt, token);
     } catch (error) {
-      console.error(
+      logger.error(
         `[Recommend] LLM call failed for ${signal.id}:`,
         error
       );
@@ -32,7 +33,7 @@ export class RecommendGenerator {
 
     const parsed = parseFixResponse(response);
     if (!parsed) {
-      console.error(
+      logger.error(
         `[Recommend] Failed to parse LLM response for ${signal.id}`
       );
       return null;

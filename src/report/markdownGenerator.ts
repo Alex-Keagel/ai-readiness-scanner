@@ -137,9 +137,9 @@ export class MarkdownReportGenerator {
         lines.push('|----------|--------|-------|');
         for (const [toolId, config] of platformEntries) {
           const { PlatformSignalFilter } = require('../scoring/signalFilter');
-          const isConfigured = report.levels.some(l => l.signals.some(s => s.detected && PlatformSignalFilter.isRelevant(s.signalId, toolId as AITool)));
+          const isConfigured = report.levels.some(l => l.signals.some(s => s.detected && !PlatformSignalFilter.SHARED_SIGNALS.has(s.signalId) && PlatformSignalFilter.isRelevant(s.signalId, toolId as AITool)));
           const platformFiles = report.levels.flatMap(l => l.signals)
-            .filter(s => s.detected && PlatformSignalFilter.isRelevant(s.signalId, toolId as AITool))
+            .filter(s => s.detected && !PlatformSignalFilter.SHARED_SIGNALS.has(s.signalId) && PlatformSignalFilter.isRelevant(s.signalId, toolId as AITool))
             .flatMap(s => s.files);
           const fileCount = new Set(platformFiles).size;
           const status = isConfigured ? '✅' : '❌';

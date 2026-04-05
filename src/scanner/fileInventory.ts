@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import { FileContent } from '../scoring/types';
 import { logger } from '../logging';
 
-const EXCLUDE_PATTERN = '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/__pycache__/**,**/.venv/**,**/venv/**,**/target/**,**/.next/**,**/coverage/**';
+const EXCLUDE_PATTERN = '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/__pycache__/**,**/.venv/**,**/venv/**,**/target/**,**/.next/**,**/coverage/**,**/site-packages/**,**/.tox/**,**/env/**';
 
 export async function collectFileContents(
   workspaceUri: vscode.Uri,

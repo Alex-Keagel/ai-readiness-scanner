@@ -13,6 +13,7 @@ export class GuidePanel {
   private platformFileDates = new Map<string, { path: string; date: string }[]>();
   private liveDocsContent = new Map<string, { content: string; fetchedAt: string }>();
   private docsCache?: DocsCache;
+  private report: ReadinessReport;
 
   private constructor(panel: vscode.WebviewPanel, report: ReadinessReport, docsCache?: DocsCache) {
     this.panel = panel;

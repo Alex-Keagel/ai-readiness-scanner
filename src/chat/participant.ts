@@ -141,7 +141,7 @@ export class ChatParticipant {
       );
 
       // Store last report for /levelup
-      this.context.globalState.update('lastReport', report);
+      this.context.workspaceState.update('lastReport', report);
 
       stream.markdown('---\n\n');
 
@@ -475,7 +475,7 @@ export class ChatParticipant {
     stream.markdown(formatToolGuide(tool));
 
     // Show structure comparison if a recent report is available
-    const lastReport = this.context.globalState.get<ReadinessReport>('lastReport');
+    const lastReport = this.context.workspaceState.get<ReadinessReport>('lastReport');
     if (lastReport?.structureComparison && lastReport.selectedTool === tool) {
       stream.markdown('\n\n');
       stream.markdown(formatStructureComparison(lastReport.structureComparison));
@@ -488,7 +488,7 @@ export class ChatParticipant {
     stream: vscode.ChatResponseStream,
     token: vscode.CancellationToken
   ): Promise<void> {
-    const lastReport = this.context.globalState.get<ReadinessReport>('lastReport');
+    const lastReport = this.context.workspaceState.get<ReadinessReport>('lastReport');
 
     if (!lastReport?.knowledgeGraph) {
       stream.markdown(
@@ -564,7 +564,7 @@ export class ChatParticipant {
   private async handleLevelUp(
     stream: vscode.ChatResponseStream,
   ): Promise<void> {
-    const lastReport = this.context.globalState.get<ReadinessReport>('lastReport');
+    const lastReport = this.context.workspaceState.get<ReadinessReport>('lastReport');
 
     if (!lastReport) {
       stream.markdown('❌ Run a scan first: `@readiness /scan [platform]`\n');
@@ -597,7 +597,7 @@ export class ChatParticipant {
   private async handleContext(
     stream: vscode.ChatResponseStream,
   ): Promise<void> {
-    const lastReport = this.context.globalState.get<ReadinessReport>('lastReport');
+    const lastReport = this.context.workspaceState.get<ReadinessReport>('lastReport');
 
     stream.markdown('## 📊 Context & Session Overview\n\n');
 
@@ -634,9 +634,9 @@ export class ChatParticipant {
 
     // Session info
     stream.markdown(`### 💾 Extension State\n`);
-    const runs = this.context.globalState.get<unknown[]>('scanRuns') || [];
+    const runs = this.context.workspaceState.get<unknown[]>('scanRuns') || [];
     stream.markdown(`- **Saved scans:** ${Array.isArray(runs) ? runs.length : 0}\n`);
-    stream.markdown(`- **Semantic cache:** ${this.context.globalState.get('semanticCacheSize') || 'empty'}\n\n`);
+    stream.markdown(`- **Semantic cache:** ${this.context.workspaceState.get('semanticCacheSize') || 'empty'}\n\n`);
 
     stream.markdown(`### 🛠️ Available Actions\n`);
     stream.markdown(`- \`@readiness /scan copilot\` — Full scan\n`);
@@ -655,7 +655,7 @@ export class ChatParticipant {
       'I can assess your codebase\'s AI maturity across the 6-level maturity ladder.\n\n' +
       '**Available commands:**\n\n' +
       '- `/scan [tool]` — Run a full maturity scan (tool: copilot, cline, cursor, roo, claude, windsurf, aider)\n' +
-      '- `/quick [tool]` — Run a quick scan (faster, fewer checks)\n' +
+      '- `/scan [tool]` — Run a scan for a specific AI tool\n' +
       '- `/report` — Generate and save a full markdown report\n' +
       '- `/level <number>` — Deep-dive into a specific level (e.g. `/level 3`)\n' +
       '- `/fix <signal>` — Auto-fix a specific signal _(coming soon)_\n' +

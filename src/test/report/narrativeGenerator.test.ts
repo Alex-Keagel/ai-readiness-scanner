@@ -26,7 +26,7 @@ const mockClient = {
     }
     return '[]';
   },
-  analyzeFast: async () => '{}',
+  analyzeFast: async (prompt) => { if (prompt.includes("platform readiness")) return JSON.stringify([{dimension:"Business Logic Alignment",narrative:"Good alignment."},{dimension:"Type \analyzeFast: async () => '{}' Environment Strictness",narrative:"Strong types."}]); if (prompt.includes("tooling ecosystem")) return JSON.stringify({status:"Capable",items:[{name:"Skill Portability",severity:"warning",narrative:"1 skill."},{name:"Tooling Execution Risk",severity:"critical",narrative:"Missing script."},{name:"Context Collision",severity:"good",narrative:"No collision."}]}); if (prompt.includes("Friction Map")) return JSON.stringify([{title:"Fix Ghost Map",narrative:"References missing files.",actions:[{action:"Remove bad ref",impact:"Eliminates hallucinations"}]}]); return "[]"; },
 } as any;
 
 function makeReport(overrides: Record<string, any> = {}) {
@@ -127,7 +127,7 @@ describe('NarrativeGenerator', () => {
   });
 
   it('handles LLM failure with fallbacks', async () => {
-    const failGen = new NarrativeGenerator({ analyze: async () => { throw new Error('down'); }, analyzeFast: async () => '{}' } as any);
+    const failGen = new NarrativeGenerator({ analyze: async () => { throw new Error('down'); }, analyzeFast: async (prompt) => { if (prompt.includes("platform readiness")) return JSON.stringify([{dimension:"Business Logic Alignment",narrative:"Good alignment."},{dimension:"Type \analyzeFast: async () => '{}' Environment Strictness",narrative:"Strong types."}]); if (prompt.includes("tooling ecosystem")) return JSON.stringify({status:"Capable",items:[{name:"Skill Portability",severity:"warning",narrative:"1 skill."},{name:"Tooling Execution Risk",severity:"critical",narrative:"Missing script."},{name:"Context Collision",severity:"good",narrative:"No collision."}]}); if (prompt.includes("Friction Map")) return JSON.stringify([{title:"Fix Ghost Map",narrative:"References missing files.",actions:[{action:"Remove bad ref",impact:"Eliminates hallucinations"}]}]); return "[]"; } } as any);
     const result = await failGen.generate(makeReport());
     expect(result.platformReadiness).toHaveLength(5);
     expect(result.toolingHealth.status).toBeTruthy();
@@ -135,7 +135,7 @@ describe('NarrativeGenerator', () => {
   });
 
   it('handles malformed LLM JSON', async () => {
-    const badGen = new NarrativeGenerator({ analyze: async () => 'not json!!!', analyzeFast: async () => '{}' } as any);
+    const badGen = new NarrativeGenerator({ analyze: async () => 'not json!!!', analyzeFast: async (prompt) => { if (prompt.includes("platform readiness")) return JSON.stringify([{dimension:"Business Logic Alignment",narrative:"Good alignment."},{dimension:"Type \analyzeFast: async () => '{}' Environment Strictness",narrative:"Strong types."}]); if (prompt.includes("tooling ecosystem")) return JSON.stringify({status:"Capable",items:[{name:"Skill Portability",severity:"warning",narrative:"1 skill."},{name:"Tooling Execution Risk",severity:"critical",narrative:"Missing script."},{name:"Context Collision",severity:"good",narrative:"No collision."}]}); if (prompt.includes("Friction Map")) return JSON.stringify([{title:"Fix Ghost Map",narrative:"References missing files.",actions:[{action:"Remove bad ref",impact:"Eliminates hallucinations"}]}]); return "[]"; } } as any);
     const result = await badGen.generate(makeReport());
     expect(result.platformReadiness).toHaveLength(5);
   });
@@ -148,7 +148,7 @@ describe('NarrativeGenerator', () => {
         }
         return '[]';
       },
-      analyzeFast: async () => '{}',
+      analyzeFast: async (prompt) => { if (prompt.includes("platform readiness")) return JSON.stringify([{dimension:"Business Logic Alignment",narrative:"Good alignment."},{dimension:"Type \analyzeFast: async () => '{}' Environment Strictness",narrative:"Strong types."}]); if (prompt.includes("tooling ecosystem")) return JSON.stringify({status:"Capable",items:[{name:"Skill Portability",severity:"warning",narrative:"1 skill."},{name:"Tooling Execution Risk",severity:"critical",narrative:"Missing script."},{name:"Context Collision",severity:"good",narrative:"No collision."}]}); if (prompt.includes("Friction Map")) return JSON.stringify([{title:"Fix Ghost Map",narrative:"References missing files.",actions:[{action:"Remove bad ref",impact:"Eliminates hallucinations"}]}]); return "[]"; },
     } as any;
     const result = await new NarrativeGenerator(manyClient).generate(makeReport());
     expect(result.frictionMap.length).toBeLessThanOrEqual(5);
@@ -163,5 +163,95 @@ describe('NarrativeGenerator', () => {
     const result = await gen.generate(makeReport());
     const bla = result.platformReadiness.find(m => m.dimension === 'Business Logic Alignment');
     expect(bla?.narrative).toBe('Good alignment.');
+  });
+
+  it('IQ Sync narrative does not contradict detected root instruction file', async () => {
+    // Mock LLM returns a narrative that falsely claims the root instruction file is absent
+    const contradictingClient = {
+      analyze: async () => '[]',
+      analyzeFast: async (prompt: string) => {
+        if (prompt.includes('GROUND TRUTH') || prompt.includes('platform readiness')) {
+          return JSON.stringify([
+            { dimension: 'Business Logic Alignment', narrative: 'Good alignment.' },
+            { dimension: 'Type & Environment Strictness', narrative: 'Strong types.' },
+            { dimension: 'Semantic Density', narrative: 'Good density.' },
+            { dimension: 'Instruction/Reality Sync', narrative: 'The absence of a root .github/copilot-instructions.md significantly weakens agent guidance for this project.' },
+            { dimension: 'Context Efficiency', narrative: 'Moderate coverage.' },
+          ]);
+        }
+        if (prompt.includes('tooling ecosystem')) {
+          return JSON.stringify({ status: 'OK', items: [
+            { name: 'Skill Portability', severity: 'good', narrative: 'Fine.' },
+            { name: 'Tooling Execution Risk', severity: 'good', narrative: 'Fine.' },
+            { name: 'Context Collision', severity: 'good', narrative: 'Fine.' },
+          ]});
+        }
+        if (prompt.includes('Friction Map')) {
+          return JSON.stringify([{ title: 'Step 1', narrative: 'Do something.', actions: [] }]);
+        }
+        return '[]';
+      },
+    } as any;
+
+    // Report where copilot_instructions IS detected (file exists with real content)
+    const report = makeReport({
+      levels: [
+        { level: 1, name: 'Prompt-Only', rawScore: 80, qualified: true, signals: [], signalsDetected: 0, signalsTotal: 0 },
+        { level: 2, name: 'Instruction-Guided', rawScore: 65, qualified: true, signals: [
+          { signalId: 'copilot_instructions', level: 2, detected: true, score: 70, finding: 'Found .github/copilot-instructions.md (3116 bytes)', files: ['.github/copilot-instructions.md'], confidence: 'high' },
+        ], signalsDetected: 1, signalsTotal: 1 },
+      ],
+    });
+
+    const contradictGen = new NarrativeGenerator(contradictingClient);
+    const result = await contradictGen.generate(report);
+
+    const iqSync = result.platformReadiness.find(m => m.dimension === 'Instruction/Reality Sync');
+    expect(iqSync).toBeDefined();
+
+    // The narrative must NOT claim the file is absent — it EXISTS
+    expect(iqSync!.narrative).not.toMatch(/absence/i);
+    expect(iqSync!.narrative).not.toMatch(/\bmissing\b.*root/i);
+    expect(iqSync!.narrative).not.toMatch(/\babsent\b/i);
+
+    // It SHOULD acknowledge the file exists
+    expect(iqSync!.narrative).toMatch(/present|exists|found|detected/i);
+  });
+
+  it('IQ Sync narrative handles various absence claim patterns', () => {
+    const patterns = [
+      'The primary instruction file is missing, leaving agents without guidance.',
+      'Without a root instruction file, the agent has limited context.',
+      'copilot-instructions.md is not present in the repository.',
+      'No main instruction file has been set up for this project.',
+      'The absence of copilot-instructions.md weakens agent guidance.',
+    ];
+
+    for (const badNarrative of patterns) {
+      const result = (gen as any).validateIQSyncNarrative(
+        [{ dimension: 'Instruction/Reality Sync', narrative: badNarrative }],
+        true,  // rootInstructionDetected = file EXISTS
+        ['.github/copilot-instructions.md'],
+        45,    // iqSyncScore
+      );
+
+      expect(result[0].narrative, `Pattern not caught: "${badNarrative}"`)
+        .toMatch(/present|exists/i);
+      expect(result[0].narrative, `Still claims absence: "${badNarrative}"`)
+        .not.toMatch(/absence|absent|missing/i);
+    }
+  });
+
+  it('IQ Sync narrative allows valid absence claims for scoped instructions', () => {
+    // Narrative about SCOPED instructions being absent (while root exists) should NOT be patched
+    const validNarrative = 'Root instruction file provides basic guidance but scoped instructions are missing for individual components.';
+    const result = (gen as any).validateIQSyncNarrative(
+      [{ dimension: 'Instruction/Reality Sync', narrative: validNarrative }],
+      true,
+      ['.github/copilot-instructions.md'],
+      45,
+    );
+
+    expect(result[0].narrative).toBe(validNarrative);
   });
 });

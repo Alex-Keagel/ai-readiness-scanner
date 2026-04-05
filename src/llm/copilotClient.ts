@@ -18,8 +18,10 @@ const RETRY_DELAY_MS = 2000;
 
 function getLLMTimeoutMs(): number {
   try {
-    const config = require('vscode').workspace.getConfiguration('ai-readiness');
-    return (config.get<number>('llmTimeout') ?? 45) * 1000;
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const vscodeModule = require('vscode') as typeof import('vscode');
+    const config = vscodeModule.workspace.getConfiguration('ai-readiness');
+    return ((config.get('llmTimeout') as number) ?? 45) * 1000;
   } catch { return 45_000; }
 }
 
@@ -56,7 +58,7 @@ export class CopilotClient {
   private selectBestModel(models: vscode.LanguageModelChat[]): vscode.LanguageModelChat {
     // Log available models for debugging
     const available = models.map(m => `${m.name} (family: ${m.family}, id: ${m.id})`);
-    console.log(`[AI Readiness] Available models: ${available.join(', ')}`);
+    logger.info(`Available models: ${available.join(', ')}`);
 
     for (const pref of MODEL_PREFERENCE) {
       const match = models.find(
@@ -67,11 +69,11 @@ export class CopilotClient {
         }
       );
       if (match) {
-        console.log(`[AI Readiness] Selected model: ${match.name} (family: ${match.family}) matched pattern '${pref.pattern}'`);
+        logger.info(`Selected model: ${match.name} (family: ${match.family}) matched pattern '${pref.pattern}'`);
         return match;
       }
     }
-    console.log(`[AI Readiness] No preferred model found, using fallback: ${models[0].name} (family: ${models[0].family})`);
+    logger.info(`No preferred model found, using fallback: ${models[0].name} (family: ${models[0].family})`);
     return models[0];
   }
 

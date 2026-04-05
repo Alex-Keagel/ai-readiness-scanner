@@ -6,6 +6,16 @@ import { AITool, AI_TOOLS } from '../scoring/types';
 import { generateRadarChartSVG, type RadarDataPoint } from '../metrics';
 import { TACTICAL_GLASSBOX_CSS } from '../ui/theme';
 import { logger } from '../logging';
+import {
+  type Turn,
+  type SRESessionSummary,
+  type SREMetrics,
+  type GitCommitInfo,
+  computeAllSREMetrics,
+  getSREMetricColor,
+  getSREMetricLabel,
+} from './sreMetrics';
+import { execSync } from 'child_process';
 
 export interface VibeMetrics {
   // Hero stats
@@ -62,6 +72,10 @@ export interface VibeMetrics {
   humanTakeoverRate: number;     // % of sessions where user messages >> agent messages
   contextSNR: number;            // signal-to-noise: output_tokens / (input_tokens + output_tokens) * 100
   guardrailInterventionRate: number; // tool failures / total tool calls * 100
+
+  // SRE Reliability Metrics
+  sreMetrics: SREMetrics;
+  perPlatformSRE: { platform: string; metrics: SREMetrics }[];
 }
 
 interface SessionSummary {
@@ -78,6 +92,27 @@ interface SessionSummary {
   outputTokens: number;
   inputTokens: number;
   durationMinutes: number;
+  turns: Turn[];
+}
+
+interface ContributorNode {
+  name: string;
+  email: string;
+  alias: string;
+  commits: number;
+  linesChanged: number;
+  prs: number;
+  topFiles: string[];
+  lastActive: string;
+}
+
+interface RepoStats {
+  name: string;
+  files: number;
+  languages: Record<string, number>;
+  lastCommit: string;
+  branches: number;
+  totalContributors: number;
 }
 
 export class VibeReportGenerator {
@@ -275,7 +310,195 @@ export class VibeReportGenerator {
       guardrailInterventionRate: totalToolCalls > 0
         ? Math.round(totalToolFailures / totalToolCalls * 100)
         : 0,
+
+      // SRE Reliability Metrics
+      ...this.computeSRE(sessions),
     };
+  }
+
+  /** Convert SessionSummary[] to SRESessionSummary[] and compute all SRE metrics */
+  private computeSRE(sessions: SessionSummary[]): { sreMetrics: SREMetrics; perPlatformSRE: { platform: string; metrics: SREMetrics }[] } {
+    const toSRE = (s: SessionSummary): SRESessionSummary => ({
+      id: s.id,
+      platform: s.platform,
+      project: s.project,
+      startTime: s.startTime,
+      turns: s.turns,
+      toolCalls: s.toolCalls,
+      toolSuccesses: s.toolSuccesses,
+      toolFailures: s.toolFailures,
+    });
+
+    const sreSessions = sessions.map(toSRE);
+
+    // Collect git data from current workspace
+    const { commits, daySpan } = this.collectGitData();
+
+    const sreMetrics = computeAllSREMetrics(sreSessions, commits, daySpan);
+
+    // Per-platform breakdown (without git data — those are workspace-level)
+    const platforms = [...new Set(sessions.map(s => s.platform))];
+    const perPlatformSRE = platforms.map(platform => ({
+      platform,
+      metrics: computeAllSREMetrics(sreSessions.filter(s => s.platform === platform)),
+    }));
+
+    return { sreMetrics, perPlatformSRE };
+  }
+
+  /** Collect git commit history from the workspace for DORA + churn metrics */
+  private collectGitData(): { commits: GitCommitInfo[]; daySpan: number } {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      return { commits: [], daySpan: 0 };
+    }
+
+    const cwd = workspaceFolders[0].uri.fsPath;
+    try {
+      // Get last 90 days of git log with files changed
+      const raw = execSync(
+        'git log --since="90 days ago" --pretty=format:"%H|%aI|%s" --name-only --no-merges 2>/dev/null',
+        { cwd, encoding: 'utf-8', timeout: 10000, maxBuffer: 5 * 1024 * 1024 }
+      );
+
+      if (!raw.trim()) { return { commits: [], daySpan: 0 }; }
+
+      const commits: GitCommitInfo[] = [];
+      const blocks = raw.trim().split('\n\n');
+
+      for (const block of blocks) {
+        const lines = block.split('\n');
+        if (lines.length === 0) { continue; }
+        const [hash, timestamp, ...msgParts] = lines[0].split('|');
+        const message = msgParts.join('|');
+        const filesChanged = lines.slice(1).filter(f => f.trim());
+
+        const msgLower = message.toLowerCase();
+        commits.push({
+          hash: hash || '',
+          timestamp: timestamp || '',
+          message: message || '',
+          filesChanged,
+          isRevert: msgLower.startsWith('revert') || msgLower.includes('revert:'),
+          isFix: /\bfix(es|ed)?\b/i.test(message) || /\bbug\b/i.test(message),
+          isRelease: /\brelease\b/i.test(message) || /\bv?\d+\.\d+\.\d+/i.test(message) || msgLower.startsWith('chore(release)'),
+        });
+      }
+
+      // Calculate day span
+      if (commits.length > 0) {
+        const sorted = commits.map(c => new Date(c.timestamp).getTime()).filter(t => !isNaN(t)).sort();
+        const daySpan = sorted.length >= 2
+          ? Math.ceil((sorted[sorted.length - 1] - sorted[0]) / 86400000)
+          : 1;
+        return { commits, daySpan: Math.max(1, daySpan) };
+      }
+
+      return { commits: [], daySpan: 0 };
+    } catch (err) {
+      logger.debug('Failed to collect git data for DORA metrics', { error: String(err) });
+      return { commits: [], daySpan: 0 };
+    }
+  }
+
+  /** Collect contributor network data from git history */
+  private collectContributorNetwork(): { contributors: ContributorNode[]; repoStats: RepoStats } {
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (!workspaceFolders || workspaceFolders.length === 0) {
+      return { contributors: [], repoStats: { name: 'Unknown', files: 0, languages: {}, lastCommit: '', branches: 0, totalContributors: 0 } };
+    }
+
+    const cwd = workspaceFolders[0].uri.fsPath;
+    const repoName = path.basename(cwd);
+    const contributors: ContributorNode[] = [];
+    let repoStats: RepoStats = { name: repoName, files: 0, languages: {}, lastCommit: '', branches: 0, totalContributors: 0 };
+
+    try {
+      // Contributors with commit counts
+      logger.info(`ContributorNetwork: scanning git history in ${cwd}`);
+      const shortlog = execSync(
+        'git log --no-merges --since="1 year ago" --format="%aN <%aE>" | sort | uniq -c | sort -rn',
+        { cwd, encoding: 'utf-8', timeout: 10000, stdio: ['pipe', 'pipe', 'pipe'], shell: true }
+      ).trim();
+
+      for (const line of shortlog.split('\n')) {
+        const match = line.trim().match(/^\s*(\d+)\s+(.+?)\s+<(.+?)>$/);
+        if (match) {
+          const commits = parseInt(match[1]);
+          const name = match[2].trim();
+          const email = match[3].trim();
+          const alias = email.includes('@') ? email.split('@')[0] : email;
+          contributors.push({ name, email, alias, commits, linesChanged: 0, prs: 0, topFiles: [], lastActive: '' });
+        }
+      }
+
+      // Per-contributor stats (lines changed, last active)
+      for (const c of contributors.slice(0, 15)) {
+        try {
+          const stat = execSync(
+            'git log --author="' + c.email + '" --since="1 year ago" --pretty=format:"%aI" --shortstat --no-merges',
+            { cwd, encoding: 'utf-8', timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], shell: true }
+          ).trim();
+          let totalLines = 0;
+          let lastDate = '';
+          for (const line of stat.split('\n')) {
+            if (line.match(/^\d{4}-/)) {
+              if (!lastDate) lastDate = line.trim();
+            }
+            const insertMatch = line.match(/(\d+) insertion/);
+            const deleteMatch = line.match(/(\d+) deletion/);
+            if (insertMatch) totalLines += parseInt(insertMatch[1]);
+            if (deleteMatch) totalLines += parseInt(deleteMatch[1]);
+          }
+          c.linesChanged = totalLines;
+          c.lastActive = lastDate;
+        } catch { /* skip */ }
+      }
+
+      // Merge commit count per contributor (approximate PR count)
+      try {
+        const merges = execSync(
+          'git log --merges --since="1 year ago" --pretty=format:"%an" 2>/dev/null',
+          { cwd, encoding: 'utf-8', timeout: 5000, shell: true }
+        ).trim();
+        const mergeCounts: Record<string, number> = {};
+        for (const name of merges.split('\n')) {
+          const n = name.trim();
+          if (n) mergeCounts[n] = (mergeCounts[n] || 0) + 1;
+        }
+        for (const c of contributors) {
+          c.prs = mergeCounts[c.name] || 0;
+        }
+      } catch { /* skip */ }
+
+      // Repo stats
+      try {
+        const fileCount = execSync('git ls-files 2>/dev/null | wc -l', { cwd, encoding: 'utf-8', timeout: 5000, shell: true }).trim();
+        repoStats.files = parseInt(fileCount) || 0;
+
+        const extensions = execSync(
+          'git ls-files 2>/dev/null | grep -o "\\.[^.]*$" | sort | uniq -c | sort -rn | head -10',
+          { cwd, encoding: 'utf-8', timeout: 5000, shell: true }
+        ).trim();
+        for (const line of extensions.split('\n')) {
+          const m = line.trim().match(/^\s*(\d+)\s+\.(.+)$/);
+          if (m) repoStats.languages[m[2]] = parseInt(m[1]);
+        }
+
+        const lastCommit = execSync('git log -1 --pretty=format:"%aI" 2>/dev/null', { cwd, encoding: 'utf-8', timeout: 3000, shell: true }).trim();
+        repoStats.lastCommit = lastCommit;
+
+        const branches = execSync('git branch -r 2>/dev/null | wc -l', { cwd, encoding: 'utf-8', timeout: 3000, shell: true }).trim();
+        repoStats.branches = parseInt(branches) || 0;
+
+        repoStats.totalContributors = contributors.length;
+      } catch { /* skip */ }
+
+    } catch (err) {
+      logger.error('Failed to collect contributor network', { error: String(err), cwd });
+    }
+
+    return { contributors, repoStats };
   }
   
   private async readCopilotSessions(): Promise<SessionSummary[]> {
@@ -297,6 +520,7 @@ export class VibeReportGenerator {
         let userMsgs = 0, assistantMsgs = 0, toolCalls = 0, outputTokens = 0;
         let toolSuccesses = 0, toolFailures = 0, inputTokens = 0;
         let startTime = '', project = 'unknown';
+        const turns: Turn[] = [];
         
         // Try workspace.yaml first for better project name
         const workspaceFile = path.join(baseDir, dir, 'workspace.yaml');
@@ -319,11 +543,15 @@ export class VibeReportGenerator {
             if (!startTime && event.timestamp) { startTime = event.timestamp; }
             if (event.type === 'user.message') {
               userMsgs++;
-              inputTokens += event.data?.inputTokens || (typeof event.data?.content === 'string' ? Math.ceil(event.data.content.length / 4) : 0);
+              const content = typeof event.data?.content === 'string' ? event.data.content : '';
+              inputTokens += event.data?.inputTokens || (content ? Math.ceil(content.length / 4) : 0);
+              turns.push({ role: 'user', content });
             }
             if (event.type === 'assistant.message') {
               assistantMsgs++;
               outputTokens += event.data?.outputTokens || 0;
+              const content = typeof event.data?.content === 'string' ? event.data.content : '';
+              turns.push({ role: 'assistant', content, tokens: event.data?.outputTokens });
             }
             if (event.type === 'tool.execution_start') { toolCalls++; }
             if (event.type === 'tool.execution_complete') {
@@ -354,6 +582,7 @@ export class VibeReportGenerator {
             outputTokens,
             inputTokens,
             durationMinutes: 0,
+            turns,
           });
         }
       } catch (err) { logger.warn('Failed to read Copilot session directory', { dir, error: String(err) }); }
@@ -389,12 +618,21 @@ export class VibeReportGenerator {
         let userMsgs = 0, assistantMsgs = 0, toolCalls = 0, outputTokens = 0;
         let startTime = '', project = 'unknown';
         const requestTokens = new Map<string, number>();
+        const turns: Turn[] = [];
         
         for (const line of lines) {
           try {
             const record = JSON.parse(line);
             if (!startTime && record.timestamp) { startTime = record.timestamp; }
-            if (record.type === 'user') { userMsgs++; }
+            if (record.type === 'user') {
+              userMsgs++;
+              const msgContent = typeof record.message?.content === 'string'
+                ? record.message.content
+                : Array.isArray(record.message?.content)
+                  ? record.message.content.filter((b: { type?: string }) => b.type === 'text').map((b: { text?: string }) => b.text || '').join('\n')
+                  : '';
+              turns.push({ role: 'user', content: msgContent });
+            }
             if (record.type === 'assistant') {
               assistantMsgs++;
               const usage = record.message?.usage || {};
@@ -405,6 +643,12 @@ export class VibeReportGenerator {
                 outputTokens += outTokens - prev;
                 requestTokens.set(reqId, outTokens);
               }
+              const msgContent = typeof record.message?.content === 'string'
+                ? record.message.content
+                : Array.isArray(record.message?.content)
+                  ? record.message.content.filter((b: { type?: string }) => b.type === 'text').map((b: { text?: string }) => b.text || '').join('\n')
+                  : '';
+              turns.push({ role: 'assistant', content: msgContent, tokens: outTokens });
             }
             if (record.cwd) {
               project = record.cwd.split('/').pop() || 'unknown';
@@ -427,6 +671,7 @@ export class VibeReportGenerator {
             outputTokens,
             inputTokens: 0,
             durationMinutes: 0,
+            turns,
           });
         }
       } catch (err) { logger.warn('Failed to read Claude session file', { file: jsonlFile, error: String(err) }); }
@@ -460,15 +705,30 @@ export class VibeReportGenerator {
           if (!Array.isArray(data)) { continue; }
           
           let userMsgs = 0, assistantMsgs = 0, toolCalls = 0, outputTokens = 0;
+          const turns: Turn[] = [];
           
           for (const msg of data) {
-            if (msg.role === 'user') { userMsgs++; }
+            if (msg.role === 'user') {
+              userMsgs++;
+              const content = typeof msg.content === 'string'
+                ? msg.content
+                : Array.isArray(msg.content)
+                  ? msg.content.filter((b: { type?: string }) => b.type === 'text').map((b: { text?: string }) => b.text || '').join('\n')
+                  : '';
+              turns.push({ role: 'user', content });
+            }
             if (msg.role === 'assistant') {
               assistantMsgs++;
               outputTokens += msg.metrics?.tokens?.completion || 0;
               if (Array.isArray(msg.content)) {
                 toolCalls += msg.content.filter((b: unknown) => (b as { type?: string }).type === 'tool_use').length;
               }
+              const content = typeof msg.content === 'string'
+                ? msg.content
+                : Array.isArray(msg.content)
+                  ? msg.content.filter((b: { type?: string }) => b.type === 'text').map((b: { text?: string }) => b.text || '').join('\n')
+                  : '';
+              turns.push({ role: 'assistant', content, tokens: msg.metrics?.tokens?.completion });
             }
           }
           
@@ -486,6 +746,7 @@ export class VibeReportGenerator {
             outputTokens,
             inputTokens: 0,
             durationMinutes: 0,
+            turns,
           });
         } catch (err) { logger.warn('Failed to parse Cline task history', { taskDir, error: String(err) }); }
       }
@@ -518,20 +779,51 @@ export class VibeReportGenerator {
             
             const histItem = JSON.parse(fs.readFileSync(histItemFile, 'utf-8'));
             
+            // Roo's history_item.json has only token counts, no message content.
+            // Try reading api_conversation_history.json for turns if available.
+            const turns: Turn[] = [];
+            const convFile = path.join(baseDir, taskDir, 'api_conversation_history.json');
+            let userMsgs = 0, assistantMsgs = 0, toolCalls = 0;
+            if (fs.existsSync(convFile)) {
+              try {
+                const convData = JSON.parse(fs.readFileSync(convFile, 'utf-8'));
+                if (Array.isArray(convData)) {
+                  for (const msg of convData) {
+                    if (msg.role === 'user') {
+                      userMsgs++;
+                      const content = typeof msg.content === 'string' ? msg.content
+                        : Array.isArray(msg.content) ? msg.content.filter((b: { type?: string }) => b.type === 'text').map((b: { text?: string }) => b.text || '').join('\n') : '';
+                      turns.push({ role: 'user', content });
+                    }
+                    if (msg.role === 'assistant') {
+                      assistantMsgs++;
+                      if (Array.isArray(msg.content)) {
+                        toolCalls += msg.content.filter((b: unknown) => (b as { type?: string }).type === 'tool_use').length;
+                      }
+                      const content = typeof msg.content === 'string' ? msg.content
+                        : Array.isArray(msg.content) ? msg.content.filter((b: { type?: string }) => b.type === 'text').map((b: { text?: string }) => b.text || '').join('\n') : '';
+                      turns.push({ role: 'assistant', content });
+                    }
+                  }
+                }
+              } catch { /* no conversation history */ }
+            }
+
             sessions.push({
               id: taskDir,
               platform: 'roo',
               project: histItem.workspace?.split('/').pop() || 'unknown',
               startTime: new Date(histItem.ts || 0).toISOString(),
-              messageCount: 0,
-              userMessages: 0,
-              assistantMessages: 0,
-              toolCalls: 0,
-              toolSuccesses: 0,
+              messageCount: userMsgs + assistantMsgs,
+              userMessages: userMsgs,
+              assistantMessages: assistantMsgs,
+              toolCalls,
+              toolSuccesses: toolCalls,
               toolFailures: 0,
               outputTokens: histItem.tokensOut || 0,
               inputTokens: histItem.tokensIn || 0,
               durationMinutes: 0,
+              turns,
             });
           } catch (err) { logger.warn('Failed to parse Roo task history', { taskDir, error: String(err) }); }
         }
@@ -571,9 +863,22 @@ export class VibeReportGenerator {
     const toolName = AI_TOOLS[tool]?.name || tool;
     return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Vibe Report</title>
     <style>body{font-family:system-ui;background:#1a1a2e;color:#eee;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0}
-    .empty{text-align:center;padding:40px}.empty h1{font-size:2em;margin-bottom:10px}.empty p{color:#888;font-size:1.1em}</style>
+    .empty{text-align:center;padding:40px;max-width:600px}.empty h1{font-size:2em;margin-bottom:10px}.empty p{color:#888;font-size:1.1em;line-height:1.6}
+    .platforms{margin-top:20px;text-align:left;background:rgba(255,255,255,0.05);border-radius:12px;padding:16px 24px}
+    .platforms h3{color:#aaa;font-size:0.9em;margin-bottom:8px}.platforms li{color:#888;font-size:0.9em;margin:4px 0}</style>
     </head><body><div class="empty"><h1>No ${this.escapeHtml(toolName)} sessions found</h1>
-    <p>Start coding with ${this.escapeHtml(toolName)} and your sessions will appear here.</p></div></body></html>`;
+    <p>The Vibe Report analyzes your AI coding session history. It reads local session files from your computer — no data is collected or shared.</p>
+    <div class="platforms">
+      <h3>Supported session sources:</h3>
+      <ul>
+        <li><strong>Copilot CLI</strong> — <code>~/.copilot/session-state/</code> (requires terminal <code>copilot</code> command)</li>
+        <li><strong>Claude Code</strong> — <code>~/.claude/projects/</code> (requires terminal <code>claude</code> command)</li>
+        <li><strong>Cline</strong> — VS Code extension globalStorage</li>
+        <li><strong>Roo Code</strong> — VS Code extension globalStorage</li>
+      </ul>
+      <p style="color:#666;font-size:0.85em;margin-top:12px">⚠️ VS Code Copilot Chat (GUI) does not write session files — Vibe Report requires one of the above tools.</p>
+    </div>
+    </div></body></html>`;
   }
   
   private renderHtml(metrics: VibeMetrics, tool: AITool, userName?: string): string {
@@ -581,6 +886,9 @@ export class VibeReportGenerator {
     const toolName = AI_TOOLS[tool]?.name || tool;
     const toolIcon = AI_TOOLS[tool]?.icon || '🤖';
     const name = userName || 'Developer';
+
+    // Collect contributor network data
+    const { contributors, repoStats } = this.collectContributorNetwork();
     
     const heroStats = [
       { label: 'Sessions', value: metrics.totalSessions.toLocaleString(), icon: '💬' },
@@ -706,6 +1014,70 @@ export class VibeReportGenerator {
     .metric-chart .chart-range { display: flex; justify-content: space-between; font-size: 0.7em; color: var(--text-muted); margin-top: 4px; }
     
     @media (max-width: 600px) { .hero-grid { grid-template-columns: repeat(2, 1fr); } .charts-grid { grid-template-columns: 1fr; } }
+
+    /* SRE Metrics */
+    .sre-section { margin: 40px 0; }
+    .sre-gauges { display: grid; grid-template-columns: repeat(5, 1fr); gap: 16px; margin: 16px 0; }
+    .sre-gauge { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 20px; text-align: center; transition: border-color 0.2s, box-shadow 0.2s; }
+    .sre-gauge:hover { border-color: var(--border-active); box-shadow: 0 4px 24px rgba(0, 0, 0, 0.3); }
+    .sre-gauge .gauge-value { font-size: 2em; font-weight: bold; font-family: var(--font-mono); }
+    .sre-gauge .gauge-label { color: var(--text-secondary); font-size: 0.85em; margin-top: 4px; }
+    .sre-gauge .gauge-sublabel { color: var(--text-muted); font-size: 0.75em; margin-top: 2px; }
+    .sre-gauge .gauge-bar { width: 100%; height: 6px; background: var(--bg-elevated); border-radius: 3px; margin-top: 8px; overflow: hidden; }
+    .sre-gauge .gauge-fill { height: 100%; border-radius: 3px; transition: width 0.5s; }
+    
+    .health-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; margin: 16px 0; }
+    .health-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 20px; }
+    .health-card h3 { margin: 0 0 12px; font-size: 1.1em; }
+    .health-bar-row { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+    .health-bar-row .bar-label { min-width: 70px; font-size: 0.85em; color: var(--text-secondary); }
+    .health-bar-row .bar-container { flex: 1; height: 20px; background: var(--bg-elevated); border-radius: 4px; overflow: hidden; }
+    .health-bar-row .bar-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; justify-content: flex-end; padding-right: 6px; font-size: 0.7em; font-weight: bold; min-width: 30px; }
+    .prompt-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    .prompt-table td, .prompt-table th { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border-subtle); font-size: 0.85em; }
+    .prompt-table th { color: var(--text-secondary); font-weight: 600; }
+    .prompt-table .success-bar { display: inline-block; height: 8px; border-radius: 4px; margin-right: 6px; vertical-align: middle; }
+    
+    .platform-comparison { margin: 16px 0; }
+    .platform-table { width: 100%; border-collapse: collapse; }
+    .platform-table td, .platform-table th { padding: 8px 12px; text-align: center; border-bottom: 1px solid var(--border-subtle); font-size: 0.85em; }
+    .platform-table th { color: var(--text-secondary); font-weight: 600; text-align: center; }
+    .platform-table th:first-child, .platform-table td:first-child { text-align: left; }
+
+    @media (max-width: 600px) { .sre-gauges { grid-template-columns: repeat(2, 1fr); } .health-grid { grid-template-columns: 1fr; } }
+
+    /* Heatmap */
+    .heatmap-container { margin: 16px 0; overflow-x: auto; }
+    .heatmap-row { display: flex; align-items: center; gap: 2px; margin: 2px 0; }
+    .heatmap-label { min-width: 36px; font-size: 0.7em; color: var(--text-muted); text-align: right; padding-right: 6px; }
+    .heatmap-cell { width: 24px; height: 24px; border-radius: 3px; transition: transform 0.1s; }
+    .heatmap-cell:hover { transform: scale(1.3); z-index: 1; }
+    .heatmap-hours { display: flex; gap: 2px; margin-left: 38px; }
+    .heatmap-hours span { width: 24px; text-align: center; font-size: 0.65em; color: var(--text-muted); }
+
+    /* DORA */
+    .dora-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin: 16px 0; }
+    .dora-card { background: var(--bg-card); border: 1px solid var(--border-subtle); border-radius: 12px; padding: 16px; text-align: center; transition: border-color 0.2s; }
+    .dora-card:hover { border-color: var(--border-active); }
+    .dora-card .dora-value { font-size: 1.5em; font-weight: bold; font-family: var(--font-mono); }
+    .dora-card .dora-label { color: var(--text-secondary); font-size: 0.85em; margin-top: 2px; }
+    .dora-card .dora-rating { font-size: 0.75em; padding: 2px 8px; border-radius: 10px; display: inline-block; margin-top: 6px; }
+
+    /* Regression */
+    .regression-alert { padding: 12px 16px; border-radius: 8px; margin: 8px 0; display: flex; align-items: center; gap: 10px; }
+    .regression-alert.critical { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); }
+    .regression-alert.warning { background: rgba(245,158,11,0.1); border: 1px solid rgba(245,158,11,0.3); }
+    .regression-alert .alert-icon { font-size: 1.2em; }
+    .regression-alert .alert-text { flex: 1; font-size: 0.9em; }
+    .regression-alert .alert-delta { font-family: var(--font-mono); font-weight: bold; }
+
+    /* Churn */
+    .churn-table { width: 100%; border-collapse: collapse; }
+    .churn-table td, .churn-table th { padding: 6px 10px; text-align: left; border-bottom: 1px solid var(--border-subtle); font-size: 0.85em; }
+    .churn-table th { color: var(--text-secondary); font-weight: 600; }
+    .churn-bar { display: inline-block; height: 8px; border-radius: 4px; vertical-align: middle; margin-right: 6px; }
+
+    @media (max-width: 600px) { .dora-grid { grid-template-columns: repeat(2, 1fr); } }
   </style>
 </head>
 <body>
@@ -819,6 +1191,10 @@ export class VibeReportGenerator {
     <div class="formula"><strong>🛡️ Guardrail Rate</strong> — ${metrics.guardrailInterventionRate}% of tool calls triggered guardrails</div>
   </div>
   
+  ${this.renderSRESection(metrics)}
+  
+  ${this.renderContributorNetwork(contributors, repoStats)}
+  
   <h2>📊 What the Numbers Mean</h2>
   <div class="formula"><strong>APS</strong> = weighted(Autonomy×0.25 + Delegation×0.20 + Recovery×0.15 + Depth×0.15 + Output×0.10 + Diversity×0.15) = <strong>${metrics.aps}</strong></div>
   <div class="formula"><strong>Autonomy Ratio</strong> = (agent responses + tool calls) / your prompts = <strong>${metrics.autonomyRatio}x</strong></div>
@@ -927,6 +1303,300 @@ export class VibeReportGenerator {
     }
   }
 
+  private renderSRESection(metrics: VibeMetrics): string {
+    const sre = metrics.sreMetrics;
+    const hasTurns = metrics.sessions.some(s => s.turns.length > 0);
+
+    if (!hasTurns) {
+      return `
+  <div class="sre-section">
+    <h2>🛡️ SRE Reliability Metrics</h2>
+    <div class="formula">No conversation content available for SRE analysis. Session data only includes counts — try platforms that store message history (Copilot CLI, Claude Code, Cline).</div>
+    ${this.renderActivityHeatmap(sre)}
+    ${this.renderDORASection(sre)}
+    ${this.renderCodeChurn(sre)}
+    ${this.renderCostSection(sre)}
+  </div>`;
+    }
+
+    const gaugeHtml = (label: string, value: number, metricKey: string, sublabel: string, invert = false) => {
+      const color = getSREMetricColor(metricKey, value);
+      const labelText = getSREMetricLabel(metricKey, value);
+      const fillPct = invert ? 100 - value : value;
+      return `
+      <div class="sre-gauge">
+        <div class="gauge-value" style="color:${color}">${value}%</div>
+        <div class="gauge-label">${label}</div>
+        <div class="gauge-sublabel">${labelText} · ${sublabel}</div>
+        <div class="gauge-bar"><div class="gauge-fill" style="width:${fillPct}%;background:${color}"></div></div>
+      </div>`;
+    };
+
+    const healthBarHtml = (label: string, pct: number, color: string) => `
+      <div class="health-bar-row">
+        <span class="bar-label">${label}</span>
+        <div class="bar-container">
+          <div class="bar-fill" style="width:${Math.max(pct, 2)}%;background:${color}">${pct}%</div>
+        </div>
+      </div>`;
+
+    const promptRows = sre.promptEffectiveness.categories
+      .filter(c => c.totalPrompts > 0)
+      .slice(0, 8)
+      .map(c => {
+        const barColor = c.successRate >= 80 ? 'var(--color-emerald)' : c.successRate >= 50 ? 'var(--level-3)' : 'var(--color-crimson)';
+        return `<tr>
+          <td style="text-transform:capitalize">${c.name}</td>
+          <td>${c.totalPrompts}</td>
+          <td><span class="success-bar" style="width:${c.successRate * 0.6}px;background:${barColor}"></span>${c.successRate}%</td>
+          <td>${c.avgCorrections}</td>
+        </tr>`;
+      }).join('');
+
+    // Platform comparison table (only if multiple platforms)
+    let platformComparisonHtml = '';
+    if (metrics.perPlatformSRE.length > 1) {
+      const headers = metrics.perPlatformSRE.map(p =>
+        `<th style="text-transform:capitalize">${p.platform}</th>`
+      ).join('');
+      const row = (label: string, extractor: (m: SREMetrics) => number, invert = false) => {
+        const cells = metrics.perPlatformSRE.map(p => {
+          const val = extractor(p.metrics);
+          const color = getSREMetricColor(invert ? 'hallucinationIndex' : 'firstTrySuccess', val);
+          return `<td style="color:${color};font-weight:bold;font-family:var(--font-mono)">${val}%</td>`;
+        }).join('');
+        return `<tr><td>${label}</td>${cells}</tr>`;
+      };
+
+      platformComparisonHtml = `
+      <h2>🔀 Platform Comparison</h2>
+      <div class="platform-comparison">
+        <table class="platform-table">
+          <thead><tr><th>Metric</th>${headers}</tr></thead>
+          <tbody>
+            ${row('Hallucination', m => m.hallucinationIndex, true)}
+            ${row('Laziness', m => m.lazinessIndex, true)}
+            ${row('First-Try', m => m.firstTrySuccess)}
+            ${row('Flow', m => m.flowScore)}
+            ${row('Context Rot', m => m.contextRot.rotScore, true)}
+          </tbody>
+        </table>
+      </div>`;
+    }
+
+    const loopCount = sre.loops.length;
+    const loopHtml = loopCount > 0
+      ? `<div style="margin-top:8px;color:var(--color-crimson);font-size:0.85em">
+          🔄 ${loopCount} correction loop${loopCount > 1 ? 's' : ''} detected — 
+          ${sre.loops.slice(0, 3).map(l => `"${this.escapeHtml(l.topic)}" (${l.length} rounds)`).join(', ')}
+         </div>`
+      : '';
+
+    return `
+  <div class="sre-section">
+    <h2>🛡️ SRE Reliability Metrics</h2>
+    <div class="sre-gauges">
+      ${gaugeHtml('Hallucination', sre.hallucinationIndex, 'hallucinationIndex', 'lower is better', true)}
+      ${gaugeHtml('Laziness', sre.lazinessIndex, 'lazinessIndex', 'lower is better', true)}
+      ${gaugeHtml('First-Try', sre.firstTrySuccess, 'firstTrySuccess', 'higher is better')}
+      ${gaugeHtml('Flow', sre.flowScore, 'flowScore', 'higher is better')}
+      ${gaugeHtml('Context Rot', sre.contextRot.rotScore, 'contextRot', 'lower is better', true)}
+    </div>
+
+    ${this.renderRegressionAlerts(sre)}
+
+    <div class="health-grid">
+      <div class="health-card">
+        <h3>🏥 Session Health</h3>
+        ${healthBarHtml('✅ Clean', sre.sessionHealth.clean, 'var(--color-emerald)')}
+        ${healthBarHtml('⚠️ Bumpy', sre.sessionHealth.bumpy, 'var(--level-3)')}
+        ${healthBarHtml('❌ Troubled', sre.sessionHealth.troubled, 'var(--color-crimson)')}
+        <div style="color:var(--text-muted);font-size:0.8em;margin-top:8px">${sre.sessionHealth.totalSessions} sessions analyzed</div>
+        ${loopHtml}
+      </div>
+      <div class="health-card">
+        <h3>📝 Prompt Effectiveness</h3>
+        <div style="font-size:0.85em;color:var(--text-secondary);margin-bottom:8px">
+          Overall: <strong style="color:${getSREMetricColor('firstTrySuccess', sre.promptEffectiveness.overallSuccessRate)}">${sre.promptEffectiveness.overallSuccessRate}%</strong> success rate
+        </div>
+        <table class="prompt-table">
+          <thead><tr><th>Category</th><th>Count</th><th>Success</th><th>Avg Fix</th></tr></thead>
+          <tbody>${promptRows}</tbody>
+        </table>
+      </div>
+    </div>
+    
+    ${platformComparisonHtml}
+    ${this.renderActivityHeatmap(sre)}
+    ${this.renderDORASection(sre)}
+    ${this.renderCodeChurn(sre)}
+    ${this.renderCostSection(sre)}
+  </div>`;
+  }
+
+  private renderRegressionAlerts(sre: SREMetrics): string {
+    const reg = sre.regression;
+    if (reg.alerts.length === 0) { return ''; }
+
+    const alertsHtml = reg.alerts.map(a => {
+      const icon = a.severity === 'critical' ? '🚨' : '⚠️';
+      const deltaStr = a.delta > 0 ? `+${a.delta}` : `${a.delta}`;
+      return `<div class="regression-alert ${a.severity}">
+        <span class="alert-icon">${icon}</span>
+        <span class="alert-text">${this.escapeHtml(a.message)}</span>
+        <span class="alert-delta" style="color:var(--color-crimson)">${deltaStr}</span>
+      </div>`;
+    }).join('');
+
+    const trendIcon = reg.trend === 'degrading' ? '📉' : reg.trend === 'improving' ? '📈' : '➡️';
+
+    return `
+    <div style="margin:16px 0">
+      <h3 style="margin:0 0 8px">${trendIcon} Regression Detection</h3>
+      <div style="color:var(--text-secondary);font-size:0.85em;margin-bottom:8px">
+        Comparing recent ${reg.recentWindow.sessionCount} sessions vs previous ${reg.previousWindow.sessionCount}
+      </div>
+      ${alertsHtml}
+    </div>`;
+  }
+
+  private renderActivityHeatmap(sre: SREMetrics): string {
+    const heatmap = sre.activityHeatmap;
+    if (heatmap.totalActiveDays === 0) { return ''; }
+
+    const maxVal = Math.max(1, ...heatmap.grid.flat());
+    const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+
+    const cellColor = (count: number) => {
+      if (count === 0) { return 'rgba(255,255,255,0.03)'; }
+      const intensity = count / maxVal;
+      const alpha = 0.15 + intensity * 0.85;
+      return `rgba(0,229,255,${alpha.toFixed(2)})`;
+    };
+
+    const rows = dayLabels.map((day, dayIdx) => {
+      const cells = heatmap.grid[dayIdx].map((count, hour) =>
+        `<div class="heatmap-cell" style="background:${cellColor(count)}" title="${day} ${hour}:00 — ${count} session${count !== 1 ? 's' : ''}"></div>`
+      ).join('');
+      return `<div class="heatmap-row"><span class="heatmap-label">${day}</span>${cells}</div>`;
+    }).join('');
+
+    const hourLabels = Array.from({ length: 24 }, (_, i) =>
+      i % 3 === 0 ? `<span>${i}</span>` : '<span></span>'
+    ).join('');
+
+    return `
+    <h2>🗓️ Activity Heatmap</h2>
+    <div class="heatmap-container">
+      ${rows}
+      <div class="heatmap-hours">${hourLabels}</div>
+    </div>
+    <div style="display:flex;gap:20px;margin:8px 0;font-size:0.85em;color:var(--text-secondary)">
+      <span>📅 ${heatmap.totalActiveDays} active days</span>
+      <span>🏆 Peak: ${heatmap.peakDay} ${heatmap.peakHour}:00</span>
+      <span>⚡ Most productive: ${heatmap.mostProductiveWindow}</span>
+    </div>`;
+  }
+
+  private renderDORASection(sre: SREMetrics): string {
+    const dora = sre.doraMetrics;
+    if (dora.overallRating === 'Low' && dora.deployFrequency.label === 'No data') { return ''; }
+
+    const ratingColor = (r: string) => {
+      switch (r) {
+        case 'Elite': return 'var(--color-emerald)';
+        case 'High': return 'var(--color-cyan)';
+        case 'Medium': return 'var(--level-3)';
+        default: return 'var(--color-crimson)';
+      }
+    };
+
+    const card = (icon: string, label: string, level: typeof dora.deployFrequency) => `
+      <div class="dora-card">
+        <div style="font-size:1.2em">${icon}</div>
+        <div class="dora-value">${level.value}${level.unit !== 'N/A' ? ` ${level.unit}` : ''}</div>
+        <div class="dora-label">${label}</div>
+        <div class="dora-rating" style="background:${ratingColor(level.rating)}20;color:${ratingColor(level.rating)}">${level.rating} · ${level.label}</div>
+      </div>`;
+
+    return `
+    <h2>🚀 DORA Metrics for AI</h2>
+    <div style="margin-bottom:8px;font-size:0.85em;color:var(--text-secondary)">
+      Overall: <strong style="color:${ratingColor(dora.overallRating)}">${dora.overallRating}</strong> performer · from git history (last 90 days)
+    </div>
+    <div class="dora-grid">
+      ${card('🚢', 'Deploy Frequency', dora.deployFrequency)}
+      ${card('⏱️', 'Lead Time', dora.leadTime)}
+      ${card('❌', 'Change Failure Rate', dora.changeFailureRate)}
+      ${card('🔧', 'MTTR', dora.mttr)}
+    </div>`;
+  }
+
+  private renderCodeChurn(sre: SREMetrics): string {
+    const churn = sre.codeChurn;
+    if (churn.hotFiles.length === 0) { return ''; }
+
+    const maxEdits = Math.max(1, ...churn.hotFiles.map(f => f.editCount));
+    const rows = churn.hotFiles.slice(0, 10).map(f => {
+      const barWidth = Math.max(8, (f.editCount / maxEdits) * 100);
+      const barColor = f.isUnstable ? 'var(--color-crimson)' : 'var(--color-cyan)';
+      const icon = f.isUnstable ? '🔥' : '';
+      return `<tr>
+        <td style="font-family:var(--font-mono);font-size:0.8em">${icon} ${this.escapeHtml(f.path.split('/').slice(-2).join('/'))}</td>
+        <td><span class="churn-bar" style="width:${barWidth}px;background:${barColor}"></span>${f.editCount}</td>
+        <td>${f.sessionCount}</td>
+      </tr>`;
+    }).join('');
+
+    const instColor = churn.instabilityScore <= 20 ? 'var(--color-emerald)' : churn.instabilityScore <= 50 ? 'var(--level-3)' : 'var(--color-crimson)';
+
+    return `
+    <h2>🔥 Code Churn</h2>
+    <div style="margin-bottom:8px;font-size:0.85em;color:var(--text-secondary)">
+      Instability: <strong style="color:${instColor}">${churn.instabilityScore}%</strong> · ${churn.totalChurnEvents} churn events · files re-edited across commits
+    </div>
+    <table class="churn-table">
+      <thead><tr><th>File</th><th>Edits</th><th>Commits</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  }
+
+  private renderCostSection(sre: SREMetrics): string {
+    const cost = sre.costEstimate;
+    if (cost.totalCost === 0) { return ''; }
+
+    const breakdownHtml = cost.breakdown.map(b =>
+      `<span class="project-badge" style="border-color:var(--color-cyan)">${b.platform}: $${b.cost.toFixed(2)} (${b.sessions} sessions)</span>`
+    ).join('');
+
+    return `
+    <h2>💰 Cost Per Outcome</h2>
+    <div class="hero-grid" style="grid-template-columns: repeat(4, 1fr)">
+      <div class="hero-card glass-card">
+        <div class="hero-icon">💵</div>
+        <div class="hero-value">$${cost.totalCost.toFixed(2)}</div>
+        <div class="hero-label">Total Estimated</div>
+      </div>
+      <div class="hero-card glass-card">
+        <div class="hero-icon">💬</div>
+        <div class="hero-value">$${cost.costPerSession.toFixed(2)}</div>
+        <div class="hero-label">Per Session</div>
+      </div>
+      <div class="hero-card glass-card">
+        <div class="hero-icon">📝</div>
+        <div class="hero-value">$${cost.costPerMessage.toFixed(3)}</div>
+        <div class="hero-label">Per Message</div>
+      </div>
+      <div class="hero-card glass-card">
+        <div class="hero-icon">🔧</div>
+        <div class="hero-value">$${cost.costPerToolCall.toFixed(3)}</div>
+        <div class="hero-label">Per Tool Call</div>
+      </div>
+    </div>
+    <div class="projects" style="margin-top:8px">${breakdownHtml}</div>
+    <div class="formula" style="margin-top:8px"><strong>💡</strong> Estimated using approximate model pricing ($3/M input, $15/M output). Actual costs depend on model tier and provider.</div>`;
+  }
+
   private formatNumber(n: number): string {
     if (n >= 1000000) { return `${(n / 1000000).toFixed(1)}M`; }
     if (n >= 1000) { return `${(n / 1000).toFixed(1)}K`; }
@@ -935,5 +1605,91 @@ export class VibeReportGenerator {
   
   private escapeHtml(s: string): string {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  private renderContributorNetwork(contributors: ContributorNode[], repoStats: RepoStats): string {
+    if (contributors.length === 0) {
+      return '<div class="section"><h3>👥 Contributor Network</h3><p style="color:var(--text-secondary)">No git history available.</p></div>';
+    }
+
+    // Build language breakdown for repo
+    const langEntries = Object.entries(repoStats.languages).sort((a, b) => b[1] - a[1]);
+    const totalFiles = langEntries.reduce((s, [, c]) => s + c, 0) || 1;
+    const langBars = langEntries.slice(0, 8).map(([ext, count]) => {
+      const pct = Math.round(count / totalFiles * 100);
+      const colors: Record<string, string> = { py: '#3572A5', ts: '#3178C6', js: '#F1E05A', cs: '#178600', kql: '#00BCF2', json: '#8b949e', md: '#e34c26', bicep: '#519aba', yml: '#cb171e', go: '#00ADD8' };
+      const color = colors[ext] || '#8b949e';
+      return '<div style="display:flex;align-items:center;gap:6px;font-size:0.82em">'
+        + '<span style="width:40px;text-align:right;color:var(--text-secondary)">.' + this.escapeHtml(ext) + '</span>'
+        + '<div style="flex:1;height:6px;background:var(--bg-elevated);border-radius:3px"><div style="width:' + pct + '%;height:100%;background:' + color + ';border-radius:3px"></div></div>'
+        + '<span style="width:35px;font-size:0.8em;color:var(--text-secondary)">' + count + '</span>'
+        + '</div>';
+    }).join('');
+
+    // Build contributor cards
+    const maxCommits = Math.max(...contributors.map(c => c.commits));
+    const contribCards = contributors.slice(0, 12).map(c => {
+      const barPct = Math.round(c.commits / maxCommits * 100);
+      const lastActiveStr = c.lastActive ? new Date(c.lastActive).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '';
+      return '<div class="contrib-card glass-card">'
+        + '<div class="contrib-header">'
+        + '<span class="contrib-avatar">👤</span>'
+        + '<div class="contrib-info">'
+        + '<div class="contrib-name">' + this.escapeHtml(c.name) + '</div>'
+        + '<div class="contrib-alias">@' + this.escapeHtml(c.alias) + '</div>'
+        + '</div>'
+        + '</div>'
+        + '<div class="contrib-stats">'
+        + '<div class="contrib-stat"><span class="contrib-stat-val">' + c.commits + '</span><span class="contrib-stat-label">commits</span></div>'
+        + '<div class="contrib-stat"><span class="contrib-stat-val">' + this.formatNumber(c.linesChanged) + '</span><span class="contrib-stat-label">lines</span></div>'
+        + (c.prs > 0 ? '<div class="contrib-stat"><span class="contrib-stat-val">' + c.prs + '</span><span class="contrib-stat-label">PRs</span></div>' : '')
+        + '</div>'
+        + '<div class="contrib-bar"><div class="contrib-bar-fill" style="width:' + barPct + '%"></div></div>'
+        + (lastActiveStr ? '<div class="contrib-last-active">Last active: ' + lastActiveStr + '</div>' : '')
+        + '</div>';
+    }).join('');
+
+    return '<div class="section">'
+      + '<h3>👥 Contributor Network</h3>'
+      + '<div class="network-grid">'
+      // Repo card
+      + '<div class="repo-card glass-card">'
+      + '<div class="repo-header"><span style="font-size:1.5em">📁</span> <strong>' + this.escapeHtml(repoStats.name) + '</strong></div>'
+      + '<div class="repo-stats-grid">'
+      + '<div class="repo-stat"><span class="repo-stat-val">' + repoStats.files + '</span><span class="repo-stat-label">files</span></div>'
+      + '<div class="repo-stat"><span class="repo-stat-val">' + repoStats.totalContributors + '</span><span class="repo-stat-label">contributors</span></div>'
+      + '<div class="repo-stat"><span class="repo-stat-val">' + repoStats.branches + '</span><span class="repo-stat-label">branches</span></div>'
+      + '<div class="repo-stat"><span class="repo-stat-val">' + langEntries.length + '</span><span class="repo-stat-label">languages</span></div>'
+      + '</div>'
+      + '<div class="repo-langs">' + langBars + '</div>'
+      + (repoStats.lastCommit ? '<div class="repo-last-commit">Last commit: ' + new Date(repoStats.lastCommit).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) + '</div>' : '')
+      + '</div>'
+      // Contributors
+      + '<div class="contrib-grid">' + contribCards + '</div>'
+      + '</div>'
+      + '</div>'
+      + '<style>'
+      + '.network-grid { display: flex; gap: 16px; flex-wrap: wrap; }'
+      + '.repo-card { flex: 0 0 280px; padding: 16px; }'
+      + '.repo-header { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 1em; }'
+      + '.repo-stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 12px; }'
+      + '.repo-stat { text-align: center; padding: 6px; background: var(--bg-elevated); border-radius: 6px; }'
+      + '.repo-stat-val { display: block; font-size: 1.2em; font-weight: 700; }'
+      + '.repo-stat-label { font-size: 0.72em; color: var(--text-secondary); text-transform: uppercase; }'
+      + '.repo-langs { margin-top: 8px; display: flex; flex-direction: column; gap: 4px; }'
+      + '.repo-last-commit { margin-top: 8px; font-size: 0.78em; color: var(--text-secondary); }'
+      + '.contrib-grid { flex: 1; display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }'
+      + '.contrib-card { padding: 12px; }'
+      + '.contrib-header { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }'
+      + '.contrib-avatar { font-size: 1.3em; }'
+      + '.contrib-name { font-weight: 600; font-size: 0.9em; }'
+      + '.contrib-alias { font-size: 0.75em; color: var(--text-secondary); }'
+      + '.contrib-stats { display: flex; gap: 12px; margin-bottom: 6px; }'
+      + '.contrib-stat-val { font-weight: 700; font-size: 0.95em; }'
+      + '.contrib-stat-label { font-size: 0.7em; color: var(--text-secondary); margin-left: 2px; }'
+      + '.contrib-bar { height: 4px; background: var(--bg-elevated); border-radius: 2px; margin-bottom: 4px; }'
+      + '.contrib-bar-fill { height: 100%; background: var(--color-cyan); border-radius: 2px; }'
+      + '.contrib-last-active { font-size: 0.72em; color: var(--text-secondary); }'
+      + '</style>';
   }
 }

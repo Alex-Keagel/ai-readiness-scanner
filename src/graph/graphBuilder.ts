@@ -1,12 +1,36 @@
 import { KnowledgeGraph, GraphNode, GraphEdge, GraphTreeNode, NodeType } from './types';
-import { ReadinessReport, AI_TOOLS, AITool } from '../scoring/types';
+import { ReadinessReport, AI_TOOLS, AITool, SignalResult } from '../scoring/types';
+import { ValidationAgent } from '../deep/validationAgent';
+import { PlatformSignalFilter } from '../scoring/signalFilter';
+
+function normalizeGraphPath(filePath: string): string {
+  return filePath.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/^\.?\//, '').replace(/\/$/, '');
+}
+
+function isSubProjectFile(filePath: string, subProjectPaths: string[]): boolean {
+  const normalizedFile = normalizeGraphPath(filePath);
+  return subProjectPaths.some(subProjectPath => {
+    const normalizedSubProject = normalizeGraphPath(subProjectPath);
+    if (!normalizedSubProject) { return false; }
+    return normalizedFile === normalizedSubProject ||
+      normalizedFile.startsWith(`${normalizedSubProject}/`) ||
+      normalizedFile.includes(`/${normalizedSubProject}/`) ||
+      normalizedFile.endsWith(`/${normalizedSubProject}`);
+  });
+}
 
 export class GraphBuilder {
+  private validationAgent: ValidationAgent;
+  
+  constructor() {
+    this.validationAgent = new ValidationAgent();
+  }
   
   buildGraph(report: ReadinessReport, dependencies?: Map<string, string[]>): KnowledgeGraph {
     const nodes: GraphNode[] = [];
     const edges: GraphEdge[] = [];
     const repoId = 'repo';
+    const monorepoSubProjectPaths = this.collectMonorepoSubProjectPaths(report);
     
     // 1. Repository node
     nodes.push({
@@ -21,7 +45,7 @@ export class GraphBuilder {
     });
     
     // 2. AI Platform nodes
-    this.addPlatformNodes(nodes, edges, repoId, report);
+    this.addPlatformNodes(nodes, edges, repoId, report, monorepoSubProjectPaths);
     
     // 3. Component nodes (with sub-components)
     this.addComponentNodes(nodes, edges, repoId, report);
@@ -30,7 +54,7 @@ export class GraphBuilder {
     this.addLanguageNodes(nodes, edges, report);
     
     // 5. Signal nodes (per level)
-    this.addSignalNodes(nodes, edges, report);
+    this.addSignalNodes(nodes, edges, report, monorepoSubProjectPaths);
     
     // 6. Insight nodes
     this.addInsightNodes(nodes, edges, report);
@@ -114,25 +138,23 @@ export class GraphBuilder {
       }));
   }
 
-  private addPlatformNodes(nodes: GraphNode[], edges: GraphEdge[], repoId: string, report: ReadinessReport): void {
+  private addPlatformNodes(nodes: GraphNode[], edges: GraphEdge[], repoId: string, report: ReadinessReport, subProjectPaths: string[]): void {
     const selectedTool = report.selectedTool as AITool;
     
     for (const [toolId, config] of Object.entries(AI_TOOLS)) {
       const nodeId = `platform-${toolId}`;
       const isSelected = selectedTool === toolId;
-      const toolConfig = AI_TOOLS[toolId as AITool];
-      // Check if this tool has any detected signals using central filter
-      const { PlatformSignalFilter } = require('../scoring/signalFilter');
+      // Check if this tool has any detected signals using central filter (exclude shared signals)
       const isConfigured = report.levels.some(l => l.signals.some(s => 
-        s.detected && (
+        s.detected && !PlatformSignalFilter.SHARED_SIGNALS.has(s.signalId) && (
           PlatformSignalFilter.isRelevant(s.signalId, toolId as AITool) ||
           s.signalId.startsWith(`${toolId}_`)
         )
       ));
       
-      // Count files for this platform
+      // Count files for this platform (exclude shared signals to avoid duplicate counts)
       const platformFiles = report.levels.flatMap(l => l.signals)
-        .filter(s => s.detected && (
+        .filter(s => s.detected && !PlatformSignalFilter.SHARED_SIGNALS.has(s.signalId) && (
           PlatformSignalFilter.isRelevant(s.signalId, toolId as AITool) ||
           s.signalId.startsWith(`${toolId}_`)
         ))
@@ -163,7 +185,7 @@ export class GraphBuilder {
               id: fileId,
               type: 'ai-file',
               label: filePath,
-              description: signal?.finding,
+              description: signal ? this.describeSignalScope(report, signal, subProjectPaths) : undefined,
               properties: { 
                 tool: toolId, 
                 level: signal?.level, 
@@ -197,10 +219,12 @@ export class GraphBuilder {
           path: comp.path, language: comp.language, type: comp.type,
           level: comp.primaryLevel, depth: comp.depth, score: comp.overallScore,
           signals: comp.signals,
+          isGenerated: comp.isGenerated || false,
+          children: comp.children || [],
         },
-        icon: iconMap[comp.type] || '📁',
+        icon: comp.isGenerated ? '🔄' : (iconMap[comp.type] || '📁'),
         badge: `L${comp.primaryLevel} ${comp.depth}%`,
-        status: comp.primaryLevel >= 3 ? 'good' : comp.primaryLevel >= 2 ? 'warning' : 'error',
+        status: comp.isGenerated ? 'neutral' : comp.primaryLevel >= 3 ? 'good' : comp.primaryLevel >= 2 ? 'warning' : 'error',
       });
     }
 
@@ -259,7 +283,7 @@ export class GraphBuilder {
     }
   }
 
-  private addSignalNodes(nodes: GraphNode[], edges: GraphEdge[], report: ReadinessReport): void {
+  private addSignalNodes(nodes: GraphNode[], edges: GraphEdge[], report: ReadinessReport, subProjectPaths: string[]): void {
     for (const level of report.levels) {
       for (const signal of level.signals) {
         const sigId = `signal-${signal.signalId}`;
@@ -268,7 +292,7 @@ export class GraphBuilder {
             id: sigId,
             type: 'signal',
             label: signal.signalId,
-            description: signal.finding,
+            description: this.describeSignalScope(report, signal, subProjectPaths),
             properties: { level: signal.level, detected: signal.detected, score: signal.score, model: signal.modelUsed },
             icon: signal.detected ? '✅' : '❌',
             badge: signal.detected ? `${signal.score}/100` : undefined,
@@ -277,6 +301,55 @@ export class GraphBuilder {
         }
       }
     }
+  }
+
+  private describeSignalScope(report: ReadinessReport, signal: SignalResult, subProjectPaths: string[] = []): string {
+    const finding = this.validationAgent.sanitizeFinding(signal.finding, signal.realityChecks || []);
+    if (report.projectContext.projectType !== 'monorepo' || !signal.detected) {
+      return finding;
+    }
+
+    const hasFiles = (signal.files || []).length > 0;
+    if (!hasFiles) {
+      return finding;
+    }
+
+    const hasSubProjectFiles = signal.files.some(file => isSubProjectFile(file, subProjectPaths));
+    const hasRootFiles = signal.files.some(file => !isSubProjectFile(file, subProjectPaths));
+
+    if (hasRootFiles && hasSubProjectFiles) {
+      return `Detected at root level (also present in sub-projects). ${finding}`;
+    }
+    if (hasRootFiles) {
+      return `Detected at root level. ${finding}`;
+    }
+    if (hasSubProjectFiles) {
+      return `Detected at sub-project level only. ${finding}`;
+    }
+    return finding;
+  }
+
+  private collectMonorepoSubProjectPaths(report: ReadinessReport): string[] {
+    if (report.projectContext.projectType !== 'monorepo') {
+      return [];
+    }
+
+    const subProjectPaths = new Set<string>();
+    for (const level of report.levels) {
+      for (const signal of level.signals) {
+        for (const file of signal.files || []) {
+          const normalized = normalizeGraphPath(file);
+          const githubIndex = normalized.indexOf('/.github/');
+          if (githubIndex > 0) {
+            const prefix = normalized.slice(0, githubIndex);
+            if (prefix && !prefix.startsWith('.')) {
+              subProjectPaths.add(prefix);
+            }
+          }
+        }
+      }
+    }
+    return [...subProjectPaths];
   }
 
   private addInsightNodes(nodes: GraphNode[], edges: GraphEdge[], report: ReadinessReport): void {
@@ -303,10 +376,10 @@ export class GraphBuilder {
 
   private addDependencyEdges(edges: GraphEdge[], dependencies: Map<string, string[]>): void {
     for (const [from, deps] of dependencies) {
-      const fromId = `comp-${from.replace(/[^a-zA-Z0-9]/g, '_')}`;
+      const fromId = this.nodeId('comp', from);
       for (const dep of deps) {
-        const toId = `comp-${dep.replace(/[^a-zA-Z0-9]/g, '_')}`;
-        edges.push({ source: fromId, target: toId, relation: 'DEPENDS_ON' });
+        const toId = this.nodeId('comp', dep);
+        edges.push({ source: fromId, target: toId, relation: 'DEPENDS_ON', label: dep });
       }
     }
   }
@@ -329,5 +402,171 @@ export class GraphBuilder {
         }
       }
     }
+  }
+
+  /**
+   * Enrich the knowledge graph with deep analysis data:
+   * call graph edges, data flow paths, labeled edges, complexity, health cards.
+   */
+  enrichWithDeepAnalysis(
+    graph: KnowledgeGraph,
+    deepAnalysis: {
+      callGraph?: { nodes: { path: string; name: string; type: string; exported: boolean }[]; edges: { from: { path: string; name: string }; to: { path: string; name: string }; callType: string }[]; typeEdges?: { from: { path: string; name: string }; to: { path: string; name: string }; relation: string }[] };
+      dataFlow?: { pipelines: { name: string; sources: { path: string; type: string }[]; transformations: { path: string; name: string }[]; sinks: { path: string; type: string }[] }[] };
+      labeledEdges?: { from: string; to: string; intent: string; confidence: number }[];
+      complexity?: { complexities: { path: string; factor: number; isProduct: boolean }[] };
+      healthCards?: { componentPath: string; componentName: string; purpose: string; risks: string[]; overallHealth: string }[];
+      rollUpSummaries?: { directory: string; summary: string; depth: number }[];
+    }
+  ): void {
+    const existingNodeIds = new Set(graph.nodes.map(n => n.id));
+    const existingEdgeKeys = new Set(graph.edges.map(e => `${e.source}→${e.target}→${e.relation}`));
+
+    const addEdge = (edge: GraphEdge) => {
+      const key = `${edge.source}→${edge.target}→${edge.relation}`;
+      if (!existingEdgeKeys.has(key)) {
+        existingEdgeKeys.add(key);
+        graph.edges.push(edge);
+      }
+    };
+
+    // ── Call graph: add CALLS edges between modules ──
+    if (deepAnalysis.callGraph?.edges) {
+      for (const e of deepAnalysis.callGraph.edges) {
+        if (!e.from?.path || !e.to?.path) continue;
+        const sourceComp = this.findComponentNode(graph, e.from.path);
+        const targetComp = this.findComponentNode(graph, e.to.path);
+        if (sourceComp && targetComp && sourceComp !== targetComp) {
+          const labeledEdge = deepAnalysis.labeledEdges?.find(le =>
+            le.from.includes(e.from.path) && le.to.includes(e.to.path)
+          );
+          addEdge({
+            source: sourceComp, target: targetComp,
+            relation: 'CALLS',
+            label: labeledEdge?.intent || `${e.from.name || '?'} → ${e.to.name || '?'}`,
+            properties: { callType: e.callType, confidence: labeledEdge?.confidence },
+          });
+        }
+      }
+    }
+
+    // ── Type hierarchy: add EXTENDS/IMPLEMENTS edges ──
+    if (deepAnalysis.callGraph?.typeEdges) {
+      for (const e of deepAnalysis.callGraph.typeEdges) {
+        if (!e.from?.path || !e.to?.path) continue;
+        const sourceComp = this.findComponentNode(graph, e.from.path);
+        const targetComp = this.findComponentNode(graph, e.to.path);
+        if (sourceComp && targetComp && sourceComp !== targetComp) {
+          addEdge({
+            source: sourceComp, target: targetComp,
+            relation: e.relation === 'extends' ? 'EXTENDS' : 'IMPLEMENTS',
+            label: `${e.from.name} ${e.relation} ${e.to.name}`,
+          });
+        }
+      }
+    }
+
+    // ── Data flow: add DATA_FLOWS_TO edges + source/sink nodes ──
+    if (deepAnalysis.dataFlow?.pipelines) {
+      for (const pipeline of deepAnalysis.dataFlow.pipelines) {
+        // Add pipeline as a virtual node
+        const pipelineId = `pipeline-${pipeline.name.replace(/[^a-z0-9]/gi, '_')}`;
+        if (!existingNodeIds.has(pipelineId)) {
+          existingNodeIds.add(pipelineId);
+          graph.nodes.push({
+            id: pipelineId, type: 'data-source', label: pipeline.name,
+            description: `Data pipeline: ${pipeline.sources.length} sources → ${pipeline.transformations.length} transforms → ${pipeline.sinks.length} sinks`,
+            properties: { sourceCount: pipeline.sources.length, sinkCount: pipeline.sinks.length },
+            icon: '🔄', status: 'neutral',
+          });
+        }
+
+        // Connect sources → transformations → sinks
+        for (const src of pipeline.sources) {
+          if (!src?.path) continue;
+          const srcComp = this.findComponentNode(graph, src.path);
+          if (srcComp) addEdge({ source: srcComp, target: pipelineId, relation: 'DATA_FLOWS_TO', label: `source: ${src.type}` });
+        }
+        for (const sink of pipeline.sinks) {
+          if (!sink?.path) continue;
+          const sinkComp = this.findComponentNode(graph, sink.path);
+          if (sinkComp) addEdge({ source: pipelineId, target: sinkComp, relation: 'DATA_FLOWS_TO', label: `sink: ${sink.type}` });
+        }
+      }
+    }
+
+    // ── Complexity: enrich existing component nodes with factor ──
+    if (deepAnalysis.complexity?.complexities) {
+      for (const comp of deepAnalysis.complexity.complexities) {
+        if (!comp?.path) continue;
+        const nodeId = this.findComponentNode(graph, comp.path);
+        if (nodeId) {
+          const node = graph.nodes.find(n => n.id === nodeId);
+          if (node) {
+            node.properties.complexityFactor = comp.factor;
+            node.properties.isProduct = comp.isProduct;
+            if (comp.isProduct) node.icon = '🏭';
+          }
+        }
+      }
+    }
+
+    // ── Health cards: enrich component nodes ──
+    if (deepAnalysis.healthCards) {
+      for (const card of deepAnalysis.healthCards) {
+        const nodeId = this.findComponentNode(graph, card.componentPath);
+        if (nodeId) {
+          const node = graph.nodes.find(n => n.id === nodeId);
+          if (node) {
+            node.properties.healthCard = {
+              purpose: card.purpose,
+              risks: card.risks,
+              overallHealth: card.overallHealth,
+            };
+            if (card.overallHealth === 'at-risk') node.status = 'error';
+            else if (card.overallHealth === 'needs-attention') node.status = 'warning';
+          }
+        }
+      }
+    }
+
+    // ── Roll-up summaries: enrich component/domain nodes ──
+    if (deepAnalysis.rollUpSummaries) {
+      for (const summary of deepAnalysis.rollUpSummaries) {
+        if (summary.directory === '.') {
+          // Architecture-level summary goes on the root node
+          const root = graph.nodes.find(n => n.id === graph.rootId);
+          if (root) root.properties.architectureSummary = summary.summary;
+        } else {
+          const nodeId = this.findComponentNode(graph, summary.directory);
+          if (nodeId) {
+            const node = graph.nodes.find(n => n.id === nodeId);
+            if (node) node.properties.rollUpSummary = summary.summary;
+          }
+        }
+      }
+    }
+
+    // Update metadata
+    graph.metadata.nodeCount = graph.nodes.length;
+    graph.metadata.edgeCount = graph.edges.length;
+  }
+
+  /** Find the component node ID that best matches a file path */
+  private findComponentNode(graph: KnowledgeGraph, filePath: string): string | undefined {
+    // Exact match on component path
+    const exact = graph.nodes.find(n =>
+      (n.type === 'component' || n.type === 'subcomponent') && n.id === `comp-${filePath}`
+    );
+    if (exact) return exact.id;
+
+    // Partial match — find component whose path is a prefix of the file path
+    const partial = graph.nodes
+      .filter(n => n.type === 'component' || n.type === 'subcomponent')
+      .find(n => {
+        const compPath = n.id.replace('comp-', '');
+        return filePath.startsWith(compPath + '/') || filePath === compPath;
+      });
+    return partial?.id;
   }
 }

@@ -67,11 +67,14 @@ const TYPE_ANNOTATION_PATTERNS: Record<string, RegExp[]> = {
   ],
   java: [
     /\b(int|long|double|float|boolean|char|byte|short|void|String)\s+\w+/,
+    /\b[A-Z]\w*\s+\w+\s*[=;({\[]/, // Class typed declarations
     /<[A-Z]\w+/,
   ],
   csharp: [
-    /\b(int|long|double|float|bool|char|byte|string|void|decimal)\s+\w+/,
-    /<[A-Z]\w+/,
+    /\b(int|long|double|float|bool|char|byte|string|void|decimal|var|dynamic|object)\s+\w+/,
+    /\b[A-Z]\w*\s+\w+\s*[=;({\[]/, // Class/interface typed declarations: ILogger logger, HttpClient client
+    /<[A-Z]\w+/,                     // Generics: Task<string>, List<int>
+    /\basync\s+Task/,                // async Task methods
   ],
   go: [
     /\b(int|int8|int16|int32|int64|uint|float32|float64|string|bool|byte|rune|error)\b/,
@@ -251,7 +254,13 @@ export function analyzeFileContent(path: string, content: string, language: stri
   const hasStrictMode =
     (lang === 'typescript' && /\"strict\"\s*:\s*true/.test(content)) ||
     (lang === 'python' && /# mypy: strict/.test(content)) ||
-    (lang === 'javascript' && /['"]use strict['"]/.test(content));
+    (lang === 'javascript' && /['"]use strict['"]/.test(content)) ||
+    // Build-level enforcement signals (path-based, language-agnostic)
+    (/tsconfig[^/]*\.json$/i.test(path) && /\"strict\"\s*:\s*true/.test(content)) ||
+    (/directory\.build\.props$/i.test(path) && /<Nullable>\s*enable\s*<\/Nullable>/i.test(content)) ||
+    (/\.csproj$/i.test(path) && /<Nullable>\s*enable\s*<\/Nullable>/i.test(content)) ||
+    (/pyproject\.toml$/i.test(path) && /\[tool\.mypy\]/.test(content)) ||
+    (/setup\.cfg$/i.test(path) && /\[mypy\]/.test(content));
 
   return {
     path,
@@ -270,44 +279,189 @@ export function analyzeFileContent(path: string, content: string, language: stri
 
 // ─── Metric Calculations ─────────────────────────────────────────────
 
-function computeSemanticDensity(files: FileAnalysis[]): number {
-  if (files.length === 0) { return 0; }
+/**
+ * Blend procedure-documentation ratio with comment-to-code ratio for a robust
+ * semantic density score.  Exported so the scanner can reuse the same logic
+ * with LLM-corrected procedure counts.
+ */
+export function computeBlendedSemanticDensity(
+  totalProcedures: number,
+  documentedProcedures: number,
+  totalCodeLines: number,
+  totalCommentLines: number,
+  totalFilesAnalyzed?: number,
+): number {
+  // Comment-to-code ratio score (0-100).
+  // 25% comment-to-code ratio maps to the maximum score.
+  const commentRatio = totalCodeLines > 0 ? totalCommentLines / totalCodeLines : 0;
+  const commentScore = clamp(Math.round((commentRatio / 0.25) * 100), 0, 100);
 
-  let totalProcedures = 0;
-  let documentedProcedures = 0;
+  // Procedure documentation ratio score (0-100)
+  const procRatio = totalProcedures > 0 ? documentedProcedures / totalProcedures : 0;
+  const procScore = clamp(Math.round(procRatio * 100), 0, 100);
 
-  for (const f of files) {
-    totalProcedures += f.totalProcedures;
-    documentedProcedures += f.documentedProcedures;
+  let score: number;
+  if (totalProcedures < 20) {
+    // Too few procedures for a reliable ratio — fall back to comment density
+    score = commentScore;
+  } else {
+    // Blend: 60% procedure ratio, 40% comment-line ratio
+    score = Math.round(procScore * 0.6 + commentScore * 0.4);
   }
 
-  if (totalProcedures === 0) { return 0; }
-  // Ratio of procedures with docstrings/comments: 100% = every function/class is documented
-  const ratio = documentedProcedures / totalProcedures;
-  return clamp(Math.round(ratio * 100), 0, 100);
+  // Cap: very low comment ratio (< 5%) signals poor documentation regardless
+  if (commentRatio < 0.05) {
+    score = Math.min(score, 40);
+  }
+
+  // Cap: if very few procedures detected relative to code lines, the sample is unrepresentative.
+  // For a 10K+ line codebase with <50 procedures, the ratio is unreliable.
+  if (totalCodeLines > 5000 && totalProcedures < 50) {
+    score = Math.min(score, Math.max(commentScore, 50));
+  }
+
+  // Cap: extreme procedure ratio (>95% documented) in small samples is likely noise
+  if (totalProcedures > 0 && totalProcedures < 100 && procRatio > 0.95) {
+    score = Math.min(score, 80);
+  }
+
+  // Cap: LLM-corrected inputs with >80% proc ratio in large samples need deep
+  // validation before scoring above 85 — very few real codebases achieve this.
+  if (totalProcedures >= 50 && procRatio > 0.80) {
+    score = Math.min(score, 85);
+  }
+
+  return clamp(score, 0, 100);
+}
+
+export function computeWeightedSemanticDensity(
+  files: FileAnalysis[],
+  correctionFactors?: {
+    totalProceduresFactor?: number;
+    documentedProceduresFactor?: number;
+  },
+): number {
+  if (files.length === 0) { return 0; }
+
+  const totalFactor = correctionFactors?.totalProceduresFactor ?? 1;
+  const docFactor = correctionFactors?.documentedProceduresFactor ?? 1;
+  let totalScore = 0;
+  let totalWeight = 0;
+
+  for (const f of files) {
+    const codeLines = Math.max(0, f.totalLines - f.blankLines);
+    const weight = Math.max(1, codeLines);
+    const adjustedTotalProcedures = f.totalProcedures * totalFactor;
+    const adjustedDocumentedProcedures = Math.min(
+      adjustedTotalProcedures,
+      f.documentedProcedures * docFactor,
+    );
+
+    const fileScore = computeBlendedSemanticDensity(
+      adjustedTotalProcedures,
+      adjustedDocumentedProcedures,
+      codeLines,
+      f.commentLines,
+      1,
+    );
+
+    totalScore += fileScore * weight;
+    totalWeight += weight;
+  }
+
+  return totalWeight > 0 ? Math.round(totalScore / totalWeight) : 0;
+}
+
+function computeSemanticDensity(files: FileAnalysis[]): number {
+  return computeWeightedSemanticDensity(files);
 }
 
 function computeTypeStrictness(files: FileAnalysis[]): number {
   if (files.length === 0) { return 0; }
 
-  let totalAnnotations = 0;
-  let totalDeclarations = 0;
-  let strictCount = 0;
+  // Language base scores: inherent type safety of each language
+  const LANG_BASE_SCORES: Record<string, number> = {
+    csharp: 75, java: 75, kotlin: 75, go: 75, rust: 75, swift: 75, scala: 75,
+    typescript: 50,
+    python: 15,
+    javascript: 10, ruby: 10, php: 15,
+  };
+  const CONFIG_LANGUAGES = new Set([
+    'json', 'yaml', 'yml', 'xml', 'toml', 'ini', 'kql', 'kusto',
+    'markdown', 'md', 'txt', 'csv', 'sql', 'bicep', 'hcl', 'terraform',
+    'dockerfile', 'makefile', 'shell', 'bash', 'powershell', 'bat',
+  ]);
+
+  // ── Build-level enforcement signals (scan ALL files before filtering) ──
+  let tsconfigStrict = false;
+  let nullableEnabled = false;
+  let mypyConfigured = false;
 
   for (const f of files) {
-    totalAnnotations += f.typeAnnotationCount;
-    totalDeclarations += f.declarationCount;
-    if (f.hasStrictMode) {
-      strictCount++;
+    if (!f.hasStrictMode) { continue; }
+    const p = f.path.toLowerCase();
+    if (f.language === 'typescript' || /tsconfig[^/]*\.json$/.test(p)) {
+      tsconfigStrict = true;
+    }
+    if (p.endsWith('directory.build.props') || p.endsWith('.csproj')) {
+      nullableEnabled = true;
+    }
+    if (p.endsWith('pyproject.toml') || p.endsWith('setup.cfg')) {
+      mypyConfigured = true;
     }
   }
 
-  if (totalDeclarations === 0 && strictCount === 0) { return 0; }
+  // ── Filter to code files ──
+  const codeFiles = files.filter(f => {
+    const lang = f.language.toLowerCase();
+    if (CONFIG_LANGUAGES.has(lang)) { return false; }
+    if (!LANG_BASE_SCORES[lang] && f.declarationCount === 0 && f.typeAnnotationCount === 0) { return false; }
+    return true;
+  });
+  if (codeFiles.length === 0) {
+    return 50; // All config/data files — type strictness not applicable
+  }
 
-  // Simple: annotationRatio * 0.8 + (hasStrictMode ? 20 : 0)
-  const annotationRatio = totalDeclarations > 0 ? (totalAnnotations / totalDeclarations) * 80 : 0;
-  const strictBonus = strictCount > 0 ? 20 : 0;
-  return clamp(annotationRatio + strictBonus, 0, 100);
+  const MANDATORY_TYPED = new Set(['csharp', 'java', 'go', 'rust', 'kotlin', 'scala', 'swift']);
+  const OPTIONAL_TYPED_CEILING = 80;
+
+  let totalScore = 0;
+  let totalWeight = 0;
+
+  for (const f of codeFiles) {
+    const lang = f.language.toLowerCase();
+    let baseScore = LANG_BASE_SCORES[lang] ?? 20;
+    const weight = Math.max(1, Math.log2(f.totalLines + 1));
+
+    // TypeScript strict: boost base from 50 → 70
+    if (lang === 'typescript' && tsconfigStrict) {
+      baseScore = 70;
+    }
+
+    let fileScore: number;
+
+    if (MANDATORY_TYPED.has(lang)) {
+      // Statically typed: base score is the floor, annotations add a small bonus
+      const ratio = f.declarationCount > 0 ? Math.min(1, f.typeAnnotationCount / f.declarationCount) : 0.5;
+      fileScore = baseScore + ratio * (100 - baseScore) * 0.5;
+    } else if (f.declarationCount > 0 && f.typeAnnotationCount > 0) {
+      // Optional typing: scale from base to ceiling based on annotation coverage
+      const ratio = Math.min(1, f.typeAnnotationCount / f.declarationCount);
+      fileScore = baseScore + ratio * (OPTIONAL_TYPED_CEILING - baseScore);
+    } else {
+      fileScore = baseScore;
+    }
+
+    // Build-level enforcement bonuses (+10, capped at 100)
+    if (lang === 'csharp' && nullableEnabled) { fileScore += 10; }
+    if (lang === 'python' && mypyConfigured) { fileScore += 10; }
+
+    totalScore += fileScore * weight;
+    totalWeight += weight;
+  }
+
+  const score = totalWeight > 0 ? totalScore / totalWeight : 0;
+  return clamp(score, 0, 100);
 }
 
 function computeContextFragmentation(

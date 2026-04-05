@@ -1,0 +1,94 @@
+# Azure DevOps Build Pipeline for AI Readiness Scanner
+# Triggers on main branch pushes and PRs to the extension folder
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - 'ai-readiness-scanner-vs-code-extension/**'
+
+pr:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - 'ai-readiness-scanner-vs-code-extension/**'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  nodeVersion: '20.x'
+  workingDir: 'ai-readiness-scanner-vs-code-extension'
+
+stages:
+  - stage: Build
+    displayName: 'Build & Test'
+    jobs:
+      - job: BuildAndTest
+        displayName: 'Build, Lint, Test'
+        steps:
+          - task: NodeTool@0
+            inputs:
+              versionSpec: '$(nodeVersion)'
+            displayName: 'Install Node.js'
+
+          - script: npm ci
+            workingDirectory: '$(workingDir)'
+            displayName: 'Install dependencies'
+
+          - script: npm run build
+            workingDirectory: '$(workingDir)'
+            displayName: 'Build extension'
+
+          - script: npm test
+            workingDirectory: '$(workingDir)'
+            displayName: 'Run tests'
+
+          - script: npx vsce package --no-dependencies
+            workingDirectory: '$(workingDir)'
+            displayName: 'Package VSIX'
+
+          - task: CopyFiles@2
+            inputs:
+              sourceFolder: '$(workingDir)'
+              contents: '*.vsix'
+              targetFolder: '$(Build.ArtifactStagingDirectory)'
+            displayName: 'Copy VSIX to staging'
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              pathToPublish: '$(Build.ArtifactStagingDirectory)'
+              artifactName: 'vsix'
+            displayName: 'Publish VSIX artifact'
+
+  - stage: Publish
+    displayName: 'Publish to Feed'
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: PublishToFeed
+        displayName: 'Publish VSIX to Artifact Feed'
+        steps:
+          - task: DownloadBuildArtifacts@1
+            inputs:
+              buildType: 'current'
+              downloadType: 'single'
+              artifactName: 'vsix'
+              downloadPath: '$(System.ArtifactsDirectory)'
+
+          # Publish as Universal Package to ADO artifact feed
+          # Prerequisites: Create a feed named 'ai-readiness-scanner' in ADO Artifacts
+          - task: UniversalPackages@0
+            inputs:
+              command: 'publish'
+              publishDirectory: '$(System.ArtifactsDirectory)/vsix'
+              feedsToUsePublish: 'internal'
+              vstsFeedPublish: 'ai-readiness-scanner'
+              vstsFeedPackagePublish: 'ai-readiness-scanner-vsix'
+              versionOption: 'patch'
+              packagePublishDescription: 'AI Readiness Scanner VS Code Extension'
+            displayName: 'Publish VSIX to artifact feed'
