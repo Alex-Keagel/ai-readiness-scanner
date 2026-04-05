@@ -438,7 +438,7 @@ export interface ComponentInfo {
   type: 'app' | 'library' | 'service' | 'script' | 'config' | 'infra' | 'data' | 'unknown';
   description?: string;
   parentPath?: string;  // path of parent component (for sub-components)
-  children?: string[];  // paths of child components
+  children?: ComponentInfo[];  // sub-components within this component
   isGenerated?: boolean; // true for exported/backup/auto-generated code
 }
 

@@ -286,7 +286,7 @@ export class ComponentScorer {
       type: comp.type,
       description: comp.description,
       parentPath: comp.parentPath,
-      children: comp.children,
+      children: comp.children?.map(child => typeof child === 'string' ? child : child.path),
       primaryLevel: level as MaturityLevel,
       depth: cappedScore,
       overallScore: cappedScore,

@@ -20,13 +20,13 @@ function makeContext(overrides: Partial<ProjectContext> = {}): ProjectContext {
   };
 }
 
-function makeComponent(overrides: Partial<ComponentInfo> = {}): ComponentInfo {
+function makeComponent(overrides: Partial<Omit<ComponentInfo, 'children'>> & { children?: any[] } = {}): ComponentInfo {
   return {
     name: 'my-component',
     path: 'src/my-component',
     language: 'TypeScript',
     type: 'app',
-    ...overrides,
+    ...(overrides as ComponentInfo),
   };
 }
 

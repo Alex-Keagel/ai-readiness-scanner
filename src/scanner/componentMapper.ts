@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { ProjectContext, ComponentInfo, FileContent } from '../scoring/types';
 import { CopilotClient } from '../llm/copilotClient';
 import { logger } from '../logging';
+import { validateComponentName } from '../deep/validators/componentNameValidator';
 
 const EXCLUDE_GLOB = '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/__pycache__/**,**/.venv/**,**/venv/**,**/target/**,**/site-packages/**,**/.tox/**,**/env/**}';
 
@@ -552,6 +553,25 @@ export class ComponentMapper {
     'CMakeLists.txt', 'Makefile',
   ];
 
+  private static readonly SUBCOMPONENT_MANIFEST_NAMES = new Set([
+    'package.json', 'pyproject.toml', 'setup.py', 'Cargo.toml',
+    'go.mod', 'pom.xml', 'build.gradle', 'README.md', 'requirements.txt',
+  ]);
+
+  private static readonly TEST_DIR_NAMES = new Set(['test', 'tests', '__tests__', 'spec', 'specs']);
+
+  private static readonly SOURCE_FILE_EXTENSIONS = new Set([
+    'ts', 'tsx', 'js', 'jsx', 'py', 'go', 'rs', 'java', 'kt', 'cs',
+    'rb', 'swift', 'c', 'cpp', 'h', 'kql', 'csl', 'bicep', 'ipynb',
+  ]);
+
+  private static readonly SEMANTIC_GROUP_NAMES: Record<string, string> = {
+    common: 'Common Libraries',
+    'data-processing': 'Data Processing',
+    dataprocessing: 'Data Processing',
+    clients: 'API Clients',
+  };
+
   private async detectComponents(
     relPattern: (glob: string) => vscode.RelativePattern,
     workspaceUri: vscode.Uri,
@@ -926,27 +946,11 @@ export class ComponentMapper {
       });
     }
 
-    // 9. Set parent-child relationships based on path nesting
-    for (const comp of components) {
-      let bestParent: ComponentInfo | undefined;
-      let bestParentDepth = 0;
-      for (const other of components) {
-        if (other.path === comp.path) continue;
-        if (comp.path.startsWith(other.path + '/')) {
-          const depth = other.path.split('/').length;
-          if (depth > bestParentDepth) {
-            bestParent = other;
-            bestParentDepth = depth;
-          }
-        }
-      }
-      if (bestParent) {
-        comp.parentPath = bestParent.path;
-        if (!bestParent.children) bestParent.children = [];
-        bestParent.children.push(comp.path);
-      }
-    }
-
+    await this.discoverRecursiveSubcomponents(components, visibleFiles, basePath, relPattern);
+    this.createSemanticGroupComponents(components);
+    this.finalizeComponentHierarchy(components);
+    this.collapseGenericContainerLayers(components);
+    this.finalizeComponentHierarchy(components);
     return components;
   }
 
@@ -989,6 +993,302 @@ export class ComponentMapper {
     if (pkg.main || pkg.exports || pkg.module) return 'library';
     if (pkg.scripts?.start) return 'app';
     return 'unknown';
+  }
+
+  private buildDirectoryStats(files: vscode.Uri[], basePath: string): Map<string, {
+    directFiles: Set<string>;
+    childDirs: Set<string>;
+    totalFiles: number;
+    directSourceFiles: number;
+    totalSourceFiles: number;
+  }> {
+    const stats = new Map<string, {
+      directFiles: Set<string>;
+      childDirs: Set<string>;
+      totalFiles: number;
+      directSourceFiles: number;
+      totalSourceFiles: number;
+    }>();
+
+    const ensure = (dirPath: string) => {
+      let entry = stats.get(dirPath);
+      if (!entry) {
+        entry = {
+          directFiles: new Set<string>(),
+          childDirs: new Set<string>(),
+          totalFiles: 0,
+          directSourceFiles: 0,
+          totalSourceFiles: 0,
+        };
+        stats.set(dirPath, entry);
+      }
+      return entry;
+    };
+
+    for (const file of files) {
+      const relPath = file.path.startsWith(basePath) ? file.path.slice(basePath.length + 1) : file.path;
+      if (!relPath || relPath === '.') continue;
+
+      const parts = relPath.split('/');
+      if (parts.length < 2) continue;
+
+      const fileName = parts[parts.length - 1];
+      const isSource = this.isSourceFile(fileName);
+
+      for (let i = 0; i < parts.length - 1; i++) {
+        const dirPath = parts.slice(0, i + 1).join('/');
+        const entry = ensure(dirPath);
+        entry.totalFiles += 1;
+        if (isSource) entry.totalSourceFiles += 1;
+        if (i < parts.length - 2) {
+          entry.childDirs.add(parts[i + 1]);
+        }
+      }
+
+      const parentDir = parts.slice(0, -1).join('/');
+      const parentEntry = ensure(parentDir);
+      parentEntry.directFiles.add(fileName);
+      if (isSource) parentEntry.directSourceFiles += 1;
+    }
+
+    return stats;
+  }
+
+  private isSourceFile(fileName: string): boolean {
+    const extension = fileName.split('.').pop()?.toLowerCase() ?? '';
+    return ComponentMapper.SOURCE_FILE_EXTENSIONS.has(extension);
+  }
+
+  private getParentPath(path: string): string | undefined {
+    const parts = path.split('/');
+    return parts.length > 1 ? parts.slice(0, -1).join('/') : undefined;
+  }
+
+  private humanizeComponentName(name: string): string {
+    return name
+      .split(/[._-]+/)
+      .filter(Boolean)
+      .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+      .join(' ');
+  }
+
+  private inferLanguageFromChildren(children: ComponentInfo[]): string {
+    const counts = new Map<string, number>();
+    for (const child of children) {
+      const lang = child.language || 'unknown';
+      counts.set(lang, (counts.get(lang) ?? 0) + 1);
+    }
+    const [best] = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    return best?.[0] ?? 'unknown';
+  }
+
+  private inferTypeFromChildren(children: ComponentInfo[]): ComponentInfo['type'] {
+    if (children.some(child => child.type === 'service')) return 'service';
+    if (children.some(child => child.type === 'app')) return 'app';
+    if (children.some(child => child.type === 'data')) return 'data';
+    if (children.some(child => child.type === 'infra')) return 'infra';
+    if (children.some(child => child.type === 'library')) return 'library';
+    if (children.some(child => child.type === 'config')) return 'config';
+    if (children.some(child => child.type === 'script')) return 'script';
+    return 'unknown';
+  }
+
+  private getSemanticGroupName(groupPath: string, children: ComponentInfo[]): string {
+    const dirName = groupPath.split('/').pop() || groupPath;
+    return ComponentMapper.SEMANTIC_GROUP_NAMES[dirName.toLowerCase()]
+      ?? (children.length >= 2 ? this.humanizeComponentName(dirName) : dirName);
+  }
+
+  private getSemanticGroupType(groupPath: string, children: ComponentInfo[]): ComponentInfo['type'] {
+    const dirName = (groupPath.split('/').pop() || '').toLowerCase();
+    if (dirName === 'common' || dirName === 'clients') return 'library';
+    if (dirName === 'data-processing' || dirName === 'dataprocessing') return 'data';
+    return this.inferTypeFromChildren(children);
+  }
+
+  private async discoverRecursiveSubcomponents(
+    components: ComponentInfo[],
+    files: vscode.Uri[],
+    basePath: string,
+    relPattern: (glob: string) => vscode.RelativePattern,
+  ): Promise<void> {
+    const stats = this.buildDirectoryStats(files, basePath);
+    const queue = [...components];
+    const visited = new Set<string>();
+
+    while (queue.length > 0) {
+      const parent = queue.shift()!;
+      if (visited.has(parent.path)) continue;
+      visited.add(parent.path);
+
+      const parentStats = stats.get(parent.path);
+      if (!parentStats || parentStats.totalFiles <= 10) continue;
+
+      const directChildren = [...parentStats.childDirs].sort();
+      for (const childName of directChildren) {
+        if (ComponentMapper.EXCLUDED_DIRS.has(childName) || childName.startsWith('.')) continue;
+        if (ComponentMapper.TEST_DIR_NAMES.has(childName.toLowerCase())) continue;
+
+        const childPath = `${parent.path}/${childName}`;
+        let existing = components.find(component => component.path === childPath);
+        if (existing) {
+          if (!existing.parentPath) existing.parentPath = parent.path;
+          queue.push(existing);
+          continue;
+        }
+
+        const childStats = stats.get(childPath);
+        if (!childStats) continue;
+
+        const descendantComponents = components.filter(component =>
+          this.getParentPath(component.path) === childPath,
+        );
+        const hasManifest = [...childStats.directFiles].some(fileName =>
+          ComponentMapper.SUBCOMPONENT_MANIFEST_NAMES.has(fileName) || /\.csproj$/i.test(fileName),
+        );
+        const hasReadme = childStats.directFiles.has('README.md');
+        const hasTests = [...childStats.childDirs].some(dir => ComponentMapper.TEST_DIR_NAMES.has(dir.toLowerCase()));
+        const hasPythonPackage = childStats.directFiles.has('__init__.py')
+          || childStats.directFiles.has('pyproject.toml')
+          || childStats.directFiles.has('setup.py');
+        const shouldCreateContainer = descendantComponents.length >= 2;
+        const markerDetected = hasManifest || hasReadme || hasTests || hasPythonPackage;
+        const shouldCreate = shouldCreateContainer
+          || (markerDetected && (childStats.totalSourceFiles > 0 || hasManifest))
+          || (parent.language === 'Python' && hasPythonPackage);
+
+        if (!shouldCreate) continue;
+
+        existing = {
+          name: shouldCreateContainer ? this.getSemanticGroupName(childPath, descendantComponents) : childName,
+          path: childPath,
+          language: descendantComponents.length > 0
+            ? this.inferLanguageFromChildren(descendantComponents)
+            : await this.detectDirLanguage(relPattern, childPath),
+          type: shouldCreateContainer
+            ? this.getSemanticGroupType(childPath, descendantComponents)
+            : this.classifyDirType(childName, childPath),
+          description: shouldCreateContainer
+            ? `Contains ${descendantComponents.length} sub-components`
+            : hasReadme
+              ? `Documented ${this.classifyDirType(childName, childPath)} component`
+              : '',
+          parentPath: parent.path,
+          children: [],
+        };
+        components.push(existing);
+        queue.push(existing);
+      }
+    }
+  }
+
+  private createSemanticGroupComponents(components: ComponentInfo[]): void {
+    const byPath = new Map(components.map(component => [component.path, component]));
+    const childGroups = new Map<string, ComponentInfo[]>();
+
+    for (const component of components) {
+      const parentPath = this.getParentPath(component.path);
+      if (!parentPath) continue;
+      if (!childGroups.has(parentPath)) childGroups.set(parentPath, []);
+      childGroups.get(parentPath)!.push(component);
+    }
+
+    for (const [groupPath, children] of childGroups) {
+      const dirName = groupPath.split('/').pop() || groupPath;
+      if (ComponentMapper.EXCLUDED_DIRS.has(dirName) || dirName.startsWith('.')) continue;
+
+      const existing = byPath.get(groupPath);
+      const hasContainerParent = !!this.getParentPath(groupPath) && byPath.has(this.getParentPath(groupPath)!);
+      const isSemanticCSharpGroup = children.length >= 3
+        && children.every(child => child.language === 'C#')
+        && !!ComponentMapper.SEMANTIC_GROUP_NAMES[dirName.toLowerCase()];
+
+      if (!existing && children.length < 2) continue;
+      if (!existing && !hasContainerParent && !isSemanticCSharpGroup) continue;
+
+      const group = existing ?? {
+        name: this.getSemanticGroupName(groupPath, children),
+        path: groupPath,
+        language: this.inferLanguageFromChildren(children),
+        type: this.getSemanticGroupType(groupPath, children),
+        description: `Contains ${children.length} sub-components`,
+        children: [],
+      };
+
+      group.name = this.getSemanticGroupName(groupPath, children);
+      if (group.type === 'unknown') group.type = this.getSemanticGroupType(groupPath, children);
+      if (!group.description) group.description = `Contains ${children.length} sub-components`;
+      if (!group.language || group.language === 'unknown' || group.language === 'Multi') {
+        group.language = this.inferLanguageFromChildren(children);
+      }
+
+      if (!existing) {
+        components.push(group);
+        byPath.set(groupPath, group);
+      }
+
+      for (const child of children) {
+        child.parentPath = groupPath;
+      }
+    }
+  }
+
+  private collapseGenericContainerLayers(components: ComponentInfo[]): void {
+    const collapsible = new Set(['components', 'packages', 'modules']);
+    const removable = new Set<string>();
+
+    for (const component of components) {
+      const dirName = (component.path.split('/').pop() || '').toLowerCase();
+      if (!component.parentPath || !component.children?.length || !collapsible.has(dirName)) continue;
+      for (const child of component.children) {
+        child.parentPath = component.parentPath;
+      }
+      removable.add(component.path);
+    }
+
+    if (removable.size === 0) return;
+
+    const kept = components.filter(component => !removable.has(component.path));
+    components.splice(0, components.length, ...kept);
+  }
+
+  private finalizeComponentHierarchy(components: ComponentInfo[]): void {
+    const byPath = new Map<string, ComponentInfo>();
+    for (const component of components) {
+      byPath.set(component.path, component);
+      component.children = [];
+    }
+
+    for (const component of components) {
+      if (component.parentPath && !byPath.has(component.parentPath)) {
+        component.parentPath = undefined;
+      }
+
+      if (!component.parentPath) {
+        let bestParent: ComponentInfo | undefined;
+        let bestDepth = 0;
+        for (const candidate of components) {
+          if (candidate.path === component.path) continue;
+          if (!component.path.startsWith(candidate.path + '/')) continue;
+          const depth = candidate.path.split('/').length;
+          if (depth > bestDepth) {
+            bestParent = candidate;
+            bestDepth = depth;
+          }
+        }
+        component.parentPath = bestParent?.path;
+      }
+    }
+
+    for (const component of components) {
+      if (!component.parentPath) continue;
+      const parent = byPath.get(component.parentPath);
+      if (!parent) continue;
+      parent.children = parent.children || [];
+      if (!parent.children.some(child => child.path === component.path)) {
+        parent.children.push(component);
+      }
+    }
   }
 
   /** Detect primary language of a directory by checking for language markers and file extensions */
@@ -1205,10 +1505,7 @@ export class ComponentMapper {
       });
     }
 
-    // Fill children arrays
-    for (const comp of components) {
-      comp.children = components.filter(c => c.parentPath === comp.path).map(c => c.path);
-    }
+    this.finalizeComponentHierarchy(components);
 
     // Create virtual parents for orphan components sharing a directory
     // e.g., detection/adf + detection/infra → create detection/ parent
@@ -1235,7 +1532,7 @@ export class ComponentMapper {
         language: parentLang,
         type: parentType,
         description: `Contains ${children.length} sub-components`,
-        children: children.map(c => c.path),
+        children: [],
       });
       for (const c of children) {
         c.parentPath = parentDir;
@@ -1281,13 +1578,17 @@ export class ComponentMapper {
             if (EXCLUDE.has(subName) || subName.startsWith('.')) continue;
             const subPath = comp.path + '/' + subName;
             if (components.some(c => c.path === subPath)) continue;
-            // Check if this dir has a src/ subdirectory (sign of a component without manifest)
+            // Check if this dir has source files (either in src/ subdirectory OR directly in the directory)
             try {
               const hasSrc = filterVirtualEnvEntries(await vscode.workspace.findFiles(
                 new vscode.RelativePattern(vscode.Uri.joinPath(workspaceUri, subPath), 'src/**/*.{py,cs,ts,js}'),
                 '{**/node_modules/**,**/.git/**}', 1
               ));
-              if (hasSrc.length > 0) {
+              const hasDirectSrc = hasSrc.length === 0 ? filterVirtualEnvEntries(await vscode.workspace.findFiles(
+                new vscode.RelativePattern(vscode.Uri.joinPath(workspaceUri, subPath), '*.{py,cs,ts,js}'),
+                '{**/node_modules/**,**/.git/**}', 1
+              )) : [];
+              if (hasSrc.length > 0 || hasDirectSrc.length > 0) {
                 components.push({
                   name: subName,
                   path: subPath,
@@ -1344,7 +1645,7 @@ export class ComponentMapper {
           type: groupType,
           description: `${prefix} group (${members.length} projects)`,
           parentPath: parent.path,
-          children: members.map(m => m.path),
+          children: [],
         });
 
         // Reparent members under the group
@@ -1354,10 +1655,7 @@ export class ComponentMapper {
       }
     }
 
-    // Refresh children arrays after sub-grouping
-    for (const comp of components) {
-      comp.children = components.filter(c => c.parentPath === comp.path).map(c => c.path);
-    }
+    this.finalizeComponentHierarchy(components);
 
     // ═══════════════════════════════════════════════════════════
     // PHASE 2: LLM enrichment — rename, describe, reclassify
@@ -1407,10 +1705,17 @@ Respond as JSON array: [{"path":"...","name":"Better Name","description":"one se
           const match = response.match(/\[[\s\S]*\]/);
           if (match) {
             const enrichments = JSON.parse(match[0]) as { path: string; name?: string; description?: string }[];
+
             for (const e of enrichments) {
               const comp = components.find(c => c.path === e.path);
               if (comp) {
-                if (e.name && e.name !== comp.name) comp.name = e.name;
+                if (e.name && e.name !== comp.name) {
+                  const validation = validateComponentName(comp.path, e.name, comp.language);
+                  comp.name = validation.validatedName;
+                  if (validation.changed && validation.reason) {
+                    logger.debug(`Deep map [LLM]: ${validation.reason}`);
+                  }
+                }
                 if (e.description) comp.description = e.description;
               }
             }
@@ -1431,7 +1736,7 @@ Respond as JSON array: [{"path":"...","name":"Better Name","description":"one se
     // Helper to create a virtual group and reparent components
     const createGroup = (name: string, path: string, type: ComponentInfo['type'], description: string, memberPaths: string[]) => {
       if (memberPaths.length === 0) return;
-      const group: ComponentInfo = { name, path, language: 'Multi', type, description, children: memberPaths };
+      const group: ComponentInfo = { name, path, language: 'Multi', type, description, children: [] };
       components.push(group);
       for (const c of components) {
         if (memberPaths.includes(c.path) && !c.parentPath) c.parentPath = path;
@@ -1471,7 +1776,7 @@ Respond as JSON array: [{"path":"...","name":"Better Name","description":"one se
           if (scriptPaths.includes(c.path) && !c.parentPath) {
             c.parentPath = '.infrastructure';
             infraGroup.children = infraGroup.children || [];
-            infraGroup.children.push(c.path);
+            infraGroup.children.push(c);
           }
         }
       }
@@ -1491,6 +1796,12 @@ Respond as JSON array: [{"path":"...","name":"Better Name","description":"one se
       }
     }
 
+    const relPattern = (glob: string) => new vscode.RelativePattern(workspaceUri, glob);
+    await this.discoverRecursiveSubcomponents(filtered, allFiles, workspaceUri.path, relPattern);
+    this.createSemanticGroupComponents(filtered);
+    this.finalizeComponentHierarchy(filtered);
+    this.collapseGenericContainerLayers(filtered);
+    this.finalizeComponentHierarchy(filtered);
     const topLevel = filtered.filter(c => !c.parentPath);
     logger.info(`Deep map: COMPLETE — ${filtered.length} components (${topLevel.length} top-level groups)`);
     return filtered;
@@ -1518,7 +1829,7 @@ Respond as JSON array: [{"path":"...","name":"Better Name","description":"one se
       // Recursively flatten subComponents
       if (Array.isArray(comp.subComponents) && comp.subComponents.length > 0) {
         const childResults = this.flattenComponents(comp.subComponents, compPath);
-        component.children = childResults.map(c => c.path);
+        component.children = childResults.filter(c => c.parentPath === compPath);
         result.push(...childResults);
       }
 

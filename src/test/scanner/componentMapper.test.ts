@@ -6,6 +6,45 @@ import { ComponentMapper, isVirtualEnvPath } from '../../scanner/componentMapper
  * Helper: build a `relPattern` function that just concatenates base + glob,
  * and a mock `findFiles` that resolves against a virtual file list.
  */
+function globToRegExp(pattern: string): RegExp {
+  const parts: string[] = ['^'];
+
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    const next = pattern[i + 1];
+
+    if (ch === '*' && next === '*') {
+      parts.push('.*');
+      i++;
+      continue;
+    }
+
+    if (ch === '*') {
+      parts.push('[^/]*');
+      continue;
+    }
+
+    if (ch === '?') {
+      parts.push('[^/]');
+      continue;
+    }
+
+    if (ch === '{') {
+      const end = pattern.indexOf('}', i);
+      const raw = pattern.slice(i + 1, end);
+      const options = raw.split(',').map(opt => globToRegExp(opt).source.replace(/^\^|\$$/g, ''));
+      parts.push(`(?:${options.join('|')})`);
+      i = end;
+      continue;
+    }
+
+    parts.push(ch.replace(/[|\\{}()[\]^$+?.]/g, '\\$&'));
+  }
+
+  parts.push('$');
+  return new RegExp(parts.join(''));
+}
+
 function setupMocks(virtualFiles: string[]) {
   const uris = virtualFiles.map(f => vscode.Uri.file(f));
 
@@ -45,6 +84,24 @@ function setupMocks(virtualFiles: string[]) {
   return relPattern;
 }
 
+function setupAdvancedMocks(virtualFiles: string[]) {
+  const uris = virtualFiles.map(f => vscode.Uri.file(f));
+  const relPattern = (glob: string) => new vscode.RelativePattern('/repo', glob);
+
+  vi.spyOn(vscode.workspace, 'findFiles').mockImplementation(
+    async (include: any, _exclude?: any, maxResults?: number) => {
+      const pattern: string = (
+        typeof include === 'string' ? include : (include as vscode.RelativePattern).pattern
+      ).replace(/^\.\//, '');
+      const matcher = globToRegExp(pattern);
+      const matched = uris.filter(uri => matcher.test(uri.fsPath.replace(/^\/repo\//, '')));
+      return maxResults ? matched.slice(0, maxResults) : matched;
+    },
+  );
+
+  return relPattern;
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -76,7 +133,7 @@ describe('detectDirLanguage', () => {
   }
 
   it('detects C# when .csproj exists even with .venv/*.py files', async () => {
-    const relPattern = setupMocks([
+    const relPattern = setupAdvancedMocks([
       '/repo/src/MyApp/MyApp.csproj',
       '/repo/src/MyApp/Program.cs',
       '/repo/.venv/lib/python3.11/site.py',
@@ -206,6 +263,128 @@ describe('detectComponents', () => {
     );
 
     expect(components.some((component: { path: string }) => isVirtualEnvPath(component.path))).toBe(false);
+  });
+
+  it('groups sibling C# projects under a semantic parent', async () => {
+    const relPattern = setupMocks([
+      '/repo/src/common/Storage/Storage.csproj',
+      '/repo/src/common/Storage/BlobClient.cs',
+      '/repo/src/common/Hosting/Hosting.csproj',
+      '/repo/src/common/Hosting/HostBuilder.cs',
+      '/repo/src/common/Diagnostics/Diagnostics.csproj',
+      '/repo/src/common/Diagnostics/Logger.cs',
+      '/repo/src/common/README.md',
+      '/repo/src/common/shared.cs',
+      '/repo/src/common/config.cs',
+      '/repo/src/common/test.cs',
+      '/repo/src/common/extra.cs',
+    ]);
+
+    const mapper = new ComponentMapper();
+    const workspaceUri = vscode.Uri.file('/repo');
+    const allFiles = [
+      vscode.Uri.file('/repo/src/common/Storage/Storage.csproj'),
+      vscode.Uri.file('/repo/src/common/Storage/BlobClient.cs'),
+      vscode.Uri.file('/repo/src/common/Hosting/Hosting.csproj'),
+      vscode.Uri.file('/repo/src/common/Hosting/HostBuilder.cs'),
+      vscode.Uri.file('/repo/src/common/Diagnostics/Diagnostics.csproj'),
+      vscode.Uri.file('/repo/src/common/Diagnostics/Logger.cs'),
+      vscode.Uri.file('/repo/src/common/README.md'),
+      vscode.Uri.file('/repo/src/common/shared.cs'),
+      vscode.Uri.file('/repo/src/common/config.cs'),
+      vscode.Uri.file('/repo/src/common/test.cs'),
+      vscode.Uri.file('/repo/src/common/extra.cs'),
+    ];
+
+    const components = await (mapper as any).detectComponents(relPattern, workspaceUri, allFiles, ['C#']);
+    const commonGroup = components.find((component: { path: string }) => component.path === 'src/common');
+
+    expect(commonGroup).toBeDefined();
+    expect(commonGroup.name).toBe('Common Libraries');
+    expect(commonGroup.children?.map((child: { path: string }) => child.path).sort()).toEqual([
+      'src/common/Diagnostics',
+      'src/common/Hosting',
+      'src/common/Storage',
+    ]);
+  });
+
+  it('discovers python workspace sub-packages recursively', async () => {
+    const relPattern = setupAdvancedMocks([
+      '/repo/python-workspace/pyproject.toml',
+      '/repo/python-workspace/README.md',
+      '/repo/python-workspace/components/bot-detection/__init__.py',
+      '/repo/python-workspace/components/bot-detection/main.py',
+      '/repo/python-workspace/components/bot-detection/rules.py',
+      '/repo/python-workspace/components/bot-detection/tests/test_main.py',
+      '/repo/python-workspace/components/kusto-manager/__init__.py',
+      '/repo/python-workspace/components/kusto-manager/manager.py',
+      '/repo/python-workspace/components/kusto-manager/client.py',
+      '/repo/python-workspace/components/data-processing/__init__.py',
+      '/repo/python-workspace/components/data-processing/pipeline.py',
+      '/repo/python-workspace/components/data-processing/transform.py',
+      '/repo/python-workspace/components/data-processing/tests/test_pipeline.py',
+      '/repo/python-workspace/shared/util.py',
+      '/repo/python-workspace/scripts/bootstrap.py',
+    ]);
+
+    const mapper = new ComponentMapper();
+    const workspaceUri = vscode.Uri.file('/repo');
+    const allFiles = [
+      vscode.Uri.file('/repo/python-workspace/pyproject.toml'),
+      vscode.Uri.file('/repo/python-workspace/README.md'),
+      vscode.Uri.file('/repo/python-workspace/components/bot-detection/__init__.py'),
+      vscode.Uri.file('/repo/python-workspace/components/bot-detection/main.py'),
+      vscode.Uri.file('/repo/python-workspace/components/bot-detection/rules.py'),
+      vscode.Uri.file('/repo/python-workspace/components/bot-detection/tests/test_main.py'),
+      vscode.Uri.file('/repo/python-workspace/components/kusto-manager/__init__.py'),
+      vscode.Uri.file('/repo/python-workspace/components/kusto-manager/manager.py'),
+      vscode.Uri.file('/repo/python-workspace/components/kusto-manager/client.py'),
+      vscode.Uri.file('/repo/python-workspace/components/data-processing/__init__.py'),
+      vscode.Uri.file('/repo/python-workspace/components/data-processing/pipeline.py'),
+      vscode.Uri.file('/repo/python-workspace/components/data-processing/transform.py'),
+      vscode.Uri.file('/repo/python-workspace/components/data-processing/tests/test_pipeline.py'),
+      vscode.Uri.file('/repo/python-workspace/shared/util.py'),
+      vscode.Uri.file('/repo/python-workspace/scripts/bootstrap.py'),
+    ];
+
+    const components = await (mapper as any).detectComponents(relPattern, workspaceUri, allFiles, ['Python']);
+    const workspaceComponent = components.find((component: { path: string }) => component.path === 'python-workspace');
+
+    expect(workspaceComponent).toBeDefined();
+    expect(workspaceComponent.children?.map((child: { path: string }) => child.path).sort()).toEqual([
+      'python-workspace/components/bot-detection',
+      'python-workspace/components/data-processing',
+      'python-workspace/components/kusto-manager',
+    ]);
+
+    const botDetection = components.find((component: { path: string }) => component.path === 'python-workspace/components/bot-detection');
+    expect(botDetection?.parentPath).toBe('python-workspace');
+  });
+
+  it('does not add child components for an already-flat structure', async () => {
+    const relPattern = setupMocks([
+      '/repo/api/package.json',
+      '/repo/api/index.ts',
+      '/repo/web/package.json',
+      '/repo/web/app.tsx',
+      '/repo/shared/package.json',
+      '/repo/shared/index.ts',
+    ]);
+
+    const mapper = new ComponentMapper();
+    const workspaceUri = vscode.Uri.file('/repo');
+    const allFiles = [
+      vscode.Uri.file('/repo/api/package.json'),
+      vscode.Uri.file('/repo/api/index.ts'),
+      vscode.Uri.file('/repo/web/package.json'),
+      vscode.Uri.file('/repo/web/app.tsx'),
+      vscode.Uri.file('/repo/shared/package.json'),
+      vscode.Uri.file('/repo/shared/index.ts'),
+    ];
+
+    const components = await (mapper as any).detectComponents(relPattern, workspaceUri, allFiles, ['TypeScript']);
+
+    expect(components.every((component: { children?: unknown[] }) => (component.children?.length ?? 0) === 0)).toBe(true);
   });
 });
 
