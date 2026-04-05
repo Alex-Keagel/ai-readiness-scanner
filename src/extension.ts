@@ -25,6 +25,7 @@ import { InsightsPanel } from './ui/insightsPanel';
 import { GuidePanel } from './ui/guidePanel';
 import { ComparisonPanel } from './ui/comparisonPanel';
 import { RecommendationsPanel } from './ui/recommendationsPanel';
+import { NarrativeGenerator } from './report/narrativeGenerator';
 import { SemanticCache, WorkspaceIndexer, SemanticMCPProvider } from './semantic';
 import { initLogger, logger } from './logging';
 import { getPlatformExpertPrompt, formatProjectContext } from './remediation/fixPrompts';
@@ -65,6 +66,20 @@ function getValidReport(): ReadinessReport | undefined {
   }
   return currentReport;
 }
+
+function repairNarrativeSections(report: ReadinessReport, context: string): boolean {
+  if (!report.narrativeSections) {
+    return false;
+  }
+
+  const narrativeGen = new NarrativeGenerator(copilotClient);
+  const changed = narrativeGen.sanitizeNarrativeSections(report);
+  if (changed) {
+    logger.info(`${context}: repaired cached narrative sections against current scan signals`);
+  }
+  return changed;
+}
+
 let liveStatusBar: LiveStatusBar | undefined;
 let runStorage: RunStorage;
 let fixStorage: FixStorage;
@@ -102,6 +117,10 @@ export function activate(context: vscode.ExtensionContext) {
   mcpProvider.register(context);
   context.subscriptions.push({ dispose: () => semanticCache.dispose() });
   const remediationEngine = new RemediationEngine(copilotClient);
+
+  if (currentReport && repairNarrativeSections(currentReport, 'Activation')) {
+    void runStorage.updateLatestReport(currentReport);
+  }
 
   // Clear stale data when workspace changes
   context.subscriptions.push(
@@ -143,6 +162,7 @@ export function activate(context: vscode.ExtensionContext) {
           if (latestRun) { report = latestRun.report; currentReport = report; }
         }
         if (report) {
+          repairNarrativeSections(report, 'showReport');
           WebviewReportPanel.createOrShow(context.extensionUri, report, report.repoMap as RepoMap | undefined);
         } else {
           vscode.window.showInformationMessage(
@@ -295,12 +315,13 @@ export function activate(context: vscode.ExtensionContext) {
         if (!report!.narrativeSections) {
           progress.report({ message: '📊 Generating report narrative...', increment: 10 });
           try {
-            const { NarrativeGenerator } = await import('./report/narrativeGenerator');
             const narrativeGen = new NarrativeGenerator(copilotClient);
             report!.narrativeSections = await narrativeGen.generate(report!);
           } catch (err) {
             logger.warn('Action Center: narrative generation failed', err);
           }
+        } else if (repairNarrativeSections(report!, 'Action Center')) {
+          await runStorage.updateLatestReport(report!);
         }
       });
 
@@ -432,6 +453,7 @@ export function activate(context: vscode.ExtensionContext) {
         const run = runStorage.getRun(runId);
         if (run) {
           currentReport = run.report;
+          repairNarrativeSections(run.report, 'openRun');
           WebviewReportPanel.createOrShow(context.extensionUri, run.report, run.report.repoMap as RepoMap | undefined);
         }
       } catch (err) {
@@ -644,6 +666,9 @@ export function activate(context: vscode.ExtensionContext) {
         report = runs[0].report;
       }
 
+      // Always repair stale cached narratives, even when insights exist
+      repairNarrativeSections(report, 'showInsights');
+
       // Generate insights on-the-fly if not already present
       if (!report.insights?.length) {
         try {
@@ -672,13 +697,14 @@ export function activate(context: vscode.ExtensionContext) {
             if (!report!.narrativeSections) {
               try {
                 logger.info('Narrative: generating report narrative sections...');
-                const { NarrativeGenerator } = await import('./report/narrativeGenerator');
                 const narrativeGen = new NarrativeGenerator(copilotClient);
                 report!.narrativeSections = await narrativeGen.generate(report!);
                 logger.info('Narrative: sections generated');
               } catch (narErr) {
                 logger.warn('Narrative: generation failed, using fallbacks', narErr);
               }
+            } else if (repairNarrativeSections(report!, 'Insights')) {
+              await runStorage.updateLatestReport(report!);
             }
           });
         } catch (err) {
@@ -1942,13 +1968,14 @@ async function runScan(
         if (!currentReport.narrativeSections) {
           progress.report({ message: '📊 Generating report narrative...', increment: 10 });
           try {
-            const { NarrativeGenerator } = await import('./report/narrativeGenerator');
             const narrativeGen = new NarrativeGenerator(copilotClient);
             currentReport.narrativeSections = await narrativeGen.generate(currentReport);
             logger.info('Full scan: narrative generated');
           } catch (err) {
             logger.warn('Full scan: narrative generation failed', err);
           }
+        } else if (repairNarrativeSections(currentReport, 'Full scan')) {
+          await runStorage.updateLatestReport(currentReport);
         }
 
         // Save fully enriched report

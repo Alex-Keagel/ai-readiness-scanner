@@ -7,6 +7,74 @@ import { calculateInstructionRealitySync } from './instructionRealitySync';
 export class NarrativeGenerator {
   constructor(private client: CopilotClient) {}
 
+  /**
+   * Repair cached narrativeSections in stored reports so old (pre-fix) contradictions don't persist.
+   */
+  sanitizeNarrativeSections(report: ReadinessReport): boolean {
+    const ns = report.narrativeSections;
+    if (!ns) return false;
+
+    const tool = report.selectedTool as AITool;
+    const allSignals = report.levels.flatMap(l => l.signals);
+    const rootInstructionFact = this.getRootInstructionFact(report, tool, allSignals);
+
+    let changed = false;
+
+    const platformReadiness = (ns.platformReadiness || []).map(metric => {
+      const nextNarrative = metric.dimension === 'Instruction/Reality Sync'
+        ? (this.validateIQSyncNarrative(
+          [{ dimension: metric.dimension, narrative: metric.narrative }],
+          rootInstructionFact.present,
+          rootInstructionFact.files,
+          metric.score,
+        )?.[0].narrative ?? metric.narrative)
+        : this.sanitizeNarrativeText(metric.dimension, metric.narrative, metric.score, rootInstructionFact);
+
+      if (nextNarrative !== metric.narrative) changed = true;
+      return { ...metric, narrative: nextNarrative };
+    });
+
+    const toolingHealth = ns.toolingHealth
+      ? {
+        ...ns.toolingHealth,
+        status: this.sanitizeNarrativeText('Tooling Health', ns.toolingHealth.status, report.overallScore, rootInstructionFact),
+        items: (ns.toolingHealth.items || []).map(item => {
+          const next = this.sanitizeNarrativeText(item.name, item.narrative, report.overallScore, rootInstructionFact);
+          if (next !== item.narrative) changed = true;
+          return { ...item, narrative: next };
+        }),
+      }
+      : ns.toolingHealth;
+
+    if (ns.toolingHealth?.status && toolingHealth?.status !== ns.toolingHealth.status) {
+      changed = true;
+    }
+
+    const frictionMap = (ns.frictionMap || []).map(step => {
+      const nextNarrative = this.sanitizeNarrativeText('Friction Map', step.narrative, report.overallScore, rootInstructionFact);
+      if (nextNarrative !== step.narrative) changed = true;
+
+      const nextActions = (step.actions || []).map(action => {
+        const nextAction = this.sanitizeNarrativeText('Friction Action', action.action, report.overallScore, rootInstructionFact);
+        const nextImpact = this.sanitizeNarrativeText('Friction Impact', action.impact, report.overallScore, rootInstructionFact);
+        if (nextAction !== action.action || nextImpact !== action.impact) changed = true;
+        return { ...action, action: nextAction, impact: nextImpact };
+      });
+
+      return { ...step, narrative: nextNarrative, actions: nextActions };
+    });
+
+    if (!changed) return false;
+
+    report.narrativeSections = {
+      platformReadiness,
+      toolingHealth: toolingHealth as any,
+      frictionMap,
+    };
+
+    return true;
+  }
+
   async generate(report: ReadinessReport): Promise<NarrativeSections> {
     const timer = logger.time('NarrativeGenerator: generate');
     try {
@@ -41,11 +109,9 @@ export class NarrativeGenerator {
       // blended with deep instructionQuality when available.
       const platformSignals = allSignals.filter(s => platformSignalIdSet.has(s.signalId));
 
-      // Ground truth: verified signal detection status for instruction files
-      const rootSignalId = this.getRootSignalId(tool);
-      const rootSignal = allSignals.find(s => s.signalId === rootSignalId);
-      const rootInstructionDetected = rootSignal?.detected ?? false;
-      const rootInstructionFiles = rootSignal?.files ?? [];
+      // Ground truth: verified instruction file presence (derived from multiple verified sources)
+      // NOTE: The narrative must reflect the filesystem, not just one signal.
+      const rootInstructionFact = this.getRootInstructionFact(report, tool, allSignals);
       const signalGroundTruth = this.buildSignalGroundTruth(allSignals, platformSignalIdSet);
 
       const realityChecks = platformSignals
@@ -140,9 +206,14 @@ ${dimensions.map(d => `- ${d.dimension}: ${d.score}/100`).join('\n')}
 
 GROUND TRUTH — VERIFIED SIGNAL DETECTION (filesystem-verified facts — DO NOT contradict these):
 ${signalGroundTruth}
-Root instruction file: ${rootInstructionDetected ? `EXISTS and verified (${rootInstructionFiles.join(', ')})` : 'NOT DETECTED — no root instruction file found'}
+ROOT INSTRUCTION FILE FACT (filesystem-verified, non-negotiable):
+- Canonical path(s): ${rootInstructionFact.canonicalPaths.join(', ')}
+- Status: ${rootInstructionFact.present ? 'PRESENT' : 'ABSENT'}
+- Detected file(s): ${rootInstructionFact.files.length ? rootInstructionFact.files.join(', ') : '(none)'}
 
-MANDATORY: For "Instruction/Reality Sync", if the root instruction file is listed as EXISTS above, your narrative MUST NOT describe it as "absent", "missing", or "lacking". If NOT DETECTED, do NOT claim it exists.
+MANDATORY:
+- For "Instruction/Reality Sync": your narrative MUST match the root instruction file FACT above.
+- For ALL OTHER metrics: do NOT claim the root instruction file is missing/present; focus on that metric only.
 
 Context:
 - Languages: ${report.projectContext.languages.join(', ')}
@@ -158,19 +229,25 @@ Respond as JSON array:
       const response = await this.client.analyzeFast(prompt);
       const parsed = this.parseJsonArray<{ dimension: string; narrative: string }>(response);
 
-      // Post-validate: patch any IQ Sync narrative that contradicts signal ground truth
-      const validated = this.validateIQSyncNarrative(
-        parsed, rootInstructionDetected, rootInstructionFiles, instructionSyncScore
+      const narrativeByDimension = new Map(
+        (parsed || []).map(item => [item.dimension, item.narrative] as const),
       );
 
       return dimensions.map(d => {
-        const match = validated?.find(p => p.dimension === d.dimension);
         const label = d.score >= 75 ? 'excellent' as const : d.score >= 55 ? 'strong' as const : d.score >= 35 ? 'warning' as const : 'critical' as const;
+
+        // Bulletproof: never allow the LLM to override root instruction presence/absence.
+        let narrative = d.dimension === 'Instruction/Reality Sync'
+          ? this.correctedIQSyncNarrative(rootInstructionFact.present, rootInstructionFact.files, d.score)
+          : (narrativeByDimension.get(d.dimension) || this.defaultNarrative(d.dimension, d.score));
+
+        narrative = this.sanitizeNarrativeText(d.dimension, narrative, d.score, rootInstructionFact);
+
         return {
           dimension: d.dimension,
           score: d.score,
           label,
-          narrative: match?.narrative || this.defaultNarrative(d.dimension, d.score),
+          narrative,
         };
       });
     } catch (err) {
@@ -221,7 +298,14 @@ Write a JSON response:
       const response = await this.client.analyzeFast(prompt);
       const parsed = this.parseJson<{ status: string; items: ToolingHealthItem[] }>(response);
       if (parsed?.status && parsed?.items?.length) {
-        return parsed;
+        const rootInstructionFact = this.getRootInstructionFact(report, tool, signals);
+        return {
+          status: this.sanitizeNarrativeText('Tooling Health', parsed.status, report.overallScore, rootInstructionFact),
+          items: parsed.items.map(item => ({
+            ...item,
+            narrative: this.sanitizeNarrativeText(item.name, item.narrative, report.overallScore, rootInstructionFact),
+          })),
+        };
       }
       return this.fallbackTooling(report);
     } catch (err) {
@@ -277,7 +361,16 @@ Respond as JSON array:
       const response = await this.client.analyzeFast(prompt);
       const parsed = this.parseJsonArray<FrictionStep>(response);
       if (parsed?.length) {
-        return parsed.slice(0, 5);
+        const rootInstructionFact = this.getRootInstructionFact(report, tool, report.levels.flatMap(l => l.signals));
+        return parsed.slice(0, 5).map(step => ({
+          ...step,
+          narrative: this.sanitizeNarrativeText('Friction Map', step.narrative, report.overallScore, rootInstructionFact),
+          actions: (step.actions || []).map(a => ({
+            ...a,
+            action: this.sanitizeNarrativeText('Friction Action', a.action, report.overallScore, rootInstructionFact),
+            impact: this.sanitizeNarrativeText('Friction Impact', a.impact, report.overallScore, rootInstructionFact),
+          })),
+        }));
       }
       return this.fallbackFriction(report);
     } catch (err) {
@@ -361,6 +454,95 @@ Respond as JSON array:
 
   // ── Ground truth & narrative validation ──
 
+  private getCanonicalRootInstructionPaths(tool: AITool): string[] {
+    // Keep aligned with instructionRealitySync.ts rootFiles, but duplicated here.
+    switch (tool) {
+      case 'copilot': return ['.github/copilot-instructions.md'];
+      case 'cline': return ['.clinerules/default-rules.md'];
+      case 'cursor': return ['.cursorrules'];
+      case 'claude': return ['CLAUDE.md', '.claude/CLAUDE.md'];
+      case 'roo': return ['.roorules', '.roomodes'];
+      case 'windsurf': return ['AGENTS.md'];
+      case 'aider': return ['.aider.conf.yml'];
+      default: return ['.github/copilot-instructions.md'];
+    }
+  }
+
+  private getRootInstructionFact(
+    report: ReadinessReport,
+    tool: AITool,
+    allSignals: SignalResult[],
+  ): { present: boolean; files: string[]; canonicalPaths: string[] } {
+    const canonicalPaths = this.getCanonicalRootInstructionPaths(tool);
+
+    // Source 1: primary signal for this platform
+    const rootSignalId = this.getRootSignalId(tool);
+    const rootSignal = allSignals.find(s => s.signalId === rootSignalId);
+    const signalPresent = rootSignal?.detected ?? false;
+    const signalFiles = rootSignal?.files ?? [];
+
+    // Source 2: structureComparison existence checks (also filesystem-verified)
+    const scMatches = (report.structureComparison?.expected ?? [])
+      .filter(e => e.exists)
+      .filter(e => canonicalPaths.includes(e.path) || (e.actualPath ? canonicalPaths.includes(e.actualPath) : false));
+    const scFiles = scMatches.map(e => e.actualPath || e.path).filter(Boolean);
+
+    const present = signalPresent || scMatches.length > 0;
+    const files = [...new Set([
+      ...signalFiles,
+      ...scFiles,
+      ...(present ? canonicalPaths : []),
+    ])].filter(Boolean);
+
+    return { present, files, canonicalPaths };
+  }
+
+  private sanitizeNarrativeText(
+    dimension: string,
+    narrative: string,
+    score: number,
+    rootInstructionFact: { present: boolean; files: string[]; canonicalPaths: string[] },
+  ): string {
+    if (rootInstructionFact.present && this.containsRootAbsenceClaim(narrative)) {
+      logger.warn(
+        `NarrativeGenerator: narrative contradicts ground truth — root instruction file EXISTS (${rootInstructionFact.files.join(', ')}) ` +
+        `but narrative claims absence (dimension: ${dimension}). Patching.`
+      );
+      return dimension === 'Instruction/Reality Sync'
+        ? this.correctedIQSyncNarrative(true, rootInstructionFact.files, score)
+        : this.correctedNonIQNarrative(dimension, score, rootInstructionFact, 'present');
+    }
+
+    if (!rootInstructionFact.present && this.containsRootPresenceClaim(narrative)) {
+      logger.warn(
+        `NarrativeGenerator: narrative contradicts ground truth — root instruction file NOT detected (${rootInstructionFact.canonicalPaths.join(', ')}) ` +
+        `but narrative claims presence (dimension: ${dimension}). Patching.`
+      );
+      return dimension === 'Instruction/Reality Sync'
+        ? this.correctedIQSyncNarrative(false, [], score)
+        : this.correctedNonIQNarrative(dimension, score, rootInstructionFact, 'absent');
+    }
+
+    return narrative;
+  }
+
+  private correctedNonIQNarrative(
+    dimension: string,
+    score: number,
+    rootInstructionFact: { present: boolean; files: string[]; canonicalPaths: string[] },
+    status: 'present' | 'absent',
+  ): string {
+    const base = this.defaultNarrative(dimension, score).replace(/\.$/, '');
+    const fileDesc = rootInstructionFact.files.length
+      ? rootInstructionFact.files.join(', ')
+      : rootInstructionFact.canonicalPaths.join(', ');
+
+    if (status === 'present') {
+      return `${base}; root instruction file (${fileDesc}) is present.`;
+    }
+    return `${base}; no root instruction file detected (expected ${rootInstructionFact.canonicalPaths.join(', ')}).`;
+  }
+
   /** Map tool to its primary root instruction signal ID */
   private getRootSignalId(tool: AITool): string {
     const map: Record<AITool, string> = {
@@ -431,25 +613,54 @@ Respond as JSON array:
   }
 
   /** Check if narrative claims the root instruction file is absent/missing */
-  private containsRootAbsenceClaim(narrative: string): boolean {
-    const patterns = [
-      /absence\s+of\s+(?:a\s+)?(?:root|primary|main|\.github\/copilot|copilot)/i,
-      /(?:root|primary|main)\s+instruction\s+(?:file\s+)?(?:is\s+)?(?:missing|absent|not\s+(?:present|found|detected))/i,
-      /(?:missing|absent)\s+(?:a\s+)?(?:root|primary|main)\s+instruction/i,
-      /\bno\s+(?:root|primary|main)\s+instruction\s+file/i,
-      /copilot-instructions(?:\.md)?\s+(?:is\s+)?(?:missing|absent|not\s+(?:present|found|detected))/i,
-      /without\s+(?:a\s+)?(?:root|primary|main)\s+instruction/i,
+  containsRootAbsenceClaim(narrative: string): boolean {
+    const lower = narrative.toLowerCase();
+    // Fast path: skip if no instruction-related keyword is present
+    const keywords = ['instruction', 'copilot-instructions', 'copilot_instructions',
+      '.clinerules', '.cursorrules', 'claude.md', 'agents.md', '.aider'];
+    if (!keywords.some(k => lower.includes(k))) return false;
+
+    const rootPresenceKeywords = /\b(?:present|exists|found|detected|provides|available|well-structured|solid|strong|in\s+place)\b/i;
+    const scopedGapKeywords = /\b(?:scoped|component(?:-level)?|individual\s+components?|specific\s+directories?|submodules?|sub-projects?)\b/i;
+
+    // Valid pattern: root instruction exists, but scoped/component guidance is missing.
+    if (rootPresenceKeywords.test(narrative) && scopedGapKeywords.test(narrative)) {
+      return false;
+    }
+
+    // ── Prong 1: Keyword overlap ──
+    // If the narrative contains BOTH a negative keyword AND an instruction-file reference,
+    // the LLM is claiming absence regardless of exact phrasing.
+    const negativeKeywords = /\b(?:absence|absent|lack\b|lacking|lacks|missing|not\s+found|without|no\s+root|does\s+not|doesn't|no\s+dedicated|not\s+present|not\s+detected|not\s+configured|not\s+available|unavailable|not\s+been|not\s+include|not\s+have|not\s+contain|no\s+root-level|currently\s+no|there\s+is\s+no|has\s+no|no\s+main|no\s+primary)\b/i;
+    const instructionFileRef = /(?:copilot-instructions|instructions\.md|root(?:-level)?\s+instruction(?:\s+file)?|primary\s+instruction(?:\s+file)?|main\s+instruction(?:\s+file)?)/i;
+    if (negativeKeywords.test(narrative) && instructionFileRef.test(narrative)) {
+      return true;
+    }
+
+    // ── Prong 2: Negation patterns ──
+    // "not" + state verb + instruction-related noun
+    const negationPatterns = [
+      /\bnot\s+(?:been\s+)?(?:configured|set\s*up|present|detected|found|created|established|available)\b[^.]*?(?:copilot|instruction)/i,
+      /(?:copilot|instruction)[^.]*?\bnot\s+(?:been\s+)?(?:configured|set\s*up|present|detected|found|created|established|available)\b/i,
+      /\bno\s+(?:main|primary|root)(?:-level)?\s+instruction(?:\s+file)?\b[^.]*?(?:set\s*up|configured|present|available)?/i,
+      /\bno\s+copilot-instructions(?:\.md)?\b[^.]*?(?:set\s*up|configured|present|available|created|established|found|detected)?/i,
+      /\blacks?\b[^.]*?(?:copilot|instruction)/i,
     ];
-    return patterns.some(p => p.test(narrative));
+    if (negationPatterns.some(p => p.test(narrative))) {
+      return true;
+    }
+
+    return false;
   }
 
   /** Check if narrative claims root instruction file exists when it doesn't */
   private containsRootPresenceClaim(narrative: string): boolean {
     const lower = narrative.toLowerCase();
-    if (lower.includes('not ') || lower.includes('missing') || lower.includes('absent') || lower.includes('no ')) {
+    if ((lower.includes('not ') || lower.includes('missing') || lower.includes('absent') || lower.includes('no '))
+      && !/\b(?:root|primary|main)\s+instruction(?:\s+file)?\s+(?:provides|is\s+present|exists|found|detected|available|well-structured|solid|strong|in\s+place)/i.test(narrative)) {
       return false;
     }
-    return /(?:root|primary|main)\s+instruction\s+(?:file\s+)?(?:is\s+)?(?:present|exists|detected|found|in\s+place)/i.test(narrative);
+    return /(?:root|primary|main)\s+instruction(?:\s+file)?\s+(?:is\s+)?(?:present|exists|detected|found|available|provides|well-structured|solid|strong|in\s+place)/i.test(narrative);
   }
 
   /** Generate a deterministic, factually correct IQ Sync narrative */
@@ -480,4 +691,41 @@ Respond as JSON array:
       return JSON.parse(match[0]);
     } catch { return null; }
   }
+}
+
+/**
+ * Reusable narrative fact-checker.
+ * Validates ANY narrative text against structural signals and replaces factual
+ * contradictions with corrected versions.
+ *
+ * Signal-based rules:
+ *  - If a signal is `detected: true` but the narrative claims it is absent/missing → correct
+ *  - If a signal is `detected: false` but the narrative claims it exists → correct
+ */
+export function validateNarrativeAgainstSignals(narrative: string, signals: SignalResult[]): string {
+  if (!narrative || !signals?.length) return narrative;
+
+  const gen = new NarrativeGenerator(null as any); // only uses non-LLM helpers
+
+  let result = narrative;
+
+  for (const signal of signals) {
+    const fileRef = signal.files?.[0] ?? signal.signalId;
+
+    if (signal.detected && gen.containsRootAbsenceClaim(result)) {
+      // Signal detected but narrative claims absence → patch
+      result = result.replace(
+        // Replace the contradicting sentence
+        /[^.]*(?:absence|absent|lack(?:ing)?|missing|not\s+found|without|no\s+root|does\s+not|doesn't|not\s+present|not\s+detected|not\s+configured|not\s+available|unavailable)[^.]*(?:copilot-instructions|instructions\.md|root\s+instruction|primary\s+instruction|main\s+instruction)[^.]*/i,
+        `The root instruction file (${fileRef}) is present and detected`,
+      );
+      // Also try the reverse word-order (instruction ref appears first)
+      result = result.replace(
+        /[^.]*(?:copilot-instructions|instructions\.md|root\s+instruction|primary\s+instruction|main\s+instruction)[^.]*(?:absence|absent|lack(?:ing)?|missing|not\s+found|without|no\s+root|does\s+not|doesn't|not\s+present|not\s+detected|not\s+configured|not\s+available|unavailable)[^.]*/i,
+        `The root instruction file (${fileRef}) is present and detected`,
+      );
+    }
+  }
+
+  return result;
 }

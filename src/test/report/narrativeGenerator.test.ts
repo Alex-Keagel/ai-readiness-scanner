@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NarrativeGenerator } from '../../report/narrativeGenerator';
+import { NarrativeGenerator, validateNarrativeAgainstSignals } from '../../report/narrativeGenerator';
 
 const mockClient = {
   analyze: async (prompt: string) => {
@@ -172,7 +172,7 @@ describe('NarrativeGenerator', () => {
       analyzeFast: async (prompt: string) => {
         if (prompt.includes('GROUND TRUTH') || prompt.includes('platform readiness')) {
           return JSON.stringify([
-            { dimension: 'Business Logic Alignment', narrative: 'Good alignment.' },
+            { dimension: 'Business Logic Alignment', narrative: 'Despite the absence of a root copilot-instructions.md, the project shows good alignment.' },
             { dimension: 'Type & Environment Strictness', narrative: 'Strong types.' },
             { dimension: 'Semantic Density', narrative: 'Good density.' },
             { dimension: 'Instruction/Reality Sync', narrative: 'The absence of a root .github/copilot-instructions.md significantly weakens agent guidance for this project.' },
@@ -216,6 +216,11 @@ describe('NarrativeGenerator', () => {
 
     // It SHOULD acknowledge the file exists
     expect(iqSync!.narrative).toMatch(/present|exists|found|detected/i);
+
+    // And contradictions in OTHER metrics should also be patched
+    const bla = result.platformReadiness.find(m => m.dimension === 'Business Logic Alignment');
+    expect(bla).toBeDefined();
+    expect(bla!.narrative).not.toMatch(/absence|absent|missing/i);
   });
 
   it('IQ Sync narrative handles various absence claim patterns', () => {
@@ -242,6 +247,116 @@ describe('NarrativeGenerator', () => {
     }
   });
 
+  it('catches LLM paraphrase variants of absence claims', () => {
+    const expandedPatterns = [
+      'The lack of a root copilot-instructions.md limits guidance',
+      'Despite lacking a comprehensive copilot-instructions.md',
+      'The absence of a comprehensive copilot-instructions.md limits agent guidance',
+      'The absence of a well-defined copilot-instructions.md',
+      'copilot-instructions.md has not been configured for this project',
+      'Currently no copilot-instructions.md is available',
+      'The project does not include a copilot-instructions.md',
+      'there is no copilot-instructions.md in the repository',
+      'A copilot-instructions.md file is not present',
+      'copilot-instructions.md was not found in the project',
+      'the repository has no dedicated copilot-instructions.md',
+    ];
+
+    for (const badNarrative of expandedPatterns) {
+      const caught = (gen as any).containsRootAbsenceClaim(badNarrative);
+      expect(caught, `Regex failed to catch: "${badNarrative}"`).toBe(true);
+    }
+  });
+
+  it('catches 15+ LLM phrasings of root instruction absence', () => {
+    const phrasings = [
+      // Original set
+      'Despite the absence of a root copilot-instructions.md, the project is well structured.',
+      'The lack of a root copilot-instructions.md weakens guidance significantly.',
+      'Lacking a root copilot-instructions.md, agents receive no project-level context.',
+      'The project does not include a copilot-instructions.md file.',
+      'copilot-instructions.md was not found in the repository.',
+      'Without a dedicated root instruction file, the agent has limited context.',
+      'No root-level copilot-instructions.md was detected for this project.',
+      // New variants
+      'The root instruction file is missing from the project.',
+      'copilot-instructions.md is not available in this workspace.',
+      'copilot-instructions.md is absent from the project root.',
+      'A root copilot-instructions.md has not been set up yet.',
+      'The repository doesn\'t have a copilot-instructions.md.',
+      'copilot-instructions.md has not been created for this project.',
+      'There is currently no root instruction file configured.',
+      'The project lacks a root instructions.md file.',
+      'copilot-instructions.md is not detected anywhere in the repository.',
+      'The primary instruction file is not present in this project.',
+      'No copilot-instructions.md was established for agent guidance.',
+    ];
+
+    for (const phrasing of phrasings) {
+      const caught = (gen as any).containsRootAbsenceClaim(phrasing);
+      expect(caught, `Failed to catch: "${phrasing}"`).toBe(true);
+    }
+    // Sanity: we tested more than 15 phrasings
+    expect(phrasings.length).toBeGreaterThanOrEqual(15);
+  });
+
+  it('does NOT flag valid narratives about scoped instruction gaps', () => {
+    const validNarratives = [
+      'Root instruction file provides basic guidance but scoped instructions are missing for individual components.',
+      'The copilot-instructions.md is present and well-structured, but component-level instructions are absent.',
+      'While the root instruction exists, specific directories lack dedicated guidance files.',
+      'Instruction coverage is strong at the root level but missing at the component level.',
+      'The project has a solid copilot-instructions.md; consider adding scoped context for submodules.',
+    ];
+
+    for (const validNarrative of validNarratives) {
+      const caught = (gen as any).containsRootAbsenceClaim(validNarrative);
+      expect(caught, `False positive for: "${validNarrative}"`).toBe(false);
+    }
+  });
+
+  it('cached report with stale contradiction gets repaired via sanitizeNarrativeSections', () => {
+    const report = makeReport({
+      narrativeSections: {
+        platformReadiness: [
+          { dimension: 'Instruction/Reality Sync', narrative: 'The absence of copilot-instructions.md weakens agent guidance.', score: 45, label: 'warning' },
+          { dimension: 'Business Logic Alignment', narrative: 'Good alignment.', score: 60, label: 'strong' },
+        ],
+        toolingHealth: { status: 'OK', items: [] },
+        frictionMap: [],
+      },
+    });
+
+    const changed = gen.sanitizeNarrativeSections(report);
+    expect(changed).toBe(true);
+
+    const iqSync = report.narrativeSections!.platformReadiness.find(
+      (m: any) => m.dimension === 'Instruction/Reality Sync',
+    );
+    expect(iqSync).toBeDefined();
+    expect(iqSync!.narrative).toMatch(/present|exists/i);
+    expect(iqSync!.narrative).not.toMatch(/absence|absent|missing/i);
+  });
+
+  it('cached report with valid narrative is NOT modified by sanitizeNarrativeSections', () => {
+    const report = makeReport({
+      narrativeSections: {
+        platformReadiness: [
+          {
+            dimension: 'Instruction/Reality Sync',
+            narrative: 'Root instruction file (.github/copilot-instructions.md) exists but would benefit from enrichment.',
+            score: 45, label: 'warning',
+          },
+        ],
+        toolingHealth: { status: 'OK', items: [] },
+        frictionMap: [],
+      },
+    });
+
+    const changed = gen.sanitizeNarrativeSections(report);
+    expect(changed).toBe(false);
+  });
+
   it('IQ Sync narrative allows valid absence claims for scoped instructions', () => {
     // Narrative about SCOPED instructions being absent (while root exists) should NOT be patched
     const validNarrative = 'Root instruction file provides basic guidance but scoped instructions are missing for individual components.';
@@ -253,5 +368,32 @@ describe('NarrativeGenerator', () => {
     );
 
     expect(result[0].narrative).toBe(validNarrative);
+  });
+});
+
+describe('validateNarrativeAgainstSignals', () => {
+  it('corrects a contradicting narrative when signal is detected', () => {
+    const narrative = 'The absence of copilot-instructions.md weakens agent guidance.';
+    const signals = [
+      { signalId: 'copilot_instructions', detected: true, files: ['.github/copilot-instructions.md'], level: 2, score: 70, finding: 'Found', confidence: 'high' as const },
+    ];
+    const result = validateNarrativeAgainstSignals(narrative, signals);
+    expect(result).not.toMatch(/absence/i);
+    expect(result).toMatch(/present|detected/i);
+  });
+
+  it('leaves valid narrative unchanged', () => {
+    const narrative = 'Root instruction file is present and well-integrated.';
+    const signals = [
+      { signalId: 'copilot_instructions', detected: true, files: ['.github/copilot-instructions.md'], level: 2, score: 70, finding: 'Found', confidence: 'high' as const },
+    ];
+    const result = validateNarrativeAgainstSignals(narrative, signals);
+    expect(result).toBe(narrative);
+  });
+
+  it('handles empty signals array', () => {
+    const narrative = 'Some narrative text.';
+    const result = validateNarrativeAgainstSignals(narrative, []);
+    expect(result).toBe(narrative);
   });
 });
