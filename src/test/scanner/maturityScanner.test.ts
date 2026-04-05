@@ -7,6 +7,7 @@ import {
   applySemanticDensitySampleGate,
   filterRootFiles,
   selectRepresentativeSemanticDensitySample,
+  isMonorepoRootScopedSemanticDensityPath,
 } from '../../scanner/maturityScanner';
 import { RealityChecker } from '../../scanner/realityChecker';
 
@@ -211,5 +212,28 @@ describe('semantic density sampling helpers', () => {
     expect(sample.some(file => file.language === 'python')).toBe(true);
     expect(sample.some(file => file.size === 10 || file.size === 15)).toBe(true);
     expect(sample.some(file => file.size === 40 || file.size === 45)).toBe(true);
+  });
+});
+
+describe('isMonorepoRootScopedSemanticDensityPath', () => {
+  it('accepts root-level files (no directory separator)', () => {
+    expect(isMonorepoRootScopedSemanticDensityPath('test_crs.py', [])).toBe(true);
+    expect(isMonorepoRootScopedSemanticDensityPath('conftest.py', [])).toBe(true);
+  });
+
+  it('rejects sub-directory files when no root-scoped paths exist', () => {
+    expect(isMonorepoRootScopedSemanticDensityPath('risk-register/src/app.ts', [])).toBe(false);
+    expect(isMonorepoRootScopedSemanticDensityPath('src/utils.py', [])).toBe(false);
+  });
+
+  it('accepts files under explicitly listed root-scoped paths', () => {
+    const rootPaths = ['src'];
+    expect(isMonorepoRootScopedSemanticDensityPath('src/utils.py', rootPaths)).toBe(true);
+    expect(isMonorepoRootScopedSemanticDensityPath('src/deep/nested.ts', rootPaths)).toBe(true);
+  });
+
+  it('rejects sub-project files even when other root-scoped paths exist', () => {
+    const rootPaths = ['src'];
+    expect(isMonorepoRootScopedSemanticDensityPath('risk-register/src/app.ts', rootPaths)).toBe(false);
   });
 });

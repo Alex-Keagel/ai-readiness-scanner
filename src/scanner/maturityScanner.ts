@@ -200,6 +200,7 @@ export class MaturityScanner {
         ? appComponents
           .filter(c => !c.parentPath && !c.path.includes('/'))
           .map(c => normalizeSemanticDensityPath(c.path))
+          .filter(p => !subProjectPaths.some(sp => normalizeRepoPath(sp) === p))
         : [];
       const appPaths = context.projectType === 'monorepo'
         ? rootScopedAppPaths

@@ -249,16 +249,26 @@ export class MaturityEngine {
       const subProjectPaths = this.collectMonorepoSubProjectPaths(projectContext, levels);
 
       let monorepoLevel: MaturityLevel = 1;
+      // Regex to match synthetic tool-level signal IDs: {tool}_l{N}_{category}
+      const syntheticIdPattern = new RegExp(`^${toolKey}_l\\d+_`);
       for (let i = 1; i < levels.length; i++) {
         if (!levels[i].qualified) break;
         const criticalSignals = levels[i].signals.filter(s =>
-          signalClasses[s.signalId] === 'critical'
+          signalClasses[s.signalId] === 'critical' || syntheticIdPattern.test(s.signalId)
         );
         // Critical signals must be detected AND their files must be at root, not inside sub-projects
         if (criticalSignals.length > 0) {
           const rootDetected = criticalSignals.every(s => {
             if (!s.detected) return false;
-            // If signal has files, at least one must NOT be inside a sub-project
+            // Synthetic tool-level signals are file-presence based — they MUST have
+            // root-level files to prove the capability exists at root. An empty files
+            // array means the scanner found nothing; treat as not root-detected even
+            // if the LLM hallucinated detected:true.
+            if (syntheticIdPattern.test(s.signalId)) {
+              return s.files && s.files.length > 0 &&
+                s.files.some(f => !([...subProjectPaths].some(sp => f.startsWith(sp + '/'))));
+            }
+            // Canonical signals with files: at least one must NOT be inside a sub-project
             if (s.files && s.files.length > 0) {
               return s.files.some(f => !([...subProjectPaths].some(sp => f.startsWith(sp + '/'))));
             }

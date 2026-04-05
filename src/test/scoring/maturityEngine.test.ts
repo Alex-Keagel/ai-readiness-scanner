@@ -529,6 +529,56 @@ describe('Monorepo gating', () => {
     expect(report.primaryLevel).toBeLessThanOrEqual(2);
   });
 
+  // ── AppSec-exact scenario: synthetic signal IDs from batch evaluation ──
+
+  it('caps monorepo root to L1 when synthetic tool-level signals have no files (AppSec scenario)', () => {
+    // This reproduces the ACTUAL scanner output: batch evaluation produces
+    // synthetic IDs like copilot_l2_instructions, NOT canonical copilot_instructions.
+    // Root has NO .github/ → synthetic tool signals have detected:false, files:[].
+    // Shared signals (README, .gitignore) are detected at L2.
+    const l2Signals = [
+      makeSignal({ signalId: 'copilot_l2_instructions', level: 2, detected: false, score: 0, files: [] }),
+      makeSignal({ signalId: 'project_structure_doc', level: 2, detected: true, score: 70, files: ['README.md'] }),
+      makeSignal({ signalId: 'conventions_documented', level: 2, detected: true, score: 50, files: ['.editorconfig'] }),
+      makeSignal({ signalId: 'ignore_files', level: 2, detected: true, score: 60, files: ['.gitignore'] }),
+    ];
+    const l3Signals = [
+      makeSignal({ signalId: 'copilot_l3_skills_and_tools', level: 3, detected: false, score: 0, files: [] }),
+      makeSignal({ signalId: 'instruction_accuracy', level: 3, detected: true, score: 55, files: ['README.md'] }),
+    ];
+
+    const report = engine.calculateReport(
+      'appsec-synthetic-ids', buildLevels(l2Signals, l3Signals), monorepoContext,
+      [], defaultLanguages, 'test', 'full', 'copilot',
+    );
+
+    // Root has no .github/ — synthetic tool signal detected:false should cap at L1
+    expect(report.primaryLevel).toBe(1);
+  });
+
+  it('caps monorepo root to L1 when LLM hallucinates detection with empty files', () => {
+    // Edge case: LLM returns detected:true for a level with NO actual files.
+    // The synthetic signal has files:[] — the monorepo correction must NOT
+    // let this pass through the "no files = codebase signal" path.
+    const l2Signals = [
+      makeSignal({ signalId: 'copilot_l2_instructions', level: 2, detected: true, score: 50, files: [] }),
+      makeSignal({ signalId: 'project_structure_doc', level: 2, detected: true, score: 70, files: ['README.md'] }),
+      makeSignal({ signalId: 'ignore_files', level: 2, detected: true, score: 60, files: ['.gitignore'] }),
+    ];
+    const l3Signals = [
+      makeSignal({ signalId: 'copilot_l3_skills_and_tools', level: 3, detected: true, score: 40, files: [] }),
+      makeSignal({ signalId: 'instruction_accuracy', level: 3, detected: true, score: 55, files: ['README.md'] }),
+    ];
+
+    const report = engine.calculateReport(
+      'appsec-hallucinated', buildLevels(l2Signals, l3Signals), monorepoContext,
+      [], defaultLanguages, 'test', 'full', 'copilot',
+    );
+
+    // LLM hallucinated detection with no files — must still cap at L1
+    expect(report.primaryLevel).toBe(1);
+  });
+
   it('non-monorepo projects are not affected by monorepo gating', () => {
     const appContext: ProjectContext = {
       ...monorepoContext,
