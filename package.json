@@ -376,7 +376,8 @@
     "bump:patch": "node scripts/bump-version.js patch",
     "bump:minor": "node scripts/bump-version.js minor",
     "bump:major": "node scripts/bump-version.js major",
-    "release": "npm run build && npm run test && npm run bump && npm run package"
+    "release": "npm run build && npm run test && npm run bump && npm run package",
+    "prepare": "husky"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
@@ -391,6 +392,7 @@
     "d3-zoom": "^3.0.0",
     "esbuild": "^0.24.0",
     "eslint": "^9.0.0",
+    "husky": "^9.1.7",
     "typescript": "^5.5.0",
     "vitest": "^4.1.1"
   },
