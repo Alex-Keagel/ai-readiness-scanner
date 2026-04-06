@@ -5,6 +5,7 @@ trigger:
   branches:
     include:
       - main
+      - feature/ai-readiness-scanner
   paths:
     include:
       - 'ai-readiness-scanner-vs-code-extension/**'
@@ -22,7 +23,10 @@ pool:
 
 variables:
   nodeVersion: '20.x'
-  workingDir: 'ai-readiness-scanner-vs-code-extension'
+  ${{ if eq(variables['Build.SourceBranch'], 'refs/heads/feature/ai-readiness-scanner') }}:
+    workingDir: '.'
+  ${{ else }}:
+    workingDir: 'ai-readiness-scanner-vs-code-extension'
 
 stages:
   - stage: Build
@@ -80,8 +84,6 @@ stages:
               artifactName: 'vsix'
               downloadPath: '$(System.ArtifactsDirectory)'
 
-          # Publish as Universal Package to ADO artifact feed
-          # Prerequisites: Create a feed named 'ai-readiness-scanner' in ADO Artifacts
           - task: UniversalPackages@0
             inputs:
               command: 'publish'
