@@ -9,7 +9,6 @@ import { RemediationEngine } from './remediation/remediationEngine';
 import { CopilotClient } from './llm/copilotClient';
 import { MultiModelClient } from './llm/multiModelClient';
 import { ReadinessReport, MATURITY_LEVELS, AITool, AI_TOOLS } from './scoring/types';
-import { classifyFixes } from './remediation/fixClassifier';
 import { MigrationEngine } from './remediation/migrationEngine';
 import { InsightsEngine } from './scoring/insightsEngine';
 import { RepoMap } from './scanner/repoMapper';
@@ -620,6 +619,27 @@ export function activate(context: vscode.ExtensionContext) {
         const repaired = repairNarrativeSections(report, 'exportGraph');
         if (repaired) {
           await runStorage.updateLatestReport(report);
+        }
+
+        // Defense-in-depth: final text-level guard on IQ Sync narrative.
+        // If repair failed silently or ran with stale code, catch the contradiction here.
+        const iqSyncMetric = report.narrativeSections?.platformReadiness?.find(
+          (m: any) => m.dimension === 'Instruction/Reality Sync',
+        );
+        if (iqSyncMetric) {
+          const narrativeGen = new NarrativeGenerator(copilotClient);
+          if ((narrativeGen as any).containsRootAbsenceClaim(iqSyncMetric.narrative)) {
+            const tool = report.selectedTool as AITool;
+            const allSignals = report.levels?.flatMap((l: any) => l.signals) ?? [];
+            const rootFact = (narrativeGen as any).getRootInstructionFact(report, tool, allSignals);
+            if (rootFact.present) {
+              logger.warn('exportGraph: IQ Sync narrative STILL claims absence after repair — forcing deterministic override');
+              iqSyncMetric.narrative = (narrativeGen as any).correctedIQSyncNarrative(
+                true, rootFact.files, iqSyncMetric.score, tool, rootFact.canonicalPaths[0],
+              );
+              await runStorage.updateLatestReport(report);
+            }
+          }
         }
 
         const exportData = {

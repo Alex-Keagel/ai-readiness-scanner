@@ -127,6 +127,67 @@ describe('sanitizeFinding', () => {
   });
 });
 
+describe('batch tool-level LLM grounding', () => {
+  it('ignores levels that were not requested by scanner file discovery', () => {
+    const scanner = new MaturityScanner({ getModelName: () => 'test-model' } as any, {} as any, {} as any);
+    const levelFiles = new Map<number, any>([
+      [2, []],
+      [3, [{ path: '/repo/.github/agents/root.agent.md', relativePath: '.github/agents/root.agent.md', content: 'root agent content' }]],
+      [4, []],
+      [5, []],
+    ]);
+    const response = JSON.stringify([
+      { level: 3, detected: true, score: 81, finding: 'Found root skills', confidence: 'high' },
+      { level: 9, detected: true, score: 99, finding: 'Injected synthetic level', confidence: 'high' },
+    ]);
+
+    const results = (scanner as any).parseBatchResponse('copilot', response, levelFiles, new Map());
+
+    expect(results.some((result: any) => result.signalId === 'copilot_l9_unknown')).toBe(false);
+    expect(results.find((result: any) => result.level === 3)?.detected).toBe(true);
+  });
+
+  it('overrides copilot L2 detection when only nested instructions are present', () => {
+    const scanner = new MaturityScanner({ getModelName: () => 'test-model' } as any, {} as any, {} as any);
+    const levelFiles = new Map<number, any>([
+      [2, [{ path: '/repo/packages/api/.github/copilot-instructions.md', relativePath: 'packages/api/.github/copilot-instructions.md', content: 'nested instructions' }]],
+      [3, []],
+      [4, []],
+      [5, []],
+    ]);
+    const response = JSON.stringify([
+      { level: 2, detected: true, score: 95, finding: 'Found instructions', confidence: 'high' },
+    ]);
+
+    const results = (scanner as any).parseBatchResponse('copilot', response, levelFiles, new Map());
+    const l2 = results.find((result: any) => result.level === 2);
+
+    expect(l2?.detected).toBe(false);
+    expect(l2?.score).toBe(0);
+    expect(l2?.files).toEqual([]);
+  });
+
+  it('keeps copilot L2 detection when the root instruction file exists', () => {
+    const scanner = new MaturityScanner({ getModelName: () => 'test-model' } as any, {} as any, {} as any);
+    const levelFiles = new Map<number, any>([
+      [2, [{ path: '/repo/.github/copilot-instructions.md', relativePath: '.github/copilot-instructions.md', content: 'root instructions' }]],
+      [3, []],
+      [4, []],
+      [5, []],
+    ]);
+    const response = JSON.stringify([
+      { level: 2, detected: true, score: 95, finding: 'Found root instructions', confidence: 'high' },
+    ]);
+
+    const results = (scanner as any).parseBatchResponse('copilot', response, levelFiles, new Map());
+    const l2 = results.find((result: any) => result.level === 2);
+
+    expect(l2?.detected).toBe(true);
+    expect(l2?.score).toBe(95);
+    expect(l2?.files).toEqual(['.github/copilot-instructions.md']);
+  });
+});
+
 describe('applyLlmProcCorrection', () => {
   it('caps documentation inflation to 1.5x before applying it', () => {
     const corrected = applyLlmProcCorrection(100, 40, 20, 4, 20, 20);

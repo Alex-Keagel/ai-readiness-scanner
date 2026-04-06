@@ -262,6 +262,73 @@ describe('NarrativeGenerator', () => {
     expect(iqSync).toBeDefined();
     expect(iqSync!.narrative).toMatch(/present|exists|found|detected/i);
     expect(iqSync!.narrative).not.toMatch(/absence|absent|missing/i);
+    expect(iqSync!.narrative)
+      .toContain('The root .github/copilot-instructions.md provides foundational context for GitHub Copilot.');
+  });
+
+  it('IQ Sync narrative uses knowledgeGraph root instruction signals when level signals are missing', async () => {
+    const contradictingClient = {
+      analyze: async () => '[]',
+      analyzeFast: async (prompt: string) => {
+        if (prompt.includes('GROUND TRUTH') || prompt.includes('platform readiness')) {
+          return JSON.stringify([
+            { dimension: 'Business Logic Alignment', narrative: 'Despite the absence of a root copilot-instructions.md, alignment is decent.' },
+            { dimension: 'Type & Environment Strictness', narrative: 'Strong types.' },
+            { dimension: 'Semantic Density', narrative: 'Good density.' },
+            { dimension: 'Instruction/Reality Sync', narrative: 'No root instruction file is present in this repository.' },
+            { dimension: 'Context Efficiency', narrative: 'Moderate coverage.' },
+          ]);
+        }
+        if (prompt.includes('tooling ecosystem')) {
+          return JSON.stringify({ status: 'OK', items: [] });
+        }
+        if (prompt.includes('Friction Map')) {
+          return JSON.stringify([{ title: 'Step 1', narrative: 'Do something.', actions: [] }]);
+        }
+        return '[]';
+      },
+    } as any;
+
+    const report = makeReport({
+      levels: [
+        { level: 1, name: 'Prompt-Only', rawScore: 80, qualified: true, signals: [], signalsDetected: 0, signalsTotal: 0 },
+        { level: 2, name: 'Instruction-Guided', rawScore: 65, qualified: true, signals: [], signalsDetected: 0, signalsTotal: 0 },
+      ],
+      structureComparison: undefined,
+      knowledgeGraph: {
+        nodes: [
+          {
+            id: 'signal-copilot_l2_instructions',
+            type: 'signal',
+            label: 'copilot_l2_instructions',
+            description: 'Found .github/copilot-instructions.md',
+            properties: { detected: true, score: 64 },
+          },
+          {
+            id: 'file-_github_copilot_instructions_md',
+            type: 'ai-file',
+            label: '.github/copilot-instructions.md',
+            properties: { tool: 'copilot', level: 2 },
+          },
+        ],
+        edges: [],
+        rootId: 'repo',
+        metadata: {
+          projectName: 'test-project',
+          scannedAt: new Date().toISOString(),
+          selectedTool: 'copilot',
+          nodeCount: 2,
+          edgeCount: 0,
+        },
+      },
+    });
+
+    const result = await new NarrativeGenerator(contradictingClient).generate(report);
+    const iqSync = result.platformReadiness.find(m => m.dimension === 'Instruction/Reality Sync');
+
+    expect(iqSync).toBeDefined();
+    expect(iqSync!.narrative).toMatch(/present|exists|found|detected/i);
+    expect(iqSync!.narrative).not.toMatch(/absence|absent|missing/i);
   });
 
   it('IQ Sync narrative handles various absence claim patterns', () => {
@@ -282,7 +349,7 @@ describe('NarrativeGenerator', () => {
       );
 
       expect(result[0].narrative, `Pattern not caught: "${badNarrative}"`)
-        .toMatch(/present|exists/i);
+        .toContain('The root .github/copilot-instructions.md provides foundational context for GitHub Copilot.');
       expect(result[0].narrative, `Still claims absence: "${badNarrative}"`)
         .not.toMatch(/absence|absent|missing/i);
     }
@@ -375,11 +442,12 @@ describe('NarrativeGenerator', () => {
       (m: any) => m.dimension === 'Instruction/Reality Sync',
     );
     expect(iqSync).toBeDefined();
-    expect(iqSync!.narrative).toMatch(/present|exists/i);
+    expect(iqSync!.narrative)
+      .toContain('The root .github/copilot-instructions.md provides foundational context for GitHub Copilot.');
     expect(iqSync!.narrative).not.toMatch(/absence|absent|missing/i);
   });
 
-  it('cached report with valid narrative is NOT modified by sanitizeNarrativeSections', () => {
+  it('cached report IQ Sync narrative is normalized to deterministic template', () => {
     const report = makeReport({
       narrativeSections: {
         platformReadiness: [
@@ -395,7 +463,9 @@ describe('NarrativeGenerator', () => {
     });
 
     const changed = gen.sanitizeNarrativeSections(report);
-    expect(changed).toBe(false);
+    expect(changed).toBe(true);
+    expect(report.narrativeSections!.platformReadiness[0].narrative)
+      .toContain('The root .github/copilot-instructions.md provides foundational context for GitHub Copilot.');
   });
 
   it('IQ Sync narrative allows valid absence claims for scoped instructions', () => {
@@ -442,13 +512,21 @@ describe('validateNarrativeAgainstSignals', () => {
 describe('DataPipelines IQ Sync contradiction (regression)', () => {
   const gen = new NarrativeGenerator(null as any);
 
-  // The EXACT phrase that was appearing in production for DataPipelines
+  // The EXACT phrases that have appeared in production for DataPipelines
   // despite .github/copilot-instructions.md existing (3116 bytes)
   const DATAPIPELINES_PHRASE = 'Existing README and convention documentation provide a strong surrogate knowledge base, but the absence of a root `.github/copilot-instructions.md` prevents a perfect alignment score.';
+
+  // V2 variant that appeared in the exported graph JSON (Apr 2026)
+  const DATAPIPELINES_PHRASE_V2 = 'While documentation like CLAUDE.md provides a strong baseline for coding conventions, the absence of a root-level .github/copilot-instructions.md prevents the agent from grounding these rules in the actual file system.';
 
   it('containsRootAbsenceClaim catches the exact DataPipelines phrase', () => {
     const caught = (gen as any).containsRootAbsenceClaim(DATAPIPELINES_PHRASE);
     expect(caught, `Failed to catch DataPipelines phrase`).toBe(true);
+  });
+
+  it('containsRootAbsenceClaim catches the V2 DataPipelines phrase from exported graph', () => {
+    const caught = (gen as any).containsRootAbsenceClaim(DATAPIPELINES_PHRASE_V2);
+    expect(caught, `Failed to catch DataPipelines V2 phrase`).toBe(true);
   });
 
   it('sanitizeNarrativeSections repairs the DataPipelines phrase in cached reports', () => {
@@ -484,6 +562,34 @@ describe('DataPipelines IQ Sync contradiction (regression)', () => {
       expect(step.narrative, `Friction step still claims absence`)
         .not.toMatch(/\babsence\b.*copilot-instructions/i);
     }
+  });
+
+  it('sanitizeNarrativeSections repairs the V2 DataPipelines phrase (exported graph variant)', () => {
+    const report = makeReport({
+      narrativeSections: {
+        platformReadiness: [
+          { dimension: 'Instruction/Reality Sync', narrative: DATAPIPELINES_PHRASE_V2, score: 69, label: 'strong' },
+          { dimension: 'Business Logic Alignment', narrative: 'Good alignment.', score: 74, label: 'strong' },
+          { dimension: 'Type & Environment Strictness', narrative: 'Strong types.', score: 64, label: 'strong' },
+          { dimension: 'Semantic Density', narrative: 'Good density.', score: 81, label: 'excellent' },
+          { dimension: 'Context Efficiency', narrative: 'Moderate coverage.', score: 80, label: 'excellent' },
+        ],
+        toolingHealth: { status: 'OK', items: [] },
+        frictionMap: [],
+      },
+    });
+
+    const changed = gen.sanitizeNarrativeSections(report);
+    expect(changed).toBe(true);
+
+    const iqSync = report.narrativeSections!.platformReadiness.find(
+      (m: any) => m.dimension === 'Instruction/Reality Sync',
+    );
+    expect(iqSync).toBeDefined();
+    // IQ Sync must be replaced with deterministic narrative confirming file exists
+    expect(iqSync!.narrative).toContain('provides foundational context');
+    expect(iqSync!.narrative).not.toMatch(/\babsence\b/i);
+    expect(iqSync!.narrative).not.toMatch(/\bmissing\b/i);
   });
 
   it('generate() never produces absence claims when signal is detected=true', async () => {
@@ -538,6 +644,8 @@ describe('DataPipelines IQ Sync contradiction (regression)', () => {
     const iqSync = result.platformReadiness.find(m => m.dimension === 'Instruction/Reality Sync');
     expect(iqSync).toBeDefined();
     expect(iqSync!.narrative).toMatch(/present|exists|found|detected/i);
+    expect(iqSync!.narrative)
+      .toContain('The root .github/copilot-instructions.md provides foundational context for GitHub Copilot.');
 
     // Tooling health
     expect(result.toolingHealth.status).not.toMatch(/\babsence\b/i);

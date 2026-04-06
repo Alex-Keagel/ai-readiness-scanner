@@ -22,12 +22,13 @@ export class NarrativeGenerator {
 
     const platformReadiness = (ns.platformReadiness || []).map(metric => {
       const nextNarrative = metric.dimension === 'Instruction/Reality Sync'
-        ? (this.validateIQSyncNarrative(
-          [{ dimension: metric.dimension, narrative: metric.narrative }],
+        ? this.correctedIQSyncNarrative(
           rootInstructionFact.present,
           rootInstructionFact.files,
           metric.score,
-        )?.[0].narrative ?? metric.narrative)
+          tool,
+          rootInstructionFact.canonicalPaths[0],
+        )
         : this.sanitizeNarrativeText(metric.dimension, metric.narrative, metric.score, rootInstructionFact);
 
       if (nextNarrative !== metric.narrative) changed = true;
@@ -239,7 +240,13 @@ Respond as JSON array:
 
         // Bulletproof: never allow the LLM to override root instruction presence/absence.
         let narrative = d.dimension === 'Instruction/Reality Sync'
-          ? this.correctedIQSyncNarrative(rootInstructionFact.present, rootInstructionFact.files, d.score)
+          ? this.correctedIQSyncNarrative(
+            rootInstructionFact.present,
+            rootInstructionFact.files,
+            d.score,
+            tool,
+            rootInstructionFact.canonicalPaths[0],
+          )
           : (narrativeByDimension.get(d.dimension) || this.defaultNarrative(d.dimension, d.score));
 
         narrative = this.sanitizeNarrativeText(d.dimension, narrative, d.score, rootInstructionFact);
@@ -481,9 +488,11 @@ Respond as JSON array:
     allSignals: SignalResult[],
   ): { present: boolean; files: string[]; canonicalPaths: string[]; finding: string } {
     const canonicalPaths = this.getCanonicalRootInstructionPaths(tool);
+    const canonicalNorm = new Set(canonicalPaths.map(p => this.normalizePathLike(p)));
 
     // Source 1: primary/root signal(s) for this platform, including synthetic aliases
     const rootSignalIds = this.getRootSignalIds(tool);
+    const rootSignalNorm = new Set(rootSignalIds.map(id => this.normalizePathLike(id)));
     const rootSignals = allSignals.filter(s => rootSignalIds.includes(s.signalId));
     const signalPresent = rootSignals.some(s => s.detected);
     const signalFiles = rootSignals
@@ -503,20 +512,82 @@ Respond as JSON array:
       .filter(e => canonicalPaths.includes(e.path) || (e.actualPath ? canonicalPaths.includes(e.actualPath) : false));
     const scFiles = scMatches.map(e => e.actualPath || e.path).filter(Boolean);
 
-    const present = signalPresent || fileMatchPresent || scMatches.length > 0;
+    // Source 4: knowledge graph signal/file nodes (used by graph export flow)
+    const kgNodes = this.getKnowledgeGraphNodes(report);
+    const kgSignalNodes = kgNodes.filter(node =>
+      node.type === 'signal' && (
+        rootSignalNorm.has(this.normalizePathLike(node.label))
+        || rootSignalNorm.has(this.normalizePathLike((node.id || '').replace(/^signal-/, '')))
+      ),
+    );
+    const kgSignalPresent = kgSignalNodes.some(node => this.getNodeDetected(node.properties));
+    const kgSignalFiles = kgSignalNodes.flatMap(node => this.getNodeFiles(node.properties));
+
+    const kgFileNodes = kgNodes.filter(node => {
+      if (node.type !== 'ai-file') return false;
+      const normalizedLabel = this.normalizePathLike(node.label);
+      const normalizedId = this.normalizePathLike((node.id || '').replace(/^file-/, ''));
+      return canonicalNorm.has(normalizedLabel) || canonicalNorm.has(normalizedId);
+    });
+    const kgFileFiles = kgFileNodes
+      .map(node => {
+        const labelNorm = this.normalizePathLike(node.label);
+        if (canonicalNorm.has(labelNorm)) return node.label;
+        const idNorm = this.normalizePathLike((node.id || '').replace(/^file-/, ''));
+        return canonicalPaths.find(p => this.normalizePathLike(p) === idNorm) || '';
+      })
+      .filter(Boolean);
+
+    const present =
+      signalPresent
+      || fileMatchPresent
+      || scMatches.length > 0
+      || kgSignalPresent
+      || kgFileNodes.length > 0;
     const files = [...new Set([
       ...signalFiles,
       ...fileMatchFiles,
       ...scFiles,
+      ...kgSignalFiles,
+      ...kgFileFiles,
       ...(present ? canonicalPaths : []),
     ])].filter(Boolean);
 
     // Extract finding text (may include file size) from the first detected root signal
     const finding = rootSignals.find(s => s.detected)?.finding
       || fileMatchSignals[0]?.finding
+      || kgSignalNodes.find(n => this.getNodeDetected(n.properties))?.description
       || '';
 
     return { present, files, canonicalPaths, finding };
+  }
+
+  private getKnowledgeGraphNodes(report: ReadinessReport): Array<{ id: string; type: string; label: string; description?: string; properties?: Record<string, unknown> }> {
+    const graph = report.knowledgeGraph as { nodes?: unknown } | undefined;
+    if (!graph || !Array.isArray(graph.nodes)) return [];
+    return graph.nodes
+      .filter((n): n is { id?: unknown; type?: unknown; label?: unknown; description?: unknown; properties?: unknown } => !!n && typeof n === 'object')
+      .map(n => ({
+        id: typeof n.id === 'string' ? n.id : '',
+        type: typeof n.type === 'string' ? n.type : '',
+        label: typeof n.label === 'string' ? n.label : '',
+        description: typeof n.description === 'string' ? n.description : undefined,
+        properties: n.properties && typeof n.properties === 'object' ? n.properties as Record<string, unknown> : undefined,
+      }));
+  }
+
+  private getNodeDetected(properties?: Record<string, unknown>): boolean {
+    const raw = properties?.detected;
+    return raw === true || raw === 1 || raw === 'true';
+  }
+
+  private getNodeFiles(properties?: Record<string, unknown>): string[] {
+    const files = properties?.files;
+    return Array.isArray(files) ? files.filter((f): f is string => typeof f === 'string') : [];
+  }
+
+  private normalizePathLike(value: string | undefined): string {
+    return (value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
   }
 
   private sanitizeNarrativeText(
@@ -693,16 +764,25 @@ Respond as JSON array:
   }
 
   /** Generate a deterministic, factually correct IQ Sync narrative */
-  private correctedIQSyncNarrative(exists: boolean, files: string[], score: number): string {
-    const fileDesc = files.length ? files.join(', ') : 'root instruction file';
+  private correctedIQSyncNarrative(
+    exists: boolean,
+    files: string[],
+    score: number,
+    tool: AITool = 'copilot',
+    canonicalPath?: string,
+  ): string {
+    const toolName = AI_TOOLS[tool]?.name ?? tool;
+    const path = canonicalPath || files[0] || this.getCanonicalRootInstructionPaths(tool)[0] || 'root instruction file';
     if (exists) {
-      if (score >= 75) return `Root instruction file (${fileDesc}) is present and well-integrated, providing strong guidance with verified path accuracy and good instruction depth.`;
-      if (score >= 55) return `Root instruction file (${fileDesc}) is present, providing a solid foundation, though adding scoped instructions or improving path accuracy could further strengthen agent guidance.`;
-      if (score >= 35) return `Root instruction file (${fileDesc}) exists but would benefit from enrichment — scoped instructions and improved path references would help agents navigate the codebase more effectively.`;
-      return `Root instruction file (${fileDesc}) is present but provides limited guidance — expanding instruction depth and adding verified path references would significantly improve agent effectiveness.`;
+      const anchor = `The root ${path} provides foundational context for ${toolName}.`;
+      if (score >= 75) return `${anchor} Verified paths and strong instruction depth keep guidance closely aligned with the codebase.`;
+      if (score >= 55) return `${anchor} Additional scoped instructions or cleaner path references would strengthen alignment further.`;
+      if (score >= 35) return `${anchor} More scoped coverage and better path accuracy are needed to keep agents consistently grounded.`;
+      return `${anchor} Limited depth and weak path coverage still make alignment fragile for day-to-day agent work.`;
     }
-    if (score >= 20) return `No root instruction file detected — general documentation provides some context, but creating a dedicated instruction file would substantially improve agent guidance.`;
-    return `No root instruction file detected, significantly limiting AI agent effectiveness — creating one is the highest-impact improvement available.`;
+    const anchor = `The absence of a root ${path} limits ${toolName}'s alignment.`;
+    if (score >= 20) return `${anchor} General documentation helps somewhat, but a dedicated instruction file would ground agents more reliably.`;
+    return `${anchor} Creating that file is the highest-impact step to improve grounded agent behavior.`;
   }
 
   private parseJsonArray<T>(text: string): T[] | null {

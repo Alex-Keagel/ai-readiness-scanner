@@ -471,6 +471,7 @@ Respond as JSON array: [{"path":"...","totalProcedures":N,"documentedProcedures"
       const response = await this.copilotClient.analyzeFast(prompt, token);
       const parsed = this.parseResponse(response);
       if (parsed) {
+        const groundedDetected = files.length > 0 ? parsed.detected : false;
         let finalScore = parsed.score;
         let businessFindings: string[] | undefined;
 
@@ -487,7 +488,7 @@ Respond as JSON array: [{"path":"...","totalProcedures":N,"documentedProcedures"
         const result: SignalResult = {
           signalId,
           level: level as MaturityLevel,
-          detected: parsed.detected,
+          detected: groundedDetected,
           score: finalScore,
           finding: sanitizeFinding(rawFinding, realityChecks),
           files: files.map(f => f.relativePath),
@@ -747,8 +748,9 @@ Only include levels that have files to evaluate.`;
 
       for (const item of parsed) {
         const level = item.level;
+        if (!levelFiles.has(level)) { continue; }
         const category = this.levelCategory(level);
-        const files = levelFiles.get(level) || [];
+        const files = this.getGroundedToolLevelFiles(tool, level, levelFiles.get(level) || []);
         const realityData = realityResults.get(level);
 
         // Ground truth: if no files were found by the scanner, the signal
@@ -805,6 +807,14 @@ Only include levels that have files to evaluate.`;
     }
 
     return results;
+  }
+
+  private getGroundedToolLevelFiles(tool: AITool, level: number, files: FileContent[]): FileContent[] {
+    if (tool === 'copilot' && level === 2) {
+      return files.filter(file => normalizeRepoPath(file.relativePath) === '.github/copilot-instructions.md');
+    }
+
+    return files;
   }
 
   // ─── Batch Signal Evaluation ──────────────────────────────────────
@@ -868,10 +878,11 @@ Only include levels that have files to evaluate.`;
       const cacheKey = files.map(f => f.content);
       const cached = this.cache.get(signal.id, cacheKey);
       if (cached) {
+        const groundedDetected = files.length > 0 ? cached.result !== 'fail' : false;
         results.push({
           signalId: signal.id,
           level: signal.level,
-          detected: cached.result !== 'fail',
+          detected: groundedDetected,
           score: cached.result === 'pass' ? 80 : cached.result === 'fail' ? 0 : 50,
           finding: cached.finding,
           files: files.map(f => f.relativePath),
@@ -942,10 +953,11 @@ Respond with ONLY valid JSON array:
           const signal = uncachedSignals.find(s => s.id === item.signalId);
           if (!signal) { continue; }
           const files = signalFiles.get(signal.id)!;
+          const groundedDetected = files.length > 0 ? item.detected : false;
 
           // Cache the result
           this.cache.set(signal.id, files.map(f => f.content), {
-            result: item.detected ? 'pass' : 'fail',
+            result: groundedDetected ? 'pass' : 'fail',
             finding: item.finding,
             confidence: item.confidence,
             cachedAt: new Date().toISOString(),
@@ -954,7 +966,7 @@ Respond with ONLY valid JSON array:
           results.push({
             signalId: signal.id,
             level: signal.level,
-            detected: item.detected,
+            detected: groundedDetected,
             score: Math.max(0, Math.min(100, item.score)),
             finding: item.finding,
             files: files.map(f => f.relativePath),
@@ -1159,10 +1171,11 @@ ${toolConfig?.reasoningContext?.antiPatterns ?? ''}`;
     const cacheKey = files.map(f => f.content);
     const cached = this.cache.get(signal.id, cacheKey);
     if (cached) {
+      const groundedDetected = files.length > 0 ? cached.result !== 'fail' : false;
       return {
         signalId: signal.id,
         level: signal.level,
-        detected: cached.result !== 'fail',
+        detected: groundedDetected,
         score: cached.result === 'pass' ? 80 : cached.result === 'fail' ? 0 : 50,
         finding: cached.finding,
         files: files.map(f => f.relativePath),
@@ -1177,9 +1190,10 @@ ${toolConfig?.reasoningContext?.antiPatterns ?? ''}`;
       const parsed = this.parseResponse(response);
 
       if (parsed) {
+        const groundedDetected = files.length > 0 ? parsed.detected : false;
         // Cache result
         this.cache.set(signal.id, cacheKey, {
-          result: parsed.detected ? 'pass' : 'fail',
+          result: groundedDetected ? 'pass' : 'fail',
           finding: parsed.finding,
           confidence: parsed.confidence,
           cachedAt: new Date().toISOString(),
@@ -1188,7 +1202,7 @@ ${toolConfig?.reasoningContext?.antiPatterns ?? ''}`;
         return {
           signalId: signal.id,
           level: signal.level,
-          detected: parsed.detected,
+          detected: groundedDetected,
           score: parsed.score,
           finding: parsed.finding,
           files: files.map(f => f.relativePath),
