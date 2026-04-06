@@ -751,15 +751,25 @@ Only include levels that have files to evaluate.`;
         const files = levelFiles.get(level) || [];
         const realityData = realityResults.get(level);
 
+        // Ground truth: if no files were found by the scanner, the signal
+        // cannot be detected regardless of what the LLM claims.
+        const hasFiles = files.length > 0;
+        const groundedDetected = hasFiles ? item.detected : false;
+        const groundedScore = hasFiles ? Math.max(0, Math.min(100, item.score)) : 0;
+
         const result: SignalResult = {
           signalId: `${tool}_l${level}_${category}`,
           level: level as MaturityLevel,
-          detected: item.detected,
-          score: Math.max(0, Math.min(100, item.score)),
-          finding: sanitizeFinding(item.finding, realityData?.checks),
+          detected: groundedDetected,
+          score: groundedScore,
+          finding: hasFiles
+            ? sanitizeFinding(item.finding, realityData?.checks)
+            : `${AI_TOOLS[tool].name} does not have ${category.replace(/_/g, ' ')} files`,
           files: files.map(f => f.relativePath),
           modelUsed: this.copilotClient.getModelName(),
-          confidence: ['high', 'medium', 'low'].includes(item.confidence) ? item.confidence : 'medium',
+          confidence: hasFiles
+            ? (['high', 'medium', 'low'].includes(item.confidence) ? item.confidence : 'medium')
+            : 'high',
         };
         if (realityData?.checks) { result.realityChecks = realityData.checks; }
         result.confidenceScore = computeQuickConfidence(result);
@@ -1295,6 +1305,10 @@ Respond with ONLY valid JSON:
       'build.gradle.kts', 'Gemfile', 'composer.json',
     ];
 
+    // Well-known root-owned directories that should NOT be treated as sub-projects
+    // even when they appear as components.
+    const ROOT_OWNED_DIRS = new Set(['src', 'lib', 'docs', 'scripts', 'tools', 'test', 'tests', 'e2e']);
+
     const candidates = [...new Set(
       (context.components || [])
         .filter(component => (component.parentPath === '' || !component.parentPath) && component.path && !component.path.startsWith('.'))
@@ -1302,13 +1316,21 @@ Respond with ONLY valid JSON:
     )];
 
     const resolved = await Promise.all(candidates.map(async candidate => {
+      // Skip well-known root-owned directories — they are NOT sub-projects
+      if (ROOT_OWNED_DIRS.has(candidate.toLowerCase())) {
+        return undefined;
+      }
       for (const marker of SUB_PROJECT_MARKERS) {
         try {
           await vscode.workspace.fs.stat(vscode.Uri.joinPath(workspaceUri, candidate, marker));
           return candidate;
         } catch { /* marker not found, try next */ }
       }
-      return undefined;
+      // Fallback: in a monorepo, top-level component directories that aren't
+      // well-known root dirs (src/, lib/) are treated as sub-projects even
+      // without a manifest marker. This prevents leaking sub-project files
+      // into root-level scoring (especially SD).
+      return candidate;
     }));
 
     const subProjectPaths = resolved.filter((candidate): candidate is string => Boolean(candidate));
@@ -1325,6 +1347,29 @@ Respond with ONLY valid JSON:
     max: number = 10,
     subProjectPaths: string[] = []
   ): Promise<FileContent[]> {
+    // Definitive fix for root Copilot instructions in monorepos:
+    // only treat the workspace-root .github/copilot-instructions.md as the
+    // "root instruction" signal source. Nested copies inside sub-projects
+    // must not cause the root-level signal to be detected.
+    if (signalId === 'copilot_l2_instructions') {
+      try {
+        const uri = vscode.Uri.joinPath(workspaceUri, '.github', 'copilot-instructions.md');
+        const stat = await vscode.workspace.fs.stat(uri);
+        if (!stat) {
+          return [];
+        }
+        const raw = await vscode.workspace.fs.readFile(uri);
+        const content = Buffer.from(raw).toString('utf-8');
+        const lines = content.split('\n');
+        const truncated = lines.length > 500 ? lines.slice(0, 500).join('\n') + '\n...(truncated)' : content;
+        const relPath = vscode.workspace.asRelativePath(uri, false);
+        return [{ path: uri.fsPath, content: truncated, relativePath: relPath }];
+      } catch {
+        // File does not exist at the workspace root
+        return [];
+      }
+    }
+
     const files = await this.findFiles(patterns, workspaceUri, max);
     const scope = validateSignalScope(signalId, files.map(file => file.relativePath), subProjectPaths);
     const rootFiles = new Set(scope.rootFiles);
