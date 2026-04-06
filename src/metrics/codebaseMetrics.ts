@@ -97,7 +97,6 @@ const DECLARATION_PATTERNS: Record<string, RegExp[]> = {
   ruby: [/^\s*(def|class|module)\s+/, /^\s*\w+\s*=/],
 };
 
-const DESCRIPTIVE_IDENTIFIER = /[a-z][a-z0-9]*(?:[A-Z][a-z0-9]*){2,}/g;
 
 // Patterns that identify a function, class, or method declaration
 const PROCEDURE_PATTERNS: Record<string, RegExp[]> = {
@@ -289,7 +288,7 @@ export function computeBlendedSemanticDensity(
   documentedProcedures: number,
   totalCodeLines: number,
   totalCommentLines: number,
-  totalFilesAnalyzed?: number,
+  _totalFilesAnalyzed?: number,
 ): number {
   // Comment-to-code ratio score (0-100).
   // 25% comment-to-code ratio maps to the maximum score.
@@ -329,6 +328,18 @@ export function computeBlendedSemanticDensity(
   // validation before scoring above 85 — very few real codebases achieve this.
   if (totalProcedures >= 50 && procRatio > 0.80) {
     score = Math.min(score, 85);
+  }
+
+  // Floor: in very large repos, moderate procedure coverage plus healthy comment
+  // density should not collapse into a low score from ratio dilution alone.
+  // This keeps mature multi-language monorepos in a realistic mid-band.
+  if (
+    totalProcedures >= 1000 &&
+    totalCodeLines >= 50_000 &&
+    procRatio >= 0.30 &&
+    commentRatio >= 0.08
+  ) {
+    score = Math.max(score, 50);
   }
 
   return clamp(score, 0, 100);
@@ -376,7 +387,7 @@ function computeSemanticDensity(files: FileAnalysis[]): number {
   return computeWeightedSemanticDensity(files);
 }
 
-function computeTypeStrictness(files: FileAnalysis[]): number {
+export function computeTypeStrictness(files: FileAnalysis[]): number {
   if (files.length === 0) { return 0; }
 
   // Language base scores: inherent type safety of each language

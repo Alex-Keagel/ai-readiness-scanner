@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
-import type { LiveMetrics } from './metricsEngine';
-import { TACTICAL_GLASSBOX_CSS, getLevelColor, getLevelGlowClass, getSeverityGlowClass } from '../ui/theme';
 import { logger } from '../logging';
+import { TACTICAL_GLASSBOX_CSS } from '../ui/theme';
+import type { LiveMetrics } from './metricsEngine';
 
 export class LivePanel {
   public static currentPanel: LivePanel | undefined;

@@ -19,7 +19,7 @@ export class RemediationEngine {
   private recommend: RecommendGenerator;
   private preview: FixPreview;
 
-  constructor(private copilotClient: CopilotClient) {
+  constructor(copilotClient: CopilotClient) {
     this.autoFix = new AutoFixGenerator(copilotClient);
     this.guidedFix = new GuidedFixGenerator(copilotClient);
     this.recommend = new RecommendGenerator(copilotClient);

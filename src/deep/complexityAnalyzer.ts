@@ -180,7 +180,6 @@ export class ComplexityAnalyzer {
 
     // Cyclomatic heuristic (not real cyclomatic — just branching keyword count)
     // We don't have content here, so use line count as proxy
-    const cyclomaticProxy = Math.min(1, mod.lines / 500);
 
     // Static factor formula
     const factor =
@@ -234,7 +233,7 @@ export class ComplexityAnalyzer {
   private async detectProducts(
     complexities: ComponentComplexity[],
     modules: { path: string; lines: number; exports: string[]; role: string }[],
-    callGraph: CallGraphResult,
+    _callGraph: CallGraphResult,
     dataFlow: DataFlowResult
   ): Promise<void> {
     const moduleList = modules

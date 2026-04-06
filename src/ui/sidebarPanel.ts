@@ -1,18 +1,18 @@
 import * as vscode from 'vscode';
-import { TACTICAL_GLASSBOX_CSS } from './theme';
-import { RunStorage, ScanRun } from '../storage/runStorage';
 import { logger } from '../logging';
 import { getAllSignals } from '../scoring/levelSignals';
-import { AI_TOOLS, AITool } from '../scoring/types';
-import { humanizeSignalId } from '../utils';
 import { PlatformSignalFilter } from '../scoring/signalFilter';
+import { AITool } from '../scoring/types';
+import { RunStorage,ScanRun } from '../storage/runStorage';
+import { humanizeSignalId } from '../utils';
+import { TACTICAL_GLASSBOX_CSS } from './theme';
 
 export class SidebarPanel implements vscode.WebviewViewProvider {
   public static readonly viewType = 'ai-readiness.sidebar';
   private view?: vscode.WebviewView;
 
   constructor(
-    private extensionUri: vscode.Uri,
+    _extensionUri: vscode.Uri,
     private runStorage: RunStorage
   ) {}
 

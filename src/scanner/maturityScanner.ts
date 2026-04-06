@@ -1,19 +1,19 @@
 import * as vscode from 'vscode';
-import { SignalResult, LevelScore, MaturityLevel, FileContent, ProjectContext, LevelSignal, MATURITY_LEVELS, AITool, AI_TOOLS, RealityCheckRef } from '../scoring/types';
-import { getSignalsByLevel, getAllSignals } from '../scoring/levelSignals';
-import { CopilotClient } from '../llm/copilotClient';
+import { isPathInSubProject,normalizeSignalScopePath as normalizeRepoPath,validateSignalScope } from '../deep/validators/signalScopeValidator';
 import { LLMCache } from '../llm/cache';
+import { CopilotClient } from '../llm/copilotClient';
 import { DocsCache } from '../llm/docsCache';
-import { MaturityEngine } from '../scoring/maturityEngine';
-import { RealityChecker, RealityReport } from './realityChecker';
 import { logger } from '../logging';
+import { analyzeFileContent,calculateCodebaseMetrics,computeWeightedSemanticDensity } from '../metrics';
 import { getPlatformExpertPrompt } from '../remediation/fixPrompts';
-import { analyzeFileContent, calculateCodebaseMetrics, computeWeightedSemanticDensity } from '../metrics';
 import { auditContextEfficiency } from '../scoring/contextAudit';
+import { getAllSignals,getSignalsByLevel } from '../scoring/levelSignals';
+import { MaturityEngine } from '../scoring/maturityEngine';
 import { PlatformSignalFilter } from '../scoring/signalFilter';
+import { AITool,AI_TOOLS,FileContent,LevelScore,LevelSignal,MaturityLevel,ProjectContext,RealityCheckRef,SignalResult } from '../scoring/types';
 import { isNestedConfig } from '../utils';
 import { isVirtualEnvPath } from './componentMapper';
-import { isPathInSubProject, normalizeSignalScopePath as normalizeRepoPath, validateSignalScope } from '../deep/validators/signalScopeValidator';
+import { RealityChecker,RealityReport } from './realityChecker';
 
 const EXCLUDE_GLOB = '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/__pycache__/**,**/.venv/**,**/venv/**,**/target/**,**/coverage/**,**/ai-readiness-scanner*/**,**/site-packages/**,**/.tox/**,**/env/**';
 const SEMANTIC_DENSITY_SAMPLE_MAX = 100;
@@ -419,96 +419,6 @@ Respond as JSON array: [{"path":"...","totalProcedures":N,"documentedProcedures"
     return levelScores;
   }
 
-  private async evaluateToolLevel(
-    tool: AITool,
-    level: number,
-    category: string,
-    patterns: string[],
-    files: FileContent[],
-    context: ProjectContext,
-    quickMode: boolean,
-    token?: vscode.CancellationToken
-  ): Promise<SignalResult> {
-    const toolConfig = AI_TOOLS[tool];
-    const signalId = `${tool}_l${level}_${category}`;
-
-    if (files.length === 0) {
-      return {
-        signalId,
-        level: level as MaturityLevel,
-        detected: false,
-        score: 0,
-        finding: `No ${toolConfig.name} ${category.replace(/_/g, ' ')} files found. Expected: ${patterns.join(', ')}`,
-        files: [],
-        confidence: 'high',
-      };
-    }
-
-    // Run reality checks on the instruction files
-    const workspaceUri = vscode.workspace.workspaceFolders?.[0]?.uri;
-    let realityReport: RealityReport | undefined;
-    let realityChecks: RealityCheckRef[] | undefined;
-    if (workspaceUri) {
-      realityReport = await this.realityChecker.validateFiles(files, workspaceUri, context);
-      if (realityReport.checks.length > 0) {
-        realityChecks = realityReport.checks;
-      }
-    }
-
-    // Deterministic scoring
-    if (quickMode || !this.copilotClient.isAvailable()) {
-      const result = this.evaluateToolLevelDeterministic(tool, level, category, files, realityReport);
-      if (realityChecks) { result.realityChecks = realityChecks; }
-      return result;
-    }
-
-    // LLM deep analysis — include reality check results in prompt
-    const realitySummary = realityReport
-      ? this.realityChecker.formatForPrompt(realityReport)
-      : '';
-    const prompt = await this.buildToolLevelPrompt(tool, level, category, files, context, realitySummary);
-    try {
-      const response = await this.copilotClient.analyzeFast(prompt, token);
-      const parsed = this.parseResponse(response);
-      if (parsed) {
-        const groundedDetected = files.length > 0 ? parsed.detected : false;
-        let finalScore = parsed.score;
-        let businessFindings: string[] | undefined;
-
-        // For L2 (instructions) and L3 (skills), also validate business logic
-        if ((level === 2 || level === 3) && workspaceUri) {
-          const bizResult = await this.validateBusinessLogic(files, workspaceUri, context, token, tool);
-          if (bizResult.score >= 0) {
-            finalScore = Math.round(parsed.score * 0.6 + bizResult.score * 0.4);
-            businessFindings = bizResult.findings;
-          }
-        }
-
-        const rawFinding = parsed.finding + (businessFindings?.length ? ' | Business logic validated' : '');
-        const result: SignalResult = {
-          signalId,
-          level: level as MaturityLevel,
-          detected: groundedDetected,
-          score: finalScore,
-          finding: sanitizeFinding(rawFinding, realityChecks),
-          files: files.map(f => f.relativePath),
-          modelUsed: this.copilotClient.getModelName(),
-          confidence: parsed.confidence,
-          businessFindings,
-        };
-        if (realityChecks) { result.realityChecks = realityChecks; }
-        result.confidenceScore = computeQuickConfidence(result);
-        return result;
-      }
-    } catch (err) {
-      logger.warn('LLM evaluation failed for tool level, falling back to deterministic', { error: err instanceof Error ? err.message : String(err) });
-    }
-
-    const fallback = this.evaluateToolLevelDeterministic(tool, level, category, files, realityReport);
-    if (realityChecks) { fallback.realityChecks = realityChecks; }
-    fallback.confidenceScore = computeQuickConfidence(fallback);
-    return fallback;
-  }
 
   private evaluateToolLevelDeterministic(
     tool: AITool,
@@ -994,7 +904,19 @@ Respond with ONLY valid JSON array:
     return results;
   }
 
-  private async buildToolLevelPrompt(
+
+  private buildStaticDocsBlock(toolConfig: typeof AI_TOOLS[AITool]): string {
+    return `WHAT ${toolConfig.name.toUpperCase()} EXPECTS:
+${toolConfig?.reasoningContext?.structureExpectations ?? ''}
+
+QUALITY MARKERS for ${toolConfig.name}:
+${toolConfig?.reasoningContext?.qualityMarkers ?? ''}
+
+ANTI-PATTERNS for ${toolConfig.name}:
+${toolConfig?.reasoningContext?.antiPatterns ?? ''}`;
+  }
+
+  public async buildToolLevelPrompt(
     tool: AITool,
     level: number,
     category: string,
@@ -1026,7 +948,6 @@ Respond with ONLY valid JSON array:
         `- If many paths are invalid or commands are wrong, score lower.\n`
       : '';
 
-    // Try to use live docs; fall back to static reasoningContext
     let docsBlock: string;
     if (this.docsCache) {
       const liveDocs = await this.docsCache.getToolDocs(tool);
@@ -1084,49 +1005,6 @@ Respond with ONLY valid JSON:
 {"detected": true/false, "score": 0-100, "finding": "one sentence with specific evidence", "confidence": "high|medium|low"}`;
   }
 
-  private buildStaticDocsBlock(toolConfig: typeof AI_TOOLS[AITool]): string {
-    return `WHAT ${toolConfig.name.toUpperCase()} EXPECTS:
-${toolConfig?.reasoningContext?.structureExpectations ?? ''}
-
-QUALITY MARKERS for ${toolConfig.name}:
-${toolConfig?.reasoningContext?.qualityMarkers ?? ''}
-
-ANTI-PATTERNS for ${toolConfig.name}:
-${toolConfig?.reasoningContext?.antiPatterns ?? ''}`;
-  }
-
-  private async evaluateSignal(
-    signal: LevelSignal,
-    workspaceUri: vscode.Uri,
-    context: ProjectContext,
-    quickMode: boolean,
-    token?: vscode.CancellationToken
-  ): Promise<SignalResult> {
-    const subProjectPaths = await this.collectMonorepoSubProjectPaths(workspaceUri, context);
-    // 1. Discover files matching the signal's patterns
-    const files = await this.findScopedSignalFiles(signal.id, signal.filePatterns, workspaceUri, 10, subProjectPaths);
-
-    // 2. If no files found, signal not detected
-    if (files.length === 0) {
-      return {
-        signalId: signal.id,
-        level: signal.level,
-        detected: false,
-        score: 0,
-        finding: `Not detected: ${signal.description}`,
-        files: [],
-        confidence: 'high',
-      };
-    }
-
-    // 4. Deterministic scoring (quick mode)
-    if (quickMode || !this.copilotClient.isAvailable()) {
-      return this.evaluateDeterministic(signal, files);
-    }
-
-    // 5. LLM deep analysis
-    return this.evaluateWithLLM(signal, files, context, token, subProjectPaths);
-  }
 
   private evaluateDeterministic(signal: LevelSignal, files: FileContent[]): SignalResult {
     const fileCount = files.length;
@@ -1160,151 +1038,8 @@ ${toolConfig?.reasoningContext?.antiPatterns ?? ''}`;
     };
   }
 
-  private async evaluateWithLLM(
-    signal: LevelSignal,
-    files: FileContent[],
-    context: ProjectContext,
-    token?: vscode.CancellationToken,
-    subProjectPaths: string[] = []
-  ): Promise<SignalResult> {
-    // Check cache
-    const cacheKey = files.map(f => f.content);
-    const cached = this.cache.get(signal.id, cacheKey);
-    if (cached) {
-      const groundedDetected = files.length > 0 ? cached.result !== 'fail' : false;
-      return {
-        signalId: signal.id,
-        level: signal.level,
-        detected: groundedDetected,
-        score: cached.result === 'pass' ? 80 : cached.result === 'fail' ? 0 : 50,
-        finding: cached.finding,
-        files: files.map(f => f.relativePath),
-        modelUsed: `${this.copilotClient.getModelName()} (cached)`,
-        confidence: cached.confidence,
-      };
-    }
 
-    try {
-      const prompt = await this.buildSignalPrompt(signal, files, context, undefined, subProjectPaths);
-      const response = await this.copilotClient.analyzeFast(prompt, token);
-      const parsed = this.parseResponse(response);
 
-      if (parsed) {
-        const groundedDetected = files.length > 0 ? parsed.detected : false;
-        // Cache result
-        this.cache.set(signal.id, cacheKey, {
-          result: groundedDetected ? 'pass' : 'fail',
-          finding: parsed.finding,
-          confidence: parsed.confidence,
-          cachedAt: new Date().toISOString(),
-        });
-
-        return {
-          signalId: signal.id,
-          level: signal.level,
-          detected: groundedDetected,
-          score: parsed.score,
-          finding: parsed.finding,
-          files: files.map(f => f.relativePath),
-          modelUsed: this.copilotClient.getModelName(),
-          confidence: parsed.confidence,
-        };
-      }
-    } catch (err) {
-      logger.warn('LLM signal evaluation failed, falling back to deterministic', { error: err instanceof Error ? err.message : String(err) });
-    }
-
-    const det = this.evaluateDeterministic(signal, files);
-    det.modelUsed = 'deterministic (LLM fallback)';
-    return det;
-  }
-
-  private async buildSignalPrompt(signal: LevelSignal, files: FileContent[], context: ProjectContext, tool?: AITool, subProjectPaths: string[] = []): Promise<string> {
-    const fileContents = files.slice(0, 5).map(f =>
-      `### ${f.relativePath}\n\`\`\`\n${f.content.slice(0, 2000)}\n\`\`\``
-    ).join('\n\n');
-
-    // Determine which tool(s) this signal belongs to
-    const { PlatformSignalFilter } = require('../scoring/signalFilter');
-    const ownerTools = (Object.entries(AI_TOOLS) as [AITool, typeof AI_TOOLS[AITool]][])
-      .filter(([key]) => PlatformSignalFilter.isRelevant(signal.id, key as AITool))
-      .map(([key, cfg]) => ({ key: key as AITool, cfg }));
-
-    // Use expert prompt for the primary tool
-    const primaryTool = tool || ownerTools[0]?.key;
-    const expertPrompt = primaryTool ? getPlatformExpertPrompt(primaryTool) : '';
-
-    let toolContextBlock = '';
-    if (ownerTools.length > 0) {
-      const blocks: string[] = [];
-      for (const { key, cfg } of ownerTools) {
-        let docsContent: string;
-        if (this.docsCache) {
-          const liveDocs = await this.docsCache.getToolDocs(key);
-          docsContent = liveDocs || this.buildStaticDocsBlock(cfg);
-        } else {
-          docsContent = this.buildStaticDocsBlock(cfg);
-        }
-        blocks.push(`\nTOOL: ${cfg.name}\n${docsContent}\n`);
-      }
-      toolContextBlock = blocks.join('\n');
-    }
-
-    const monorepoScopeBlock = buildMonorepoScopeBlock(context, subProjectPaths);
-
-    return `${expertPrompt}
-
-You are now EVALUATING (not generating) a repository's AI Agent Readiness — specifically whether instruction/context files are ACCURATE and up-to-date.
-
-SIGNAL: "${signal.name}" (Level ${signal.level})${ownerTools.length > 0 ? ` — belongs to: ${ownerTools.map(t => t.cfg.name).join(', ')}` : ''}
-${toolContextBlock}
-Project REALITY (ground truth):
-- Languages detected: ${context.languages.join(', ')}
-- Project type: ${context.projectType}
-- Package manager: ${context.packageManager}
-- Actual directory structure:
-${context.directoryTree.slice(0, 800)}
-${monorepoScopeBlock ? `\n\n${monorepoScopeBlock}` : ''}
-
-Files to evaluate:
-${fileContents}
-
-CRITICAL: Cross-reference the file content against the ACTUAL project structure above. Check for:
-
-1. **Path accuracy**: Do file paths mentioned in the content (e.g., "src/api/", "python-workspace/") actually exist in the directory tree? Flag any references to non-existent paths.
-
-2. **Tech stack accuracy**: Does the content correctly describe the languages and tools? If it says "TypeScript project" but the repo is Python, that's a FAIL. If it mentions "npm" but the project uses "uv", that's inaccurate.
-
-3. **Command accuracy**: Do build/test/run commands match the actual package manager and project structure? (e.g., "pip install" vs "uv sync", "npm test" vs "pytest")
-
-4. **Stale content**: Are there references to tools, patterns, or files that appear outdated or no longer match the current codebase?
-
-5. **Completeness**: Does the content cover the major components visible in the directory tree, or does it only describe part of the project?
-
-6. **Specificity**: Is this genuinely about THIS project, or is it generic boilerplate that could apply to any repo?
-${ownerTools.length > 0 ? `\n7. **Tool-specific patterns**: Does the content follow the expected patterns for ${ownerTools.map(t => t.cfg.name).join('/')}, or does it exhibit known anti-patterns?\n` : ''}
-Score 0-100 where:
-- 90-100: Content is accurate, up-to-date, and matches the actual project
-- 70-89: Mostly accurate with minor gaps or slightly outdated references  
-- 50-69: Partially accurate but has significant gaps or stale content
-- 30-49: Contains inaccuracies or references that don't match reality
-- 0-29: Mostly inaccurate, generic boilerplate, or severely outdated
-
-Respond with ONLY valid JSON:
-{"detected": true/false, "score": 0-100, "finding": "one sentence citing specific accuracy issues or confirming accuracy", "confidence": "high|medium|low"}`;
-  }
-
-  private getLevelContext(level: MaturityLevel): string {
-    const contexts: Record<MaturityLevel, string> = {
-      1: 'Does the repo have any documentation at all?',
-      2: 'Do instructions tell the agent HOW to behave in this specific repo?',
-      3: 'Are there REUSABLE capabilities the agent can invoke (skills, tools, MCP)?',
-      4: 'Is there an END-TO-END workflow the agent can follow from start to finish?',
-      5: 'Can the agent RECORD learnings and IMPROVE its own behavior over time?',
-      6: 'Can MULTIPLE agents COORDINATE across repos/services autonomously?',
-    };
-    return contexts[level];
-  }
 
   private async collectMonorepoSubProjectPaths(workspaceUri: vscode.Uri, context: ProjectContext): Promise<string[]> {
     if (context.projectType !== 'monorepo') {
@@ -1606,23 +1341,6 @@ Respond with ONLY valid JSON:
     return evidence;
   }
 
-  private parseResponse(response: string): { detected: boolean; score: number; finding: string; confidence: 'high' | 'medium' | 'low' } | null {
-    try {
-      const jsonMatch = response.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) return null;
-      const parsed = JSON.parse(jsonMatch[0]);
-      if (typeof parsed.detected !== 'boolean' || typeof parsed.score !== 'number') return null;
-      return {
-        detected: parsed.detected,
-        score: Math.max(0, Math.min(100, parsed.score)),
-        finding: String(parsed.finding || ''),
-        confidence: ['high', 'medium', 'low'].includes(parsed.confidence) ? parsed.confidence : 'medium',
-      };
-    } catch (err) {
-      logger.error('Failed to parse LLM response JSON', { error: err instanceof Error ? err.message : String(err) });
-      return null;
-    }
-  }
 }
 
 /**

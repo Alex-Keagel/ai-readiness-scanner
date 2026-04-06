@@ -1,6 +1,6 @@
 import { CopilotClient } from '../llm/copilotClient';
 import { logger } from '../logging';
-import { CallGraphResult, CallGraphEdge } from './callGraph';
+import { CallGraphResult } from './callGraph';
 
 // ─── Types ──────────────────────────────────────────────────────
 

@@ -486,7 +486,7 @@ export class ChatParticipant {
 
   private async handleGraph(
     stream: vscode.ChatResponseStream,
-    token: vscode.CancellationToken
+    _token: vscode.CancellationToken
   ): Promise<void> {
     const lastReport = this.context.workspaceState.get<ReadinessReport>('lastReport');
 

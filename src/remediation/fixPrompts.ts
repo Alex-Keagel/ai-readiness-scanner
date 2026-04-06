@@ -117,13 +117,12 @@ WRITING RULES (critical):
 }
 
 // Maps signal IDs to the specific files that should be generated
-function getSignalFileTarget(signalId: string, tool: AITool): { path: string; description: string } | null {
-  const toolConfig = AI_TOOLS[tool];
+function getSignalFileTarget(signalId: string, _tool: AITool): { path: string; description: string } | null {
   
   // Tool-level signals
   const toolLevelMatch = signalId.match(/^([a-z]+)_l(\d)_(.+)$/);
   if (toolLevelMatch) {
-    const [, toolId, levelStr, category] = toolLevelMatch;
+    const [, toolId, levelStr] = toolLevelMatch;
     const level = parseInt(levelStr);
     const fileMap: Record<string, Record<number, { path: string; description: string }>> = {
       copilot: {

@@ -1,23 +1,18 @@
 import * as vscode from 'vscode';
 import {
-  ReadinessReport,
-  MATURITY_LEVELS,
-  AI_TOOLS,
-  AITool,
+ReadinessReport
 } from '../scoring/types';
-import { RunStorage, ScanRun } from '../storage/runStorage';
+import { RunStorage,ScanRun } from '../storage/runStorage';
 
 type NodeType = 'scan-history' | 'repo-group' | 'platform-group' | 'date-group';
 
 export class ReadinessTreeProvider implements vscode.TreeDataProvider<TreeItem> {
   private _onDidChangeTreeData = new vscode.EventEmitter<TreeItem | undefined>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
-  private report: ReadinessReport | undefined;
 
   constructor(private runStorage?: RunStorage) {}
 
-  update(report: ReadinessReport): void {
-    this.report = report;
+  update(_report: ReadinessReport): void {
     this._onDidChangeTreeData.fire(undefined);
   }
 
@@ -200,18 +195,7 @@ export class ReadinessTreeProvider implements vscode.TreeDataProvider<TreeItem> 
     });
   }
 
-  private createNavItem(label: string, command: string, description: string): TreeItem {
-    const item = new TreeItem(label, vscode.TreeItemCollapsibleState.None);
-    item.command = { command, title: label };
-    item.description = description;
-    return item;
-  }
 
-  private createNavItemWithIcon(label: string, command: string, description: string, icon: string): TreeItem {
-    const item = this.createNavItem(label, command, description);
-    item.iconPath = new vscode.ThemeIcon(icon);
-    return item;
-  }
 }
 
 class TreeItem extends vscode.TreeItem {

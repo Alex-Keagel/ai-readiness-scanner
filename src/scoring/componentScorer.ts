@@ -1,16 +1,15 @@
 import * as vscode from 'vscode';
-import {
-  ProjectContext,
-  ComponentInfo,
-  ComponentScore,
-  ComponentSignal,
-  LanguageScore,
-  MaturityLevel,
-  MATURITY_LEVELS,
-  AITool,
-  AI_TOOLS,
-} from './types';
 import { logger } from '../logging';
+import {
+AITool,
+AI_TOOLS,
+ComponentInfo,
+ComponentScore,
+ComponentSignal,
+LanguageScore,
+MaturityLevel,
+ProjectContext
+} from './types';
 
 const EXCLUDE_GLOB =
   '**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/__pycache__/**,**/.venv/**,**/venv/**,**/target/**';
@@ -300,7 +299,7 @@ export class ComponentScorer {
     workspaceUri: vscode.Uri,
     compUri: vscode.Uri,
     comp: ComponentInfo,
-    context: ProjectContext,
+    _context: ProjectContext,
     selectedTool: AITool
   ): Promise<ComponentSignal[]> {
     const signals: ComponentSignal[] = [];
@@ -313,7 +312,6 @@ export class ComponentScorer {
     const isConfig = ['json', 'yaml', 'yml', 'toml', 'xml'].includes(langLower);
     const isData = ['kql', 'sql', 'csv', 'powerbi'].includes(langLower);
     const isInfra = ['bicep', 'terraform', 'hcl', 'dockerfile'].includes(langLower);
-    const isDocs = ['markdown', 'md'].includes(langLower);
     const compType = comp.type;
 
     // ── 1. README (all components) ──
@@ -467,7 +465,6 @@ export class ComponentScorer {
     // ── 1. Agent Instructions (applies to ALL languages) ──
     const toolInstructionPatterns = [...toolConfig.level2Files, ...toolConfig.level3Files];
     let hasLangInstructions = false;
-    let instructionsDetail = `No ${toolName} instructions reference ${language}`;
 
     // Check if any instruction file mentions this language
     for (const pattern of toolInstructionPatterns) {
@@ -481,7 +478,6 @@ export class ComponentScorer {
           const content = Buffer.from(bytes).toString('utf-8').toLowerCase();
           if (content.includes(langLower) || content.includes(language.toLowerCase())) {
             hasLangInstructions = true;
-            instructionsDetail = `${toolName} instructions reference ${language}`;
             break;
           }
         } catch (err) { logger.warn('Failed to read instruction file for language check', { error: err instanceof Error ? err.message : String(err) }); }

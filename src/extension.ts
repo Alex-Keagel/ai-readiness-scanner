@@ -365,7 +365,7 @@ export function activate(context: vscode.ExtensionContext) {
       }
     }),
 
-    vscode.commands.registerCommand('ai-readiness.fixSignal', async (item?: unknown) => {
+    vscode.commands.registerCommand('ai-readiness.fixSignal', async (_item?: unknown) => {
       try {
       if (!currentReport) {
         vscode.window.showInformationMessage('No scan results yet. Run a scan first.');
@@ -747,7 +747,7 @@ export function activate(context: vscode.ExtensionContext) {
       if (report.insights?.length) {
         logger.info(`Opening Insights panel with ${report.insights.length} insights`);
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
-        InsightsPanel.createOrShow(report, workspaceFolder ? async (signalId, action) => {
+        InsightsPanel.createOrShow(report, workspaceFolder ? async (signalId, _action) => {
           if (!copilotClient.isAvailable()) {
             await copilotClient.initialize();
           }
@@ -872,7 +872,7 @@ export function activate(context: vscode.ExtensionContext) {
         location: vscode.ProgressLocation.Notification,
         title: `Migrating ${AI_TOOLS[source.tool].name} → ${AI_TOOLS[target.tool].name}...`,
         cancellable: true,
-      }, async (progress, token) => {
+      }, async (_progress, token) => {
         const plan = await migrationEngine.planMigration(
           source.tool, target.tool, source.files,
           currentReport?.projectContext || { languages: [], frameworks: [], projectType: 'unknown', packageManager: '', directoryTree: '', components: [] },
@@ -1502,7 +1502,6 @@ async function generateViaLLM(
   const projectCtx = formatProjectContext(report.projectContext);
 
   // Determine if this could be a multi-file recommendation
-  const isMultiFile = true; // Always request structured multi-file format for reliability
 
   const formatInstruction = `If generating multiple files, use this exact format for EACH file:
 
@@ -1688,7 +1687,7 @@ async function validateAndRetry(
 
 function protectSourceFiles(
   files: { filePath: string; content: string; existing: string; signalId: string }[],
-  wsFolder: vscode.WorkspaceFolder
+  _wsFolder: vscode.WorkspaceFolder
 ): { filePath: string; content: string; existing: string; signalId: string }[] {
   return files.map(f => {
     if (!f.existing) return f;

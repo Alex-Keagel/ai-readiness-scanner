@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
-import { ProjectContext, ComponentInfo, FileContent } from '../scoring/types';
+import { validateComponentName } from '../deep/validators/componentNameValidator';
 import { CopilotClient } from '../llm/copilotClient';
 import { logger } from '../logging';
-import { validateComponentName } from '../deep/validators/componentNameValidator';
+import { ComponentInfo,ProjectContext } from '../scoring/types';
 
 const EXCLUDE_GLOB = '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/vendor/**,**/__pycache__/**,**/.venv/**,**/venv/**,**/target/**,**/site-packages/**,**/.tox/**,**/env/**}';
 
@@ -29,8 +29,6 @@ function filterVirtualEnvEntries<T extends { path: string }>(entries: T[]): T[] 
   return entries.filter(entry => !isVirtualEnvPath(entry.path));
 }
 
-const MAX_TREE_LINES = 100;
-const MAX_DEEP_TREE_LINES = 200;
 
 const LANGUAGE_INDICATORS: Record<string, { markers: string[]; extensions: string[] }> = {
   'TypeScript': { markers: ['tsconfig.json'], extensions: ['ts', 'tsx'] },
@@ -576,7 +574,7 @@ export class ComponentMapper {
     relPattern: (glob: string) => vscode.RelativePattern,
     workspaceUri: vscode.Uri,
     allFiles: vscode.Uri[],
-    languages: string[],
+    _languages: string[],
   ): Promise<ComponentInfo[]> {
     const components: ComponentInfo[] = [];
     const seenPaths = new Set<string>();
@@ -1356,8 +1354,8 @@ export class ComponentMapper {
 
   private async deepMapComponents(
     workspaceUri: vscode.Uri,
-    context: ProjectContext,
-    token?: vscode.CancellationToken,
+    _context: ProjectContext,
+    _token?: vscode.CancellationToken,
     semanticData?: { path: string; summary: string; dependencies: string[]; exports: string[]; complexity: string }[],
   ): Promise<ComponentInfo[]> {
 
@@ -1481,7 +1479,6 @@ export class ComponentMapper {
       if (matchingSemantic.length > 0) {
         const summaries = matchingSemantic.filter(s => s.summary && s.summary.length > 10).map(s => s.summary);
         const allExports = [...new Set(matchingSemantic.flatMap(s => s.exports))];
-        const allDeps = [...new Set(matchingSemantic.flatMap(s => s.dependencies))];
         
         if (summaries.length > 0) {
           // Use most detailed summary (longest) as component description
@@ -1807,56 +1804,10 @@ Respond as JSON array: [{"path":"...","name":"Better Name","description":"one se
     return filtered;
   }
 
-  private flattenComponents(components: unknown[], parentPath?: string): ComponentInfo[] {
-    const result: ComponentInfo[] = [];
 
-    for (const raw of components) {
-      const comp = raw as Record<string, unknown>;
-      const compPath = String(comp.path || '');
-      if (!compPath) continue;
-
-      const component: ComponentInfo = {
-        name: String(comp.name || compPath.split('/').pop() || ''),
-        path: compPath,
-        language: String(comp.language || 'unknown'),
-        type: this.normalizeType(comp.type),
-        description: String(comp.description || ''),
-        parentPath: parentPath,
-        children: [],
-        isGenerated: this.detectGenerated(compPath, String(comp.name || ''), String(comp.language || ''), String(comp.description || '')),
-      };
-
-      // Recursively flatten subComponents
-      if (Array.isArray(comp.subComponents) && comp.subComponents.length > 0) {
-        const childResults = this.flattenComponents(comp.subComponents, compPath);
-        component.children = childResults.filter(c => c.parentPath === compPath);
-        result.push(...childResults);
-      }
-
-      result.push(component);
-    }
-
-    // Deduplicate by path and filter excluded directories
-    const seen = new Set<string>();
-    return result.filter(c => {
-      if (!c.path || seen.has(c.path)) { return false; }
-      seen.add(c.path);
-      // Filter out excluded directories that LLM may have included
-      const topDir = c.path.split('/')[0]?.toLowerCase() || '';
-      if (isVirtualEnvPath(c.path)) return false;
-      if (ComponentMapper.EXCLUDED_DIRS.has(topDir) || ComponentMapper.EXCLUDED_DIRS.has(c.path.toLowerCase())) return false;
-      return true;
-    });
-  }
-
-  private normalizeType(type: unknown): ComponentInfo['type'] {
-    const valid: ComponentInfo['type'][] = ['app', 'library', 'service', 'script', 'config', 'infra', 'data', 'unknown'];
-    const str = String(type || '').toLowerCase();
-    return valid.includes(str as ComponentInfo['type']) ? str as ComponentInfo['type'] : 'unknown';
-  }
 
   /** Detect if a component contains generated/exported/backup code */
-  private detectGenerated(path: string, name: string, language: string, description: string): boolean {
+  private detectGenerated(path: string, name: string, _language: string, description: string): boolean {
     const pathLower = path.toLowerCase();
     const nameLower = name.toLowerCase();
     const descLower = description.toLowerCase();
@@ -1876,71 +1827,7 @@ Respond as JSON array: [{"path":"...","name":"Better Name","description":"one se
     return false;
   }
 
-  private async findComponentDescriptors(workspaceUri: vscode.Uri): Promise<FileContent[]> {
-    const files: FileContent[] = [];
-    const exclude = '{**/node_modules/**,**/.git/**,**/dist/**,**/build/**,**/.venv/**,**/target/**}';
 
-    const patterns = [
-      '*/README.md', '*/*/README.md',
-      '*/pyproject.toml', '*/*/pyproject.toml',
-      '*/package.json', '*/*/package.json',
-      '*/Cargo.toml', '*/go.mod',
-    ];
-
-    for (const pattern of patterns) {
-      const uris = await vscode.workspace.findFiles(
-        new vscode.RelativePattern(workspaceUri, pattern), exclude, 20
-      );
-      for (const uri of uris) {
-        try {
-          const raw = await vscode.workspace.fs.readFile(uri);
-          const content = Buffer.from(raw).toString('utf-8');
-          files.push({
-            path: uri.fsPath,
-            content: content.split('\n').slice(0, 50).join('\n'),
-            relativePath: vscode.workspace.asRelativePath(uri),
-          });
-        } catch (err) {
-          logger.warn('Failed to read component descriptor file', { error: err instanceof Error ? err.message : String(err) });
-        }
-      }
-    }
-
-    return files;
-  }
-
-  private async buildDeepTree(workspaceUri: vscode.Uri, maxDepth: number = 4): Promise<string> {
-    const allFiles = filterVirtualEnvEntries(await vscode.workspace.findFiles(
-      new vscode.RelativePattern(workspaceUri, '**/*'),
-      EXCLUDE_GLOB,
-      5000,
-    ));
-    const basePath = workspaceUri.path;
-    const relativePaths = allFiles
-      .map(f => f.path.slice(basePath.length + 1))
-      .filter(p => {
-        const depth = p.split('/').length;
-        return depth <= maxDepth;
-      })
-      .sort();
-
-    const tree: string[] = [];
-    const seen = new Set<string>();
-    for (const p of relativePaths) {
-      const parts = p.split('/');
-      for (let i = 0; i < parts.length - 1; i++) {
-        const dirPath = parts.slice(0, i + 1).join('/');
-        if (!seen.has(dirPath)) {
-          seen.add(dirPath);
-          tree.push(`${'  '.repeat(i)}${parts[i]}/`);
-        }
-      }
-    }
-    if (tree.length > MAX_DEEP_TREE_LINES) {
-      return tree.slice(0, MAX_DEEP_TREE_LINES).join('\n') + '\n... (truncated)';
-    }
-    return tree.join('\n');
-  }
 
   // ── File reading helpers ────────────────────────────────────────────
 

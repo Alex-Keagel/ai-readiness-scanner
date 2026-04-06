@@ -27,7 +27,7 @@ export class FixPreview {
   private async showFileDiff(
     file: FixFile,
     signalId: string,
-    workspaceUri: vscode.Uri
+    _workspaceUri: vscode.Uri
   ): Promise<boolean> {
     const originalContent = file.originalContent ?? '';
     const originalUri = vscode.Uri.parse(

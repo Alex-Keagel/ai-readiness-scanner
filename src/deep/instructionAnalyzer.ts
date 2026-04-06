@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
-import { AITool, AI_TOOLS } from '../scoring/types';
 import { CopilotClient } from '../llm/copilotClient';
 import { logger } from '../logging';
-import { InstructionFile, InstructionClaim, InstructionProfile } from './types';
+import { AITool } from '../scoring/types';
 import { isNestedConfig } from '../utils';
+import { InstructionClaim,InstructionFile,InstructionProfile } from './types';
 
 const INSTRUCTION_PATTERNS: Record<string, { globs: string[]; tool: AITool | 'shared'; type: InstructionFile['type'] }[]> = {
   copilot: [

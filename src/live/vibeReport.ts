@@ -1224,21 +1224,6 @@ export class VibeReportGenerator {
     }
   }
   
-  private renderVibeRadar(metrics: VibeMetrics): string {
-    try {
-    const data: RadarDataPoint[] = [
-      { label: 'Autonomy', value: metrics.autonomyScore, color: '#00E5FF' },
-      { label: 'Delegation', value: metrics.delegationQualityScore, color: '#B388FF' },
-      { label: 'Recovery', value: metrics.recoveryScore, color: '#00E676' },
-      { label: 'Depth', value: metrics.sessionDepthScore, color: '#00E5FF' },
-      { label: 'Output', value: metrics.outputDensityScore, color: '#FFB020' },
-    ];
-    return generateRadarChartSVG(data, 240, true);
-    } catch (err) {
-      logger.error('VibeReportGenerator: renderVibeRadar failed', err);
-      return '<div>⚠️ Error rendering radar chart</div>';
-    }
-  }
 
   private renderMetricChart(
     title: string,

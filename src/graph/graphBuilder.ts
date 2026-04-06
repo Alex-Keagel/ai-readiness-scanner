@@ -265,7 +265,7 @@ export class GraphBuilder {
     return `${prefix}-${path.replace(/[^a-zA-Z0-9]/g, '_')}`;
   }
 
-  private addLanguageNodes(nodes: GraphNode[], edges: GraphEdge[], report: ReadinessReport): void {
+  private addLanguageNodes(nodes: GraphNode[], _edges: GraphEdge[], report: ReadinessReport): void {
     for (const lang of report.languageScores) {
       const langId = `lang-${lang.language}`;
       if (!nodes.find(n => n.id === langId)) {
@@ -283,7 +283,7 @@ export class GraphBuilder {
     }
   }
 
-  private addSignalNodes(nodes: GraphNode[], edges: GraphEdge[], report: ReadinessReport, subProjectPaths: string[]): void {
+  private addSignalNodes(nodes: GraphNode[], _edges: GraphEdge[], report: ReadinessReport, subProjectPaths: string[]): void {
     for (const level of report.levels) {
       for (const signal of level.signals) {
         const sigId = `signal-${signal.signalId}`;
@@ -384,7 +384,7 @@ export class GraphBuilder {
     }
   }
 
-  private addCoverageEdges(nodes: GraphNode[], edges: GraphEdge[], report: ReadinessReport): void {
+  private addCoverageEdges(_nodes: GraphNode[], edges: GraphEdge[], report: ReadinessReport): void {
     for (const comp of report.componentScores) {
       const compId = this.nodeId('comp', comp.path);
       

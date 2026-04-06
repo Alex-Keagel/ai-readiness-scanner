@@ -1,7 +1,6 @@
-import * as vscode from 'vscode';
 import { CopilotClient } from '../llm/copilotClient';
 import { logger } from '../logging';
-import { CoverageGap, ModuleProfile } from './types';
+import { CoverageGap,ModuleProfile } from './types';
 
 // ─── Static exclusion patterns ──────────────────────────────────
 
@@ -307,7 +306,7 @@ export class RecommendationValidatorAgent {
   /** Cross-check other agents' decisions for false negatives */
   async validate(
     excluded: Map<string, 'exclude' | 'include' | 'low-priority'>,
-    testClassifications: Map<string, 'test' | 'test-utility' | 'production'>,
+    _testClassifications: Map<string, 'test' | 'test-utility' | 'production'>,
     filteredGaps: CoverageGap[],
     originalGapCount: number
   ): Promise<{ adjustments: string[]; warnings: string[] }> {

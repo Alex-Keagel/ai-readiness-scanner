@@ -1,4 +1,4 @@
-import { ReadinessReport, MATURITY_LEVELS, MaturityLevel, AI_TOOLS, AITool, RealityCheckRef, StructureComparison } from '../scoring/types';
+import { AI_TOOLS,AITool,MATURITY_LEVELS,MaturityLevel,ReadinessReport } from '../scoring/types';
 import { humanizeSignalId } from '../utils';
 
 export class MarkdownReportGenerator {

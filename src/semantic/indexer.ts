@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
-import { SemanticCache } from './cache';
 import { CopilotClient } from '../llm/copilotClient';
-import { VectorStore, VectorDocument, SearchResult } from './vectorStore';
 import { logger } from '../logging';
+import { SemanticCache } from './cache';
+import { SearchResult,VectorStore } from './vectorStore';
 
 export interface CodeChunk {
   path: string;
@@ -478,17 +478,6 @@ export class WorkspaceIndexer {
     return chunks;
   }
 
-  /** Generate a semantic summary for a single file (delegates to batch method) */
-  private async generateSummary(
-    path: string, content: string, chunks: CodeChunk[],
-    token?: vscode.CancellationToken
-  ): Promise<string> {
-    const results = await this.batchGenerateSummaries(
-      [{ path, content, lang: '', chunks }],
-      token
-    );
-    return results[0] || this.heuristicSummary(path, content, chunks);
-  }
 
   /** Generate summaries for a batch of files in a single LLM call */
   private async batchGenerateSummaries(

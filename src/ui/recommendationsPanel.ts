@@ -1,10 +1,10 @@
 import * as vscode from 'vscode';
-import { ReadinessReport, MATURITY_LEVELS, AI_TOOLS, AITool, SignalResult, FailingSignal, Insight } from '../scoring/types';
-import { getFixTier } from '../remediation/fixClassifier';
-import { humanizeSignalId } from '../utils';
-import { TACTICAL_GLASSBOX_CSS, getSeverityGlowClass } from './theme';
 import { logger } from '../logging';
-import { FixStorage, PersistedFix } from '../storage/fixStorage';
+import { getFixTier } from '../remediation/fixClassifier';
+import { AI_TOOLS,AITool,MATURITY_LEVELS,ReadinessReport } from '../scoring/types';
+import { FixStorage,PersistedFix } from '../storage/fixStorage';
+import { humanizeSignalId } from '../utils';
+import { getSeverityGlowClass,TACTICAL_GLASSBOX_CSS } from './theme';
 
 interface Recommendation {
   signalId: string;
@@ -33,8 +33,6 @@ export class RecommendationsPanel {
   private fixStorage?: FixStorage;
   private qualityThreshold: number = 40;
   private confidenceThreshold: number = 0.5;
-  private currentReport?: ReadinessReport;
-  private currentTool?: AITool;
   private onGenerate?: (signalIds: string[], approvalMode: 'selected' | 'all') => Promise<void>;
   private onPreview?: (signalId: string) => Promise<{ path: string; content: string }[]>;
   private onChat?: (message: string) => Promise<string>;
@@ -203,8 +201,6 @@ export class RecommendationsPanel {
 
   private updateContent(report: ReadinessReport, tool: AITool): void {
     try {
-      this.currentReport = report;
-      this.currentTool = tool;
       this.recommendations = this.buildRecommendations(report, tool);
       
       // Load persisted fix statuses from FixStorage
@@ -926,8 +922,6 @@ export class RecommendationsPanel {
     const tierLabel = r.tier === 'auto' ? '⚡ Auto-fix' : r.tier === 'guided' ? '🔧 Guided' : '📖 Manual';
     const statusLabel = r.detected ? `Score: ${r.score}/100` : 'Missing';
     const statusClass = r.detected ? 'low' : 'missing';
-    const canGenerate = r.tier === 'auto' || r.tier === 'guided';
-    const alreadyApplied = this.appliedFixIds.has(r.signalId);
     const fixStatus = this.fixStatusMap.get(r.signalId);
     // Only disable checkbox for approved fixes — pending-review and declined can be re-selected
     const checkboxDisabled = fixStatus === 'approved';

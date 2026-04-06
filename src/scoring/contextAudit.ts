@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
-import { AITool, AI_TOOLS, ProjectContext } from './types';
 import { logger } from '../logging';
 import { isNestedConfig } from '../utils';
+import { ProjectContext } from './types';
 
 // ─── Result Interfaces ──────────────────────────────────────────────
 

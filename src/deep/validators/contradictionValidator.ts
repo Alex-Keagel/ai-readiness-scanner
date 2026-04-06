@@ -97,7 +97,7 @@ export class ContradictionValidator {
   /**
    * Checks if LLM claims no files exist but files array is populated.
    */
-  private checkFilesFindingContradiction(signalResult: SignalResult, signal: LevelSignal): ValidationIssue | null {
+  private checkFilesFindingContradiction(signalResult: SignalResult, _signal: LevelSignal): ValidationIssue | null {
     if (signalResult.files.length === 0) {
       return null; // No files, no contradiction possible
     }

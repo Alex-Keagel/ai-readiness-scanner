@@ -1,19 +1,17 @@
 import * as vscode from 'vscode';
-import { ComponentMapper } from './componentMapper';
-import { MaturityEngine } from '../scoring/maturityEngine';
-import { MaturityScanner } from './maturityScanner';
-import { ComponentScorer } from '../scoring/componentScorer';
-import { ReadinessReport, AITool, AI_TOOLS } from '../scoring/types';
-import { CopilotClient } from '../llm/copilotClient';
+import { DependencyScanner,GraphBuilder } from '../graph';
 import { LLMCache } from '../llm/cache';
+import { CopilotClient } from '../llm/copilotClient';
 import { DocsCache } from '../llm/docsCache';
-import { InsightsEngine } from '../scoring/insightsEngine';
-import { StructureAnalyzer } from './structureAnalyzer';
-import { GraphBuilder, DependencyScanner } from '../graph';
-import { WorkspaceIndexer } from '../semantic';
-import { analyzeFileContent, calculateCodebaseMetrics, type FileAnalysis } from '../metrics';
-import { isVirtualEnvPath } from './componentMapper';
 import { logger } from '../logging';
+import { analyzeFileContent,calculateCodebaseMetrics,type FileAnalysis } from '../metrics';
+import { ComponentScorer } from '../scoring/componentScorer';
+import { MaturityEngine } from '../scoring/maturityEngine';
+import { AITool,AI_TOOLS,ReadinessReport } from '../scoring/types';
+import { WorkspaceIndexer } from '../semantic';
+import { ComponentMapper,isVirtualEnvPath } from './componentMapper';
+import { MaturityScanner } from './maturityScanner';
+import { StructureAnalyzer } from './structureAnalyzer';
 
 export class WorkspaceScanner {
   private componentMapper: ComponentMapper;
@@ -23,7 +21,6 @@ export class WorkspaceScanner {
   private copilotClient: CopilotClient;
   private cache: LLMCache;
   private docsCache: DocsCache;
-  private insightsEngine: InsightsEngine;
   private structureAnalyzer: StructureAnalyzer;
   private graphBuilder: GraphBuilder;
   private dependencyScanner: DependencyScanner;
@@ -37,7 +34,6 @@ export class WorkspaceScanner {
     this.docsCache = new DocsCache(context);
     this.maturityScanner = new MaturityScanner(this.copilotClient, this.cache, this.engine, this.docsCache);
     this.componentScorer = new ComponentScorer();
-    this.insightsEngine = new InsightsEngine(this.copilotClient);
     this.structureAnalyzer = new StructureAnalyzer(this.copilotClient);
     this.graphBuilder = new GraphBuilder();
     this.dependencyScanner = new DependencyScanner();

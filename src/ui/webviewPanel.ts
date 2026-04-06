@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
-import { ReadinessReport, MATURITY_LEVELS, MaturityLevel, LevelScore, AI_TOOLS, AITool, RealityCheckRef, StructureComparison, NarrativeMetric, NarrativeSections } from '../scoring/types';
-import { KnowledgeGraph, GraphTreeNode, GraphNode, GraphEdge } from '../graph/types';
 import { GraphBuilder } from '../graph';
-import { humanizeSignalId } from '../utils';
-import { TACTICAL_GLASSBOX_CSS } from './theme';
+import { GraphEdge,GraphNode,GraphTreeNode,KnowledgeGraph } from '../graph/types';
 import { logger } from '../logging';
 import { calculateInstructionRealitySync } from '../report/instructionRealitySync';
+import { AI_TOOLS,AITool,MATURITY_LEVELS,MaturityLevel,NarrativeMetric,ReadinessReport } from '../scoring/types';
+import { humanizeSignalId } from '../utils';
+import { TACTICAL_GLASSBOX_CSS } from './theme';
 
 const LEVEL_COLORS: Record<MaturityLevel, string> = {
   1: '#ef4444',
@@ -27,7 +27,7 @@ export class WebviewReportPanel {
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
   }
 
-  public static createOrShow(extensionUri: vscode.Uri, report: ReadinessReport, _repoMap?: unknown): void {
+  public static createOrShow(_extensionUri: vscode.Uri, report: ReadinessReport, _repoMap?: unknown): void {
     try {
     const column = vscode.ViewColumn.Beside;
 
@@ -63,9 +63,6 @@ export class WebviewReportPanel {
     const ladderHtml = this.buildMaturityLadder(report);
     const structureComparisonHtml = this.buildStructureComparison(report);
     const levelDetailsHtml = this.buildLevelDetails(report);
-    const repoMapHtml = report.repoMap ? this.buildRepoMapHtml(report.repoMap) : '';
-    const nextStepsHtml = this.buildNextSteps(report);
-    const platformGuideHtml = this.buildPlatformGuide(report);
     const knowledgeGraphHtml = this.buildKnowledgeGraphSection(report);
 
     return `<!DOCTYPE html>
@@ -631,8 +628,8 @@ export class WebviewReportPanel {
     </details>`;
   }
 
-  private renderPlatformGroupNode(treeNode: GraphTreeNode, graph?: KnowledgeGraph): string {
-    const { node, children } = treeNode;
+  private renderPlatformGroupNode(treeNode: GraphTreeNode, _graph?: KnowledgeGraph): string {
+    const { node } = treeNode;
     const configured = node.properties?.configured as boolean;
     const fileCount = node.properties?.fileCount as number || 0;
     const cssClass = configured ? 'configured' : 'missing';
@@ -669,7 +666,6 @@ export class WebviewReportPanel {
       const isCurrent = ls.level === report.primaryLevel;
       const currentClass = isCurrent ? ' ladder-current' : '';
       const opacity = ls.qualified ? '1' : '0.5';
-      const icon = ls.qualified ? '✅' : '❌';
 
       const signalIcon = ls.signalsDetected === ls.signalsTotal && ls.signalsTotal > 0 ? '✅' : ls.signalsDetected > 0 ? '🟡' : '❌';
 
@@ -808,126 +804,10 @@ export class WebviewReportPanel {
       </div>`;
   }
 
-  private buildRepoMapHtml(repoMap: unknown): string {
-    if (!repoMap || typeof repoMap !== 'object') return '';
 
-    const map = repoMap as { root?: unknown; stats?: { totalFiles?: number; totalDirs?: number } };
-    if (!map.root) return '';
 
-    const statsLabel = map.stats
-      ? `${map.stats.totalFiles ?? 0} files across ${map.stats.totalDirs ?? 0} directories`
-      : '';
 
-    return `
-      <h2>📂 Repository Map</h2>
-      <div class="repo-map">
-        <div class="meta" style="margin-bottom:10px">${statsLabel}</div>
-        <details>
-          <summary>Expand repository tree</summary>
-          <pre style="font-size:0.85em;overflow-x:auto">${escapeHtml(JSON.stringify(map.root, null, 2).slice(0, 5000))}</pre>
-        </details>
-      </div>`;
-  }
 
-  private buildNextSteps(report: ReadinessReport): string {
-    try {
-    const nextLevel = report.levels.find(ls => !ls.qualified);
-    if (!nextLevel) {
-      return `<div class="next-steps">
-        <h3>🎉 Congratulations!</h3>
-        <p>All maturity levels achieved. Your project has reached full AI readiness.</p>
-      </div>`;
-    }
-
-    const missing = nextLevel.signals.filter(s => !s.detected);
-    if (missing.length === 0) {
-      return '';
-    }
-
-    const toolMeta = AI_TOOLS[report.selectedTool as AITool];
-    const toolName = toolMeta?.name ?? report.selectedTool;
-    const toolLevelFiles = this.getToolLevelFiles(report.selectedTool, nextLevel.level);
-
-    const color = LEVEL_COLORS[nextLevel.level];
-    const stepsHtml = missing.map((s, i) => {
-      const displayName = humanizeSignalId(s.signalId);
-      let detail = escapeHtml(s.finding);
-      if (toolLevelFiles) {
-        const fileHints = toolLevelFiles.map(f => `<code>${escapeHtml(f)}</code>`).join(', ');
-        detail += `<div class="meta" style="margin-top:4px">Target: ${fileHints}</div>`;
-      }
-      return `<div class="next-step-item">
-        <strong>${i + 1}. ${escapeHtml(displayName)}</strong> — ${detail}
-      </div>`;
-    }).join('');
-
-    return `
-      <h2>🚀 Next Steps</h2>
-      <div class="next-steps" style="border-left-color:${color}">
-        <h3>To improve your <strong>${escapeHtml(toolName)}</strong> readiness to Level ${nextLevel.level}: ${escapeHtml(nextLevel.name)}</h3>
-        ${stepsHtml}
-      </div>`;
-    } catch (err) {
-      logger.error('WebviewReportPanel: buildNextSteps failed', err);
-      return '<div>⚠️ Error rendering next steps</div>';
-    }
-  }
-
-  private buildPlatformGuide(report: ReadinessReport): string {
-    try {
-    const selectedTool = report.selectedTool as AITool;
-    const toolMeta = AI_TOOLS[selectedTool];
-    if (!toolMeta?.reasoningContext) { return ''; }
-    const rc = toolMeta.reasoningContext;
-    const docLinksHtml = this.buildDocLinksHtml(toolMeta.docUrls);
-    return `
-    <details class="platform-guide">
-      <summary><h2>📚 ${escapeHtml(toolMeta.name)} — What It Expects</h2></summary>
-      ${docLinksHtml}
-      <div class="guide-section">
-        <h3>📁 Expected File Structure</h3>
-        <pre>${escapeHtml(rc.structureExpectations)}</pre>
-      </div>
-      <div class="guide-section">
-        <h3>✅ Quality Markers</h3>
-        <pre>${escapeHtml(rc.qualityMarkers)}</pre>
-      </div>
-      <div class="guide-section">
-        <h3>❌ Anti-Patterns to Avoid</h3>
-        <pre>${escapeHtml(rc.antiPatterns)}</pre>
-      </div>
-      <div class="guide-section">
-        <h3>📝 Instruction Format</h3>
-        <pre>${escapeHtml(rc.instructionFormat)}</pre>
-      </div>
-    </details>`;
-    } catch (err) {
-      logger.error('WebviewReportPanel: buildPlatformGuide failed', err);
-      return '<div>⚠️ Error rendering platform guide</div>';
-    }
-  }
-
-  private buildDocLinksHtml(docUrls?: { main: string; rules: string; memory?: string; bestPractices?: string }): string {
-    if (!docUrls || !docUrls.main) { return ''; }
-    const items: string[] = [];
-    if (docUrls.main) { items.push(`<li><a href="${escapeHtml(docUrls.main)}">📄 Main Documentation</a></li>`); }
-    if (docUrls.rules) { items.push(`<li><a href="${escapeHtml(docUrls.rules)}">📋 Rules &amp; Instructions</a></li>`); }
-    if (docUrls.memory) { items.push(`<li><a href="${escapeHtml(docUrls.memory)}">🧠 Memory &amp; Context</a></li>`); }
-    if (docUrls.bestPractices) { items.push(`<li><a href="${escapeHtml(docUrls.bestPractices)}">⭐ Best Practices</a></li>`); }
-    return `<div class="doc-links"><h3>📖 Official Documentation</h3><ul>${items.join('')}</ul></div>`;
-  }
-
-  private getToolLevelFiles(selectedTool: string, level: MaturityLevel): string[] | undefined {
-    const tool = AI_TOOLS[selectedTool as AITool];
-    if (!tool) { return undefined; }
-    switch (level) {
-      case 2: return tool.level2Files;
-      case 3: return tool.level3Files;
-      case 4: return tool.level4Files;
-      case 5: return tool.level5Files;
-      default: return undefined;
-    }
-  }
 
   private buildReadinessRadar(report: ReadinessReport): string {
     try {

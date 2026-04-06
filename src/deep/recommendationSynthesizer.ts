@@ -1,8 +1,8 @@
 import { CopilotClient } from '../llm/copilotClient';
 import { logger } from '../logging';
-import { AITool, AI_TOOLS } from '../scoring/types';
 import { getPlatformExpertPrompt } from '../remediation/fixPrompts';
-import { CrossRefResult, CoverageGap, DriftIssue, DeepRecommendation, CodebaseProfile, InstructionProfile } from './types';
+import { AITool } from '../scoring/types';
+import { CodebaseProfile,CoverageGap,CrossRefResult,DeepRecommendation,DriftIssue,InstructionProfile } from './types';
 
 export class RecommendationSynthesizer {
   constructor(private copilotClient: CopilotClient) {}
@@ -45,7 +45,6 @@ export class RecommendationSynthesizer {
     tool: AITool
   ): DeepRecommendation[] {
     const recs: DeepRecommendation[] = [];
-    const toolConfig = AI_TOOLS[tool];
 
     // Coverage gaps → specific recommendations
     for (const gap of crossRef.coverageGaps) {
@@ -220,7 +219,7 @@ export class RecommendationSynthesizer {
     }
   }
 
-  private driftToRec(drift: DriftIssue, tool: AITool): DeepRecommendation {
+  private driftToRec(drift: DriftIssue, _tool: AITool): DeepRecommendation {
     return {
       id: `drift-${drift.file.replace(/[^a-z0-9]/gi, '_')}-${drift.type}`,
       type: drift.type === 'path-drift' ? 'stale-path' : drift.type === 'structural-drift' ? 'structural-drift' : 'semantic-drift',
@@ -247,7 +246,6 @@ export class RecommendationSynthesizer {
     if (recs.length === 0) return;
 
     const expertPrompt = getPlatformExpertPrompt(tool);
-    const toolConfig = AI_TOOLS[tool];
 
     // Build context for LLM
     const existingInstructions = instructions.files

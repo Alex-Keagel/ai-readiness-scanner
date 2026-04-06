@@ -44,7 +44,7 @@ export interface CallGraphResult {
 export class CallGraphExtractor {
   constructor(
     private copilotClient?: CopilotClient,
-    private cache?: SemanticCache
+    _cache?: SemanticCache
   ) {}
 
   /**
@@ -221,7 +221,7 @@ export class CallGraphExtractor {
     path: string,
     content: string,
     localNodes: CallGraphNode[],
-    allModules: { path: string; exports: string[] }[]
+    _allModules: { path: string; exports: string[] }[]
   ): CallGraphEdge[] {
     const edges: CallGraphEdge[] = [];
     const localNames = new Set(localNodes.map(n => n.name));

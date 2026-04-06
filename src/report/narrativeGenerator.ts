@@ -667,7 +667,7 @@ Respond as JSON array:
    * If the LLM claims the root instruction file is absent when it actually exists
    * (or vice versa), replace with a deterministic, factually correct narrative.
    */
-  private validateIQSyncNarrative(
+  public validateIQSyncNarrative(
     narratives: { dimension: string; narrative: string }[] | null,
     rootInstructionDetected: boolean,
     rootInstructionFiles: string[],
@@ -704,6 +704,7 @@ Respond as JSON array:
       return n;
     });
   }
+
 
   /** Check if narrative claims the root instruction file is absent/missing */
   containsRootAbsenceClaim(narrative: string): boolean {

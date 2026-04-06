@@ -1,5 +1,5 @@
-import { LevelScore, MaturityLevel, MATURITY_LEVELS, ReadinessReport, ProjectContext, ComponentScore, LanguageScore, SignalResult, AITool, AI_TOOLS, RealityCheckRef } from './types';
-import { normalizeSignalScopePath, validateSignalScope } from '../deep/validators/signalScopeValidator';
+import { normalizeSignalScopePath,validateSignalScope } from '../deep/validators/signalScopeValidator';
+import { AITool,ComponentScore,LanguageScore,LevelScore,MATURITY_LEVELS,MaturityLevel,ProjectContext,ReadinessReport,RealityCheckRef,SignalResult } from './types';
 
 // ─── Confidence Multipliers ─────────────────────────────────────
 const CONFIDENCE_MULTIPLIER: Record<string, number> = {
@@ -165,11 +165,6 @@ const PLATFORM_THRESHOLDS: Record<string, Record<number, { self: number; previou
 };
 
 // Map signal categories to dimensions
-const CATEGORY_TO_DIMENSION: Record<string, keyof DimensionWeights> = {
-  'file-presence': 'presence',
-  'content-quality': 'quality',
-  'depth': 'breadth',
-};
 
 // Map signal IDs to operability dimension (overrides category mapping)
 const OPERABILITY_SIGNALS = new Set([

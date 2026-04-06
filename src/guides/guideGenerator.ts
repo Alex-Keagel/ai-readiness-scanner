@@ -1,10 +1,9 @@
-import * as vscode from 'vscode';
-import * as https from 'https';
 import * as http from 'http';
-import { AITool, AI_TOOLS } from '../scoring/types';
+import * as https from 'https';
 import { CopilotClient } from '../llm/copilotClient';
-import { getPlatformExpertPrompt } from '../remediation/fixPrompts';
 import { logger } from '../logging';
+import { getPlatformExpertPrompt } from '../remediation/fixPrompts';
+import { AITool,AI_TOOLS } from '../scoring/types';
 
 export interface PlatformGuide {
   platform: string;

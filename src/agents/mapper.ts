@@ -5,14 +5,14 @@ import { SemanticCache } from '../semantic/cache';
 
 export class MapperAgent {
   constructor(
-    private copilotClient: CopilotClient,
+    _copilotClient: CopilotClient,
     private semanticCache: SemanticCache
   ) {}
 
   async run(
-    workspaceUri: vscode.Uri,
+    _workspaceUri: vscode.Uri,
     onProgress: AgentProgressCallback,
-    token?: vscode.CancellationToken
+    _token?: vscode.CancellationToken
   ): Promise<AgentResult> {
     const start = Date.now();
     onProgress('Mapper', 'Scanning workspace structure...');

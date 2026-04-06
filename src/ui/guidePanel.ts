@@ -1,8 +1,8 @@
 import * as vscode from 'vscode';
-import { ReadinessReport, MATURITY_LEVELS, AI_TOOLS, AITool, StructureComparison } from '../scoring/types';
-import { TACTICAL_GLASSBOX_CSS, getLevelColor, getLevelGlowClass, getSeverityGlowClass } from './theme';
 import { DocsCache } from '../llm/docsCache';
 import { logger } from '../logging';
+import { AI_TOOLS,AITool,ReadinessReport } from '../scoring/types';
+import { TACTICAL_GLASSBOX_CSS } from './theme';
 
 const REFERENCE_DOCS_UPDATED = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
 
@@ -116,7 +116,7 @@ export class GuidePanel {
     }
   }
 
-  private async collectFileDates(report: ReadinessReport): Promise<void> {
+  private async collectFileDates(_report: ReadinessReport): Promise<void> {
     try {
     const workspaceUri = vscode.workspace.workspaceFolders?.[0]?.uri;
     if (!workspaceUri) return;
@@ -162,7 +162,6 @@ export class GuidePanel {
   private getHtml(report: ReadinessReport): string {
     try {
     const selectedTool = report.selectedTool as AITool;
-    const toolMeta = AI_TOOLS[selectedTool] || AI_TOOLS['copilot'];
 
     const toolEntries = Object.entries(AI_TOOLS) as [AITool, typeof AI_TOOLS[AITool]][];
 
@@ -184,7 +183,6 @@ export class GuidePanel {
       const docsFetchDate = liveDocs?.fetchedAt;
 
       // Use live docs if available, otherwise static reference
-      const instructionContent = liveDocs ? liveDocs.content : (val.reasoningContext?.instructionFormat || 'N/A');
       const instructionSource = liveDocs ? `live from GitHub — ${docsFetchDate}` : `static reference — ${REFERENCE_DOCS_UPDATED}`;
 
       return `<div id="guide-${key}" class="guide-tool-panel${isActive ? ' active' : ''}">
@@ -293,37 +291,6 @@ export class GuidePanel {
     }
   }
 
-  private buildStructureSection(sc: StructureComparison): string {
-    const completePct = Math.min(100, sc.completeness); // already a percentage (0-100)
-    const color = completePct >= 80 ? 'var(--color-emerald)' : completePct >= 50 ? 'var(--level-3)' : 'var(--color-crimson)';
-
-    return `<div class="structure-section">
-      <div class="structure-header">
-        <h2>📂 Expected vs Actual Structure — ${this.escapeHtml(sc.toolName)}</h2>
-        <span class="structure-completeness" style="color:${color}">${completePct}%</span>
-      </div>
-      <div style="font-size:0.85em;color:var(--text-secondary);margin-bottom:12px">
-        ${sc.presentCount} present · ${sc.missingCount} missing
-      </div>
-      ${sc.expected.map(item => {
-        if (item.exists) {
-          return `<div class="structure-item present">
-            <span>✅</span>
-            <code>${this.escapeHtml(item.path)}</code>
-            <span class="description">${this.escapeHtml(item.description)}</span>
-            <span class="level-tag">L${item.level}</span>
-          </div>`;
-        }
-        const cls = item.required ? 'missing-required' : 'missing-optional';
-        return `<div class="structure-item ${cls}">
-          <span>${item.required ? '❌' : '○'}</span>
-          <code>${this.escapeHtml(item.path)}</code>
-          <span class="description">${this.escapeHtml(item.description)}</span>
-          <span class="level-tag">L${item.level}</span>
-        </div>`;
-      }).join('')}
-    </div>`;
-  }
 
   private escapeHtml(text: string): string {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');

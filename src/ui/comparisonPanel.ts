@@ -1,9 +1,8 @@
 import * as vscode from 'vscode';
-import { ReadinessReport, MATURITY_LEVELS, MaturityLevel, AI_TOOLS, AITool, SignalResult } from '../scoring/types';
-import { ScanRun } from '../storage/runStorage';
-import { humanizeSignalId } from '../utils';
-import { TACTICAL_GLASSBOX_CSS, getLevelColor, getLevelGlowClass, getSeverityGlowClass } from './theme';
 import { logger } from '../logging';
+import { MATURITY_LEVELS,MaturityLevel,SignalResult } from '../scoring/types';
+import { ScanRun } from '../storage/runStorage';
+import { TACTICAL_GLASSBOX_CSS } from './theme';
 
 export class ComparisonPanel {
   public static currentPanel: ComparisonPanel | undefined;

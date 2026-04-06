@@ -446,7 +446,7 @@ Respond ONLY as JSON array: [{"str":"exact string","type":"file_path"|"not_path"
       { pattern: /\bservice\b/i, type: 'service' },
     ];
 
-    for (const { pattern, type } of typeClaims) {
+    for (const { type } of typeClaims) {
       // Only check strong claims like "this is a monorepo" or "monorepo structure"
       const strongRe = new RegExp(`(?:this\\s+is\\s+a|this\\s+project\\s+is|structured\\s+as)\\s+(?:a\\s+)?${type}`, 'i');
       if (strongRe.test(file.content)) {

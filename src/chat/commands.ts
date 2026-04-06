@@ -1,14 +1,13 @@
-import {
-  ReadinessReport,
-  MATURITY_LEVELS,
-  MaturityLevel,
-  LevelScore,
-  AITool,
-  AI_TOOLS,
-  StructureComparison,
-} from '../scoring/types';
-import { KnowledgeGraph, GraphTreeNode } from '../graph/types';
 import { GraphBuilder } from '../graph';
+import { GraphTreeNode,KnowledgeGraph } from '../graph/types';
+import {
+AITool,
+AI_TOOLS,
+MATURITY_LEVELS,
+MaturityLevel,
+ReadinessReport,
+StructureComparison
+} from '../scoring/types';
 
 const LEVEL_EMOJIS: Record<number, string> = {
   1: '🟤', 2: '📘', 3: '🟢', 4: '🟣', 5: '🏅', 6: '🏆',

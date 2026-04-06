@@ -1,16 +1,15 @@
-import { logger } from '../../logging';
 import * as vscode from 'vscode';
-import {
-  AITool,
-  FailingSignal,
-  ProjectContext,
-  RemediationFix,
-  FixFile,
-} from '../../scoring/types';
 import { CopilotClient } from '../../llm/copilotClient';
-import { buildGuidedFixPrompt, parseFixResponse } from '../fixPrompts';
-import { validateFixFiles } from '../fixValidator';
 import { logger } from '../../logging';
+import {
+AITool,
+FailingSignal,
+FixFile,
+ProjectContext,
+RemediationFix,
+} from '../../scoring/types';
+import { buildGuidedFixPrompt,parseFixResponse } from '../fixPrompts';
+import { validateFixFiles } from '../fixValidator';
 
 // Maps signal IDs to the config files they typically modify
 const SIGNAL_FILE_MAP: Record<string, string[]> = {

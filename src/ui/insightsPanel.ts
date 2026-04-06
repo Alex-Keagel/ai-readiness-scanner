@@ -1,9 +1,9 @@
 import * as vscode from 'vscode';
-import { ReadinessReport, MATURITY_LEVELS, AI_TOOLS, AITool, Insight, MaturityLevel, SignalResult } from '../scoring/types';
-import { generateRadarChartSVG, type RadarDataPoint } from '../metrics';
-import { TACTICAL_GLASSBOX_CSS, getSeverityGlowClass } from './theme';
 import { logger } from '../logging';
+import { generateRadarChartSVG,type RadarDataPoint } from '../metrics';
+import { AI_TOOLS,AITool,MATURITY_LEVELS,MaturityLevel,ReadinessReport,SignalResult } from '../scoring/types';
 import { humanizeSignalId } from '../utils';
+import { TACTICAL_GLASSBOX_CSS } from './theme';
 
 export class InsightsPanel {
   public static currentPanel: InsightsPanel | undefined;
@@ -36,7 +36,7 @@ export class InsightsPanel {
 
   public static createOrShow(
     report: ReadinessReport,
-    onAction?: (signalId: string, action: 'fix' | 'preview') => Promise<void>
+    _onAction?: (signalId: string, action: 'fix' | 'preview') => Promise<void>
   ): void {
     try {
     const column = vscode.ViewColumn.One;
@@ -67,7 +67,6 @@ export class InsightsPanel {
 
     const currentLevel = report.primaryLevel;
     const nextLevel = Math.min(6, currentLevel + 1) as 1|2|3|4|5|6;
-    const nextLevelInfo = MATURITY_LEVELS[nextLevel];
 
     const missingSignals = report.levels
       .flatMap(l => l.signals)
@@ -308,55 +307,6 @@ export class InsightsPanel {
 </html>`;
   }
 
-  private renderCodebaseMetrics(report: ReadinessReport): string {
-    try {
-    const m = report.codebaseMetrics;
-    if (!m) { return ''; }
-
-    const radarData: RadarDataPoint[] = [
-      { label: 'Semantic Density', value: m.semanticDensity, color: '#B388FF' },
-      { label: 'Type Strictness', value: m.typeStrictnessIndex, color: '#00E676' },
-      { label: 'Low Fragmentation', value: m.contextFragmentation, color: '#FFB020' },
-      { label: 'Overall Score', value: report.overallScore, color: '#B388FF' },
-      { label: 'Depth', value: report.depth, color: '#00E5FF' },
-    ];
-    const radarSvg = generateRadarChartSVG(radarData, 280, true);
-
-    // Metric bars with tooltips
-    const metrics = [
-      { label: 'Semantic Density', value: m.semanticDensity, color: '#B388FF', tip: 'Ratio of comments, docstrings & descriptive names to raw logic. Higher = agents pull better context on first try.' },
-      { label: 'Type Strictness', value: m.typeStrictnessIndex, color: '#00E676', tip: 'Percentage of code using explicit types & interfaces. Agents rely on LSPs for cross-file references — duck typing kills confidence.' },
-      { label: 'Low Fragmentation', value: m.contextFragmentation, color: '#FFB020', tip: 'How self-contained modules are. High = fewer files needed to trace one flow. Low fragmentation reduces hallucination rate.' },
-      { label: 'Overall Score', value: report.overallScore, color: '#B388FF', tip: 'Composite AI readiness score combining all maturity signals, component scores, and quality gates.' },
-      { label: 'Depth', value: report.depth, color: '#00E5FF', tip: 'Progress within the current maturity level. 100% = ready to advance to the next level.' },
-    ];
-
-    const barsHtml = metrics.map(m => `
-      <div class="metric-row" title="${this.escapeHtml(m.tip)}">
-        <span class="metric-label">${this.escapeHtml(m.label)} ℹ️</span>
-        <div class="metric-bar"><div class="metric-bar-fill" style="width:${m.value}%;background:${m.color}"></div></div>
-        <span class="metric-value" style="color:${m.color}">${Math.round(m.value)}</span>
-      </div>
-    `).join('');
-
-    return `
-    <div class="section">
-      <h2>🧠 Codebase Readiness Metrics</h2>
-      <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:flex-start">
-        <div style="flex:0 0 auto;position:relative">
-          ${radarSvg}
-          <div style="text-align:center;font-size:0.72em;color:var(--text-muted);margin-top:4px">Outer ring = perfect score (100)</div>
-        </div>
-        <div style="flex:1;min-width:220px">
-          ${barsHtml}
-        </div>
-      </div>
-    </div>`;
-    } catch (err) {
-      logger.error('InsightsPanel: renderCodebaseMetrics failed', err);
-      return '<div class="section">⚠️ Error rendering codebase metrics</div>';
-    }
-  }
 
   private escapeHtml(text: string): string {
     return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -417,7 +367,7 @@ export class InsightsPanel {
     </div>`;
   }
 
-  private renderPathFlowGraph(report: ReadinessReport, currentLevel: number, missingSignals: SignalResult[]): string {
+  private renderPathFlowGraph(report: ReadinessReport, currentLevel: number, _missingSignals: SignalResult[]): string {
     try {
       if (currentLevel >= 6) {
         return `<div class="next-level glass-card"><h2>🏆 Maximum Level Reached!</h2><p>Your repo is at the highest AI readiness level.</p></div>`;
@@ -426,8 +376,6 @@ export class InsightsPanel {
       const nextLevel = Math.min(6, currentLevel + 1) as MaturityLevel;
       const nextInfo = MATURITY_LEVELS[nextLevel];
       const currentInfo = MATURITY_LEVELS[currentLevel as MaturityLevel];
-      const tool = report.selectedTool as AITool;
-      const toolConfig = AI_TOOLS[tool];
 
       // Get signals for next level - both detected and missing
       const nextLevelSignals = report.levels
@@ -548,9 +496,6 @@ export class InsightsPanel {
       // Check which files exist from scan signals
       const detectedSignals = new Set(
         report.levels.flatMap(l => l.signals).filter(s => s.detected).flatMap(s => s.files || [])
-      );
-      const detectedIds = new Set(
-        report.levels.flatMap(l => l.signals).filter(s => s.detected).map(s => s.signalId)
       );
 
       const levelFiles: [string[], number][] = [
