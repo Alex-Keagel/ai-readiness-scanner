@@ -206,14 +206,15 @@ ${dimensions.map(d => `- ${d.dimension}: ${d.score}/100`).join('\n')}
 
 GROUND TRUTH — VERIFIED SIGNAL DETECTION (filesystem-verified facts — DO NOT contradict these):
 ${signalGroundTruth}
-ROOT INSTRUCTION FILE FACT (filesystem-verified, non-negotiable):
+FACT: Root instruction file ${rootInstructionFact.canonicalPaths.join(', ')} ${rootInstructionFact.present ? `EXISTS${rootInstructionFact.finding ? ` (${rootInstructionFact.finding})` : ''}` : 'DOES NOT EXIST'}.
 - Canonical path(s): ${rootInstructionFact.canonicalPaths.join(', ')}
-- Status: ${rootInstructionFact.present ? 'PRESENT' : 'ABSENT'}
+- Status: ${rootInstructionFact.present ? '✅ PRESENT — file is on disk and detected by scanner' : '❌ ABSENT'}
 - Detected file(s): ${rootInstructionFact.files.length ? rootInstructionFact.files.join(', ') : '(none)'}
 
-MANDATORY:
-- For "Instruction/Reality Sync": your narrative MUST match the root instruction file FACT above.
-- For ALL OTHER metrics: do NOT claim the root instruction file is missing/present; focus on that metric only.
+MANDATORY RULES (violation = factual error):
+- NEVER use "absence", "missing", "lack", "without", "not found", "not present" about root instruction files that are marked PRESENT above.
+- For "Instruction/Reality Sync": your narrative MUST state the file exists if Status is PRESENT.
+- For ALL OTHER metrics: do NOT mention root instruction file presence/absence at all — focus on that metric only.
 
 Context:
 - Languages: ${report.projectContext.languages.join(', ')}
@@ -273,9 +274,13 @@ Respond as JSON array:
       const detectedPlatforms = allPlatformSignals.filter(id => signals.find(s => s.signalId === id && s.detected));
 
       const expertPrompt = getPlatformExpertPrompt(tool);
+      const toolingRootFact = this.getRootInstructionFact(report, tool, signals);
       const prompt = `${expertPrompt}
 
 Assess the tooling ecosystem health for this ${AI_TOOLS[tool].name} project.
+
+FACT: Root instruction file ${toolingRootFact.canonicalPaths.join(', ')} ${toolingRootFact.present ? 'EXISTS (detected on disk)' : 'DOES NOT EXIST'}.
+Do NOT claim this file is missing/absent if it EXISTS above.
 
 Data:
 - Skills defined: ${skillCount} (quality scores: ${audit?.skillQuality?.skills?.map(s => `${s.name}:${s.score}`).join(', ') || 'none'})
@@ -298,12 +303,11 @@ Write a JSON response:
       const response = await this.client.analyzeFast(prompt);
       const parsed = this.parseJson<{ status: string; items: ToolingHealthItem[] }>(response);
       if (parsed?.status && parsed?.items?.length) {
-        const rootInstructionFact = this.getRootInstructionFact(report, tool, signals);
         return {
-          status: this.sanitizeNarrativeText('Tooling Health', parsed.status, report.overallScore, rootInstructionFact),
+          status: this.sanitizeNarrativeText('Tooling Health', parsed.status, report.overallScore, toolingRootFact),
           items: parsed.items.map(item => ({
             ...item,
-            narrative: this.sanitizeNarrativeText(item.name, item.narrative, report.overallScore, rootInstructionFact),
+            narrative: this.sanitizeNarrativeText(item.name, item.narrative, report.overallScore, toolingRootFact),
           })),
         };
       }
@@ -326,6 +330,7 @@ Write a JSON response:
       const insights = report.insights || [];
 
       const expertPrompt = getPlatformExpertPrompt(tool);
+      const frictionRootFact = this.getRootInstructionFact(report, tool, report.levels.flatMap(l => l.signals));
       const prompt = `${expertPrompt}
 
 Create an Architectural Friction Map for upgrading this ${toolConfig.name} project from Level ${report.primaryLevel} (${MATURITY_LEVELS[report.primaryLevel as 1|2|3|4|5|6].name}) to Level ${nextLevel} (${MATURITY_LEVELS[nextLevel as 1|2|3|4|5|6].name}).
@@ -333,6 +338,9 @@ Create an Architectural Friction Map for upgrading this ${toolConfig.name} proje
 Project: ${report.projectName}
 Languages: ${report.projectContext.languages.join(', ')}
 Components: ${report.componentScores.slice(0, 6).map(c => c.name).join(', ')}
+
+FACT: Root instruction file ${frictionRootFact.canonicalPaths.join(', ')} ${frictionRootFact.present ? 'EXISTS (detected on disk)' : 'DOES NOT EXIST'}.
+Do NOT claim this file is missing/absent if it EXISTS above. Do NOT suggest creating it if it already exists.
 
 EXISTING FILES (DO NOT suggest creating these — they already exist):
 ${[
@@ -361,14 +369,13 @@ Respond as JSON array:
       const response = await this.client.analyzeFast(prompt);
       const parsed = this.parseJsonArray<FrictionStep>(response);
       if (parsed?.length) {
-        const rootInstructionFact = this.getRootInstructionFact(report, tool, report.levels.flatMap(l => l.signals));
         return parsed.slice(0, 5).map(step => ({
           ...step,
-          narrative: this.sanitizeNarrativeText('Friction Map', step.narrative, report.overallScore, rootInstructionFact),
+          narrative: this.sanitizeNarrativeText('Friction Map', step.narrative, report.overallScore, frictionRootFact),
           actions: (step.actions || []).map(a => ({
             ...a,
-            action: this.sanitizeNarrativeText('Friction Action', a.action, report.overallScore, rootInstructionFact),
-            impact: this.sanitizeNarrativeText('Friction Impact', a.impact, report.overallScore, rootInstructionFact),
+            action: this.sanitizeNarrativeText('Friction Action', a.action, report.overallScore, frictionRootFact),
+            impact: this.sanitizeNarrativeText('Friction Impact', a.impact, report.overallScore, frictionRootFact),
           })),
         }));
       }
@@ -472,29 +479,44 @@ Respond as JSON array:
     report: ReadinessReport,
     tool: AITool,
     allSignals: SignalResult[],
-  ): { present: boolean; files: string[]; canonicalPaths: string[] } {
+  ): { present: boolean; files: string[]; canonicalPaths: string[]; finding: string } {
     const canonicalPaths = this.getCanonicalRootInstructionPaths(tool);
 
-    // Source 1: primary signal for this platform
-    const rootSignalId = this.getRootSignalId(tool);
-    const rootSignal = allSignals.find(s => s.signalId === rootSignalId);
-    const signalPresent = rootSignal?.detected ?? false;
-    const signalFiles = rootSignal?.files ?? [];
+    // Source 1: primary/root signal(s) for this platform, including synthetic aliases
+    const rootSignalIds = this.getRootSignalIds(tool);
+    const rootSignals = allSignals.filter(s => rootSignalIds.includes(s.signalId));
+    const signalPresent = rootSignals.some(s => s.detected);
+    const signalFiles = rootSignals
+      .filter(s => s.detected)
+      .flatMap(s => s.files ?? []);
 
-    // Source 2: structureComparison existence checks (also filesystem-verified)
+    // Source 2: any signal whose detected files match a canonical root path
+    const fileMatchSignals = allSignals.filter(s =>
+      s.detected && s.files?.some(f => canonicalPaths.includes(f)),
+    );
+    const fileMatchPresent = fileMatchSignals.length > 0;
+    const fileMatchFiles = fileMatchSignals.flatMap(s => s.files ?? []).filter(f => canonicalPaths.includes(f));
+
+    // Source 3: structureComparison existence checks (also filesystem-verified)
     const scMatches = (report.structureComparison?.expected ?? [])
       .filter(e => e.exists)
       .filter(e => canonicalPaths.includes(e.path) || (e.actualPath ? canonicalPaths.includes(e.actualPath) : false));
     const scFiles = scMatches.map(e => e.actualPath || e.path).filter(Boolean);
 
-    const present = signalPresent || scMatches.length > 0;
+    const present = signalPresent || fileMatchPresent || scMatches.length > 0;
     const files = [...new Set([
       ...signalFiles,
+      ...fileMatchFiles,
       ...scFiles,
       ...(present ? canonicalPaths : []),
     ])].filter(Boolean);
 
-    return { present, files, canonicalPaths };
+    // Extract finding text (may include file size) from the first detected root signal
+    const finding = rootSignals.find(s => s.detected)?.finding
+      || fileMatchSignals[0]?.finding
+      || '';
+
+    return { present, files, canonicalPaths, finding };
   }
 
   private sanitizeNarrativeText(
@@ -543,18 +565,18 @@ Respond as JSON array:
     return `${base}; no root instruction file detected (expected ${rootInstructionFact.canonicalPaths.join(', ')}).`;
   }
 
-  /** Map tool to its primary root instruction signal ID */
-  private getRootSignalId(tool: AITool): string {
-    const map: Record<AITool, string> = {
-      copilot: 'copilot_instructions',
-      cline: 'cline_rules',
-      cursor: 'cursor_rules',
-      claude: 'claude_instructions',
-      roo: 'roo_modes',
-      windsurf: 'windsurf_rules',
-      aider: 'aider_config',
+  /** Map tool to root instruction signal IDs, including synthetic aliases */
+  private getRootSignalIds(tool: AITool): string[] {
+    const map: Record<AITool, string[]> = {
+      copilot: ['copilot_instructions', 'copilot_l2_instructions'],
+      cline: ['cline_rules', 'cline_l2_instructions'],
+      cursor: ['cursor_rules', 'cursor_l2_instructions'],
+      claude: ['claude_instructions', 'claude_l2_instructions'],
+      roo: ['roo_modes', 'roo_l2_instructions'],
+      windsurf: ['windsurf_rules', 'windsurf_l2_instructions', 'agents_md'],
+      aider: ['aider_config', 'aider_l2_instructions'],
     };
-    return map[tool] || 'copilot_instructions';
+    return map[tool] || ['copilot_instructions', 'copilot_l2_instructions'];
   }
 
   /** Build a ground truth summary of detected/missing instruction signals */
@@ -631,13 +653,20 @@ Respond as JSON array:
     // ── Prong 1: Keyword overlap ──
     // If the narrative contains BOTH a negative keyword AND an instruction-file reference,
     // the LLM is claiming absence regardless of exact phrasing.
-    const negativeKeywords = /\b(?:absence|absent|lack\b|lacking|lacks|missing|not\s+found|without|no\s+root|does\s+not|doesn't|no\s+dedicated|not\s+present|not\s+detected|not\s+configured|not\s+available|unavailable|not\s+been|not\s+include|not\s+have|not\s+contain|no\s+root-level|currently\s+no|there\s+is\s+no|has\s+no|no\s+main|no\s+primary)\b/i;
-    const instructionFileRef = /(?:copilot-instructions|instructions\.md|root(?:-level)?\s+instruction(?:\s+file)?|primary\s+instruction(?:\s+file)?|main\s+instruction(?:\s+file)?)/i;
+    const negativeKeywords = /\b(?:absence|absent|lack\b|lacking|lacks|missing|not\s+found|without|no\s+root|does\s+not|doesn't|no\s+dedicated|not\s+present|not\s+detected|not\s+configured|not\s+available|unavailable|not\s+been|not\s+include|not\s+have|not\s+contain|no\s+root-level|currently\s+no|there\s+is\s+no|has\s+no|no\s+main|no\s+primary|not\s+having|never\s+been|yet\s+to\s+be)\b/i;
+    const instructionFileRef = /(?:copilot-instructions|instructions\.md|root(?:-level)?\s+instruction(?:\s+file)?|primary\s+instruction(?:\s+file)?|main\s+instruction(?:\s+file)?|\.github\/copilot)/i;
     if (negativeKeywords.test(narrative) && instructionFileRef.test(narrative)) {
       return true;
     }
 
-    // ── Prong 2: Negation patterns ──
+    // ── Prong 2: Consequence patterns ──
+    // "absence/lack of X prevents/limits/hinders Y" — catches indirect claims
+    const consequencePattern = /(?:absence|absent|lack(?:ing)?|missing|without)\s+(?:of\s+)?(?:a\s+)?(?:root\s+)?(?:\.github\/)?(?:copilot-instructions|instructions\.md|instruction\s+file)[^.]*?(?:prevents?|limits?|hinders?|blocks?|weakens?|reduces?|impairs?)/i;
+    if (consequencePattern.test(narrative)) {
+      return true;
+    }
+
+    // ── Prong 3: Negation patterns ──
     // "not" + state verb + instruction-related noun
     const negationPatterns = [
       /\bnot\s+(?:been\s+)?(?:configured|set\s*up|present|detected|found|created|established|available)\b[^.]*?(?:copilot|instruction)/i,

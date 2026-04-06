@@ -616,6 +616,12 @@ export function activate(context: vscode.ExtensionContext) {
         const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
         if (!workspaceFolder) return;
 
+        // Ensure exported narratives are repaired against current signal ground truth
+        const repaired = repairNarrativeSections(report, 'exportGraph');
+        if (repaired) {
+          await runStorage.updateLatestReport(report);
+        }
+
         const exportData = {
           projectName: report.projectName,
           scannedAt: report.scannedAt,

@@ -223,6 +223,47 @@ describe('NarrativeGenerator', () => {
     expect(bla!.narrative).not.toMatch(/absence|absent|missing/i);
   });
 
+  it('IQ Sync narrative honors synthetic root instruction aliases', async () => {
+    const contradictingClient = {
+      analyze: async () => '[]',
+      analyzeFast: async (prompt: string) => {
+        if (prompt.includes('GROUND TRUTH') || prompt.includes('platform readiness')) {
+          return JSON.stringify([
+            { dimension: 'Business Logic Alignment', narrative: 'Despite the absence of a root copilot-instructions.md, the project shows good alignment.' },
+            { dimension: 'Type & Environment Strictness', narrative: 'Strong types.' },
+            { dimension: 'Semantic Density', narrative: 'Good density.' },
+            { dimension: 'Instruction/Reality Sync', narrative: 'The absence of a root .github/copilot-instructions.md significantly weakens agent guidance for this project.' },
+            { dimension: 'Context Efficiency', narrative: 'Moderate coverage.' },
+          ]);
+        }
+        if (prompt.includes('tooling ecosystem')) {
+          return JSON.stringify({ status: 'OK', items: [] });
+        }
+        if (prompt.includes('Friction Map')) {
+          return JSON.stringify([{ title: 'Step 1', narrative: 'Do something.', actions: [] }]);
+        }
+        return '[]';
+      },
+    } as any;
+
+    const report = makeReport({
+      levels: [
+        { level: 1, name: 'Prompt-Only', rawScore: 80, qualified: true, signals: [], signalsDetected: 0, signalsTotal: 0 },
+        { level: 2, name: 'Instruction-Guided', rawScore: 65, qualified: true, signals: [
+          { signalId: 'copilot_l2_instructions', level: 2, detected: true, score: 70, finding: 'Found .github/copilot-instructions.md', files: ['.github/copilot-instructions.md'], confidence: 'high' },
+        ], signalsDetected: 1, signalsTotal: 1 },
+      ],
+      structureComparison: undefined,
+    });
+
+    const result = await new NarrativeGenerator(contradictingClient).generate(report);
+    const iqSync = result.platformReadiness.find(m => m.dimension === 'Instruction/Reality Sync');
+
+    expect(iqSync).toBeDefined();
+    expect(iqSync!.narrative).toMatch(/present|exists|found|detected/i);
+    expect(iqSync!.narrative).not.toMatch(/absence|absent|missing/i);
+  });
+
   it('IQ Sync narrative handles various absence claim patterns', () => {
     const patterns = [
       'The primary instruction file is missing, leaving agents without guidance.',
@@ -395,5 +436,171 @@ describe('validateNarrativeAgainstSignals', () => {
     const narrative = 'Some narrative text.';
     const result = validateNarrativeAgainstSignals(narrative, []);
     expect(result).toBe(narrative);
+  });
+});
+
+describe('DataPipelines IQ Sync contradiction (regression)', () => {
+  const gen = new NarrativeGenerator(null as any);
+
+  // The EXACT phrase that was appearing in production for DataPipelines
+  // despite .github/copilot-instructions.md existing (3116 bytes)
+  const DATAPIPELINES_PHRASE = 'Existing README and convention documentation provide a strong surrogate knowledge base, but the absence of a root `.github/copilot-instructions.md` prevents a perfect alignment score.';
+
+  it('containsRootAbsenceClaim catches the exact DataPipelines phrase', () => {
+    const caught = (gen as any).containsRootAbsenceClaim(DATAPIPELINES_PHRASE);
+    expect(caught, `Failed to catch DataPipelines phrase`).toBe(true);
+  });
+
+  it('sanitizeNarrativeSections repairs the DataPipelines phrase in cached reports', () => {
+    const report = makeReport({
+      narrativeSections: {
+        platformReadiness: [
+          { dimension: 'Instruction/Reality Sync', narrative: DATAPIPELINES_PHRASE, score: 45, label: 'warning' },
+          { dimension: 'Business Logic Alignment', narrative: DATAPIPELINES_PHRASE, score: 55, label: 'strong' },
+          { dimension: 'Type & Environment Strictness', narrative: 'Strong types.', score: 60, label: 'strong' },
+          { dimension: 'Semantic Density', narrative: 'Good density.', score: 50, label: 'warning' },
+          { dimension: 'Context Efficiency', narrative: 'Moderate coverage.', score: 60, label: 'strong' },
+        ],
+        toolingHealth: { status: 'OK', items: [] },
+        frictionMap: [
+          { title: 'Step 1', narrative: DATAPIPELINES_PHRASE, actions: [{ action: 'Create .github/copilot-instructions.md', impact: 'Better guidance' }] },
+        ],
+      },
+    });
+
+    const changed = gen.sanitizeNarrativeSections(report);
+    expect(changed).toBe(true);
+
+    // Check ALL sections were repaired
+    for (const metric of report.narrativeSections!.platformReadiness) {
+      expect(metric.narrative, `${metric.dimension} still claims absence`)
+        .not.toMatch(/\babsence\b.*copilot-instructions/i);
+      expect(metric.narrative, `${metric.dimension} still says missing`)
+        .not.toMatch(/\bmissing\b.*copilot-instructions/i);
+    }
+
+    // Friction map narrative should also be repaired
+    for (const step of report.narrativeSections!.frictionMap) {
+      expect(step.narrative, `Friction step still claims absence`)
+        .not.toMatch(/\babsence\b.*copilot-instructions/i);
+    }
+  });
+
+  it('generate() never produces absence claims when signal is detected=true', async () => {
+    // LLM returns the exact DataPipelines contradicting phrase for EVERY dimension
+    const stubbornLLM = {
+      analyze: async () => '[]',
+      analyzeFast: async (prompt: string) => {
+        if (prompt.includes('platform readiness') || prompt.includes('GROUND TRUTH')) {
+          return JSON.stringify([
+            { dimension: 'Business Logic Alignment', narrative: DATAPIPELINES_PHRASE },
+            { dimension: 'Type & Environment Strictness', narrative: 'Strong types.' },
+            { dimension: 'Semantic Density', narrative: 'Good density.' },
+            { dimension: 'Instruction/Reality Sync', narrative: DATAPIPELINES_PHRASE },
+            { dimension: 'Context Efficiency', narrative: DATAPIPELINES_PHRASE },
+          ]);
+        }
+        if (prompt.includes('tooling ecosystem')) {
+          return JSON.stringify({ status: DATAPIPELINES_PHRASE, items: [
+            { name: 'Skill Portability', severity: 'warning', narrative: DATAPIPELINES_PHRASE },
+            { name: 'Tooling Execution Risk', severity: 'good', narrative: 'Fine.' },
+            { name: 'Context Collision', severity: 'good', narrative: 'Fine.' },
+          ]});
+        }
+        if (prompt.includes('Friction Map')) {
+          return JSON.stringify([{ title: 'Fix Root', narrative: DATAPIPELINES_PHRASE, actions: [{ action: 'Create copilot-instructions.md', impact: DATAPIPELINES_PHRASE }] }]);
+        }
+        return '[]';
+      },
+    } as any;
+
+    const report = makeReport({
+      levels: [
+        { level: 1, name: 'Prompt-Only', rawScore: 80, qualified: true, signals: [], signalsDetected: 0, signalsTotal: 0 },
+        { level: 2, name: 'Instruction-Guided', rawScore: 65, qualified: true, signals: [
+          { signalId: 'copilot_instructions', level: 2, detected: true, score: 70, finding: 'Found .github/copilot-instructions.md (3116 bytes)', files: ['.github/copilot-instructions.md'], confidence: 'high' },
+        ], signalsDetected: 1, signalsTotal: 1 },
+      ],
+    });
+
+    const narrativeGen = new NarrativeGenerator(stubbornLLM);
+    const result = await narrativeGen.generate(report);
+
+    // Every single narrative output must NOT contain absence claims about copilot-instructions
+    for (const metric of result.platformReadiness) {
+      expect(metric.narrative, `platformReadiness[${metric.dimension}] claims absence`)
+        .not.toMatch(/\babsence\b/i);
+      expect(metric.narrative, `platformReadiness[${metric.dimension}] says missing`)
+        .not.toMatch(/\bmissing\b.*copilot-instructions/i);
+    }
+
+    // IQ Sync specifically must confirm file exists
+    const iqSync = result.platformReadiness.find(m => m.dimension === 'Instruction/Reality Sync');
+    expect(iqSync).toBeDefined();
+    expect(iqSync!.narrative).toMatch(/present|exists|found|detected/i);
+
+    // Tooling health
+    expect(result.toolingHealth.status).not.toMatch(/\babsence\b/i);
+    for (const item of result.toolingHealth.items) {
+      expect(item.narrative, `toolingHealth[${item.name}] claims absence`)
+        .not.toMatch(/\babsence\b.*copilot-instructions/i);
+    }
+
+    // Friction map
+    for (const step of result.frictionMap) {
+      expect(step.narrative, `frictionMap[${step.title}] claims absence`)
+        .not.toMatch(/\babsence\b.*copilot-instructions/i);
+    }
+  });
+
+  it('catches consequence-pattern absence claims', () => {
+    const consequencePatterns = [
+      'The absence of copilot-instructions.md prevents a perfect alignment score.',
+      'Missing copilot-instructions.md limits agent effectiveness.',
+      'Without a root .github/copilot-instructions.md, alignment suffers.',
+      'Lacking copilot-instructions.md hinders the agent guidance pipeline.',
+      'The absence of a root instruction file reduces overall readiness.',
+    ];
+
+    for (const phrase of consequencePatterns) {
+      const caught = (gen as any).containsRootAbsenceClaim(phrase);
+      expect(caught, `Consequence pattern not caught: "${phrase}"`).toBe(true);
+    }
+  });
+
+  it('prompt includes FACT line with finding details when root file exists', async () => {
+    let capturedPrompt = '';
+    const capturingClient = {
+      analyze: async () => '[]',
+      analyzeFast: async (prompt: string) => {
+        if (prompt.includes('platform readiness') || prompt.includes('GROUND TRUTH')) {
+          capturedPrompt = prompt;
+          return JSON.stringify([
+            { dimension: 'Business Logic Alignment', narrative: 'Good.' },
+          ]);
+        }
+        if (prompt.includes('tooling ecosystem')) return JSON.stringify({ status: 'OK', items: [] });
+        if (prompt.includes('Friction Map')) return JSON.stringify([]);
+        return '[]';
+      },
+    } as any;
+
+    const report = makeReport({
+      levels: [
+        { level: 1, name: 'Prompt-Only', rawScore: 80, qualified: true, signals: [], signalsDetected: 0, signalsTotal: 0 },
+        { level: 2, name: 'Instruction-Guided', rawScore: 65, qualified: true, signals: [
+          { signalId: 'copilot_instructions', level: 2, detected: true, score: 70, finding: 'Found .github/copilot-instructions.md (3116 bytes)', files: ['.github/copilot-instructions.md'], confidence: 'high' },
+        ], signalsDetected: 1, signalsTotal: 1 },
+      ],
+    });
+
+    await new NarrativeGenerator(capturingClient).generate(report);
+
+    // The prompt must contain an explicit FACT line
+    expect(capturedPrompt).toContain('FACT:');
+    expect(capturedPrompt).toContain('EXISTS');
+    expect(capturedPrompt).toContain('3116 bytes');
+    // Must include MANDATORY RULES about never using "absence"
+    expect(capturedPrompt).toMatch(/NEVER.*absence/i);
   });
 });

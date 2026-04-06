@@ -1,5 +1,7 @@
 // @ts-check
 const esbuild = require('esbuild');
+const fs = require('fs/promises');
+const path = require('path');
 
 const watch = process.argv.includes('--watch');
 const production = process.argv.includes('--production');
@@ -18,6 +20,19 @@ const buildOptions = {
   treeShaking: true,
 };
 
+async function removeStaleVsixArtifacts() {
+  const entries = await fs.readdir(process.cwd(), { withFileTypes: true });
+  const staleArtifacts = entries
+    .filter(entry => entry.isFile() && entry.name.endsWith('.vsix'))
+    .map(entry => path.join(process.cwd(), entry.name));
+
+  await Promise.all(staleArtifacts.map(filePath => fs.rm(filePath, { force: true })));
+
+  if (staleArtifacts.length > 0) {
+    console.log(`Removed ${staleArtifacts.length} stale VSIX artifact(s).`);
+  }
+}
+
 async function main() {
   if (watch) {
     const ctx = await esbuild.context(buildOptions);
@@ -25,6 +40,7 @@ async function main() {
     console.log('Watching for changes...');
   } else {
     await esbuild.build(buildOptions);
+    await removeStaleVsixArtifacts();
 
     // Build D3 bundle for knowledge graph webview
     await esbuild.build({
