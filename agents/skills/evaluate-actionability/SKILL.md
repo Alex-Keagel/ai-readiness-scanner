@@ -1,3 +1,8 @@
+---
+name: evaluate-actionability
+description: "Evaluates whether an AI agent can execute a SKILL.md's steps end-to-end without human clarification."
+---
+
 # Evaluate Skill Actionability
 
 ## Description

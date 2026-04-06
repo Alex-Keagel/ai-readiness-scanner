@@ -1,3 +1,8 @@
+---
+name: ai-platform-expert
+description: "Deep knowledge of AI coding assistant platforms — when to use each, strengths, weaknesses, architecture."
+---
+
 # Skill: AI Platform Expert
 
 Deep knowledge of AI coding assistant platforms — when to use each, strengths, weaknesses, architecture.

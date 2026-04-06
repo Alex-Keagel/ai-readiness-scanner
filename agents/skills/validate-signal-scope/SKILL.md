@@ -1,3 +1,8 @@
+---
+name: validate-signal-scope
+description: "Validates that detected AI readiness signals are correctly scoped to root level in monorepos. Filters sub-project signal leakage."
+---
+
 # Validate Signal Scope
 
 ## Description

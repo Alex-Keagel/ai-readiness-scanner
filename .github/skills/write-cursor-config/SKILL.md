@@ -1,3 +1,8 @@
+---
+name: write-cursor-config
+description: "Write AI-ready rule files for Cursor IDE."
+---
+
 # Skill: Write Cursor Configuration
 
 Write AI-ready rule files for Cursor IDE.

@@ -1,3 +1,8 @@
+---
+name: evaluate-security
+description: "Reviews SKILL.md files for security risks — flags dangerous commands, missing confirmation steps, secret exposure, and permission escalation."
+---
+
 # Evaluate Skill Security
 
 ## Description

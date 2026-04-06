@@ -1,3 +1,8 @@
+---
+name: dev-debug-extension
+description: "Launch the extension in debug mode and diagnose runtime issues."
+---
+
 # Dev: Debug Extension in VS Code
 
 ## Description

@@ -1,3 +1,8 @@
+---
+name: evaluate-relevance
+description: "Evaluates whether a SKILL.md is still relevant to the project's current state by comparing referenced tools, commands, and paths against actual configuration."
+---
+
 # Evaluate Skill Relevance
 
 ## Description

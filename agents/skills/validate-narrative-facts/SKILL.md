@@ -1,3 +1,8 @@
+---
+name: validate-narrative-facts
+description: "Cross-references LLM-generated narrative text against verified structural signals. Detects and corrects factual contradictions."
+---
+
 # Validate Narrative Facts
 
 ## Description

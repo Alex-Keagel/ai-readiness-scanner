@@ -1,3 +1,8 @@
+---
+name: dev-build-test
+description: "Full development cycle: compile, run tests, check types, and validate the extension is ready for packaging."
+---
+
 # Dev: Build, Test & Validate
 
 ## Description

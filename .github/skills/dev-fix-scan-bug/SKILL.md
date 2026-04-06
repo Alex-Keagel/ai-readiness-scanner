@@ -1,3 +1,8 @@
+---
+name: dev-fix-scan-bug
+description: "Diagnose and fix a bug in the scanning/scoring pipeline when scan results don't match expectations."
+---
+
 # Dev: Fix a Scan Bug
 
 ## Description

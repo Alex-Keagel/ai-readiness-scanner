@@ -1,7 +1,6 @@
-```markdown
 ---
 name: generate-readiness-report
-description: Scans a workspace for agentic coding readiness, generates a structured assessment report, validates it against the canonical spec, and returns scores with improvement recommendations.
+description: "Scans a workspace for agentic coding readiness, generates a structured assessment report, validates it against the canonical spec, and returns scores with improvement recommendations."
 ---
 
 # Generate Readiness Report

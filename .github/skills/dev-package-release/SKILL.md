@@ -1,3 +1,8 @@
+---
+name: dev-package-release
+description: "Package the extension as a VSIX, bump version, and commit a release."
+---
+
 # Dev: Package & Release
 
 ## Description

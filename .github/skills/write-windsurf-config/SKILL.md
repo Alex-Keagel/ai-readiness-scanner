@@ -1,3 +1,8 @@
+---
+name: write-windsurf-config
+description: "Write AI-ready trigger-based rules for Windsurf."
+---
+
 # Skill: Write Windsurf Configuration
 
 Write AI-ready trigger-based rules for Windsurf.

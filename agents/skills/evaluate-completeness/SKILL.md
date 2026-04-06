@@ -1,3 +1,8 @@
+---
+name: evaluate-completeness
+description: "Evaluates a SKILL.md file for structural completeness — checks required sections, numbered steps, typed inputs, defined outputs, and validation criteria."
+---
+
 # Evaluate Skill Completeness
 
 ## Description

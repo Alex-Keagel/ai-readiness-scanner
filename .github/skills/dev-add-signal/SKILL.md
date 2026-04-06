@@ -1,3 +1,8 @@
+---
+name: dev-add-signal
+description: "Add a new signal to the scoring system — from definition to scanner logic to tests."
+---
+
 # Dev: Add a New Maturity Signal
 
 ## Description

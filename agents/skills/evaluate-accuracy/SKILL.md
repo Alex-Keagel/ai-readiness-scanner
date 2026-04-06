@@ -1,3 +1,8 @@
+---
+name: evaluate-accuracy
+description: "Verifies that a SKILL.md file references real paths, valid commands, and accurate technical claims by cross-referencing against the actual repository."
+---
+
 # Evaluate Skill Accuracy
 
 ## Description

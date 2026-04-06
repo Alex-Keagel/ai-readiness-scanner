@@ -1,3 +1,8 @@
+---
+name: write-aider-config
+description: "Write AI-ready configuration for Aider."
+---
+
 # Skill: Write Aider Configuration
 
 Write AI-ready configuration for Aider.

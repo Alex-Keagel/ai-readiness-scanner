@@ -1,3 +1,8 @@
+---
+name: analyze-structure
+description: "Generates expected file recommendations based on platform docs, project complexity, and product detection. Also generates dynamic exclusion patterns."
+---
+
 # Analyze Repository Structure
 
 ## Description

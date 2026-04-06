@@ -1,3 +1,8 @@
+---
+name: validate-component-names
+description: "Validates that LLM-enriched component names are anchored to actual filesystem directory names. Prevents fabricated business names."
+---
+
 # Validate Component Names
 
 ## Description

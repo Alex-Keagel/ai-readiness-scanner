@@ -1,3 +1,8 @@
+---
+name: write-copilot-config
+description: "Write AI-ready instruction files for GitHub Copilot."
+---
+
 # Skill: Write GitHub Copilot Configuration
 
 Write AI-ready instruction files for GitHub Copilot.

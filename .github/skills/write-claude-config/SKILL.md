@@ -1,3 +1,8 @@
+---
+name: write-claude-config
+description: "Write AI-ready CLAUDE.md and rules for Claude Code."
+---
+
 # Skill: Write Claude Code Configuration
 
 Write AI-ready CLAUDE.md and rules for Claude Code.

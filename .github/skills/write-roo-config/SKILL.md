@@ -1,3 +1,8 @@
+---
+name: write-roo-config
+description: "Write AI-ready mode-specific rules for Roo Code."
+---
+
 # Skill: Write Roo Code Configuration
 
 Write AI-ready mode-specific rules for Roo Code.

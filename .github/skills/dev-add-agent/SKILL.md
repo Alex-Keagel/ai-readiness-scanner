@@ -1,3 +1,8 @@
+---
+name: dev-add-agent
+description: "Create a new agent definition file that the extension loads at runtime for LLM system prompts."
+---
+
 # Dev: Add an Agent Definition
 
 ## Description

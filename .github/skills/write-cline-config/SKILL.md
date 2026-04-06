@@ -1,3 +1,8 @@
+---
+name: write-cline-config
+description: "Write AI-ready rule files and memory banks for Cline."
+---
+
 # Skill: Write Cline Configuration
 
 Write AI-ready rule files and memory banks for Cline.

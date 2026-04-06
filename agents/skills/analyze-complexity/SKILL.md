@@ -1,3 +1,8 @@
+---
+name: analyze-complexity
+description: "Computes a complexity factor (0.0-1.0) for each component, identifies product cores, and produces data for the Semantic Topology Graph."
+---
+
 # Analyze Component Complexity
 
 ## Description
